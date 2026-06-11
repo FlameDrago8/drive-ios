@@ -83,7 +83,7 @@ struct DriveShareCard: View {
 
                 VStack(spacing: 2) {
                     Text("\(Int(session.score))")
-                        .font(.system(size: 48, weight: .black, design: .rounded))
+                        .font(.system(size: 48, weight: .black, design: .monospaced))
                         .foregroundColor(.white)
                     Text("SCORE")
                         .font(.system(size: 9, weight: .heavy))
@@ -115,7 +115,7 @@ struct DriveShareCard: View {
                     ForEach(metrics, id: \.0) { label, gradeStr, color in
                         HStack(spacing: 10) {
                             Text(gradeStr)
-                                .font(.system(size: 20, weight: .black, design: .rounded))
+                                .font(.system(size: 20, weight: .black, design: .monospaced))
                                 .foregroundColor(color)
                             Text(label)
                                 .font(.system(size: 12, weight: .semibold))
@@ -165,7 +165,7 @@ struct DriveShareCard: View {
                            color: Color = .white, size: CGFloat) -> some View {
         VStack(spacing: 2) {
             Text(value)
-                .font(.system(size: size, weight: .black, design: .rounded))
+                .font(.system(size: size, weight: .black, design: .monospaced))
                 .foregroundColor(color)
                 .lineLimit(1)
             Text(label)

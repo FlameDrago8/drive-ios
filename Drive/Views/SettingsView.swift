@@ -629,7 +629,7 @@ struct SettingsView: View {
     private func statPill(value: String, label: String) -> some View {
         VStack(spacing: 3) {
             Text(value)
-                .font(.system(size: 22, weight: .black, design: .rounded))
+                .font(.system(size: 22, weight: .black, design: .monospaced))
                 .foregroundColor(.primary)
             Text(label)
                 .font(.system(size: 10, weight: .medium))

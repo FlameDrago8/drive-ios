@@ -569,7 +569,7 @@ private struct PodiumColumn: View {
                 .lineLimit(1)
 
             Text("\(Int(entry.score))")
-                .font(.system(size: isWinner ? 20 : 16, weight: .black, design: .rounded))
+                .font(.system(size: isWinner ? 20 : 16, weight: .black, design: .monospaced))
                 .foregroundColor(.primary)
 
             Text("#\(entry.rank)")
