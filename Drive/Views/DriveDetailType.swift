@@ -1225,10 +1225,10 @@ struct BadgeDetailSheet: View {
 
                     // Hero icon
                     ZStack {
-                        Circle()
+                        PatchShape()
                             .fill(badge.color.opacity(badge.isEarned ? 0.16 : 0.06))
                             .frame(width: 100, height: 100)
-                            .overlay(Circle().stroke(
+                            .overlay(PatchShape().stroke(
                                 badge.isEarned ? badge.color.opacity(0.45) : Color.white.opacity(0.08),
                                 lineWidth: 2))
                         PhosphorIcon.fill(badge.icon, size: 40, color: badge.isEarned ? badge.color : Color.white.opacity(0.15))
@@ -1375,16 +1375,19 @@ struct TieredBadgeRow: View {
         VStack(spacing: 0) {
             HStack(spacing: DS.Spacing.m) {
                 ZStack {
-                    Circle()
-                        .fill(badge.color.opacity(badge.isEarned ? 0.18 : 0.07))
+                    PatchShape()
+                        .fill(badge.isEarned
+                              ? badge.color.opacity(0.15)
+                              : Color.white.opacity(0.04))
                         .frame(width: 56, height: 56)
                         .overlay(
-                            Circle()
-                                .stroke(badge.isEarned ? badge.color.opacity(0.45) : Color.clear, lineWidth: 1.5)
+                            PatchShape()
+                                .stroke(badge.isEarned ? badge.color.opacity(0.40) : Color.white.opacity(0.06),
+                                        lineWidth: 1)
                         )
                     PhosphorIcon.fill(badge.icon, size: 22, color: badge.isEarned ? badge.color : DS.Colors.secondary)
                 }
-                .shadow(color: badge.isEarned ? badge.color.opacity(0.5) : .clear, radius: 10)
+                .shadow(color: badge.isEarned ? badge.color.opacity(0.35) : .clear, radius: 8)
 
                 VStack(alignment: .leading, spacing: 6) {
                     HStack {
@@ -1437,10 +1440,12 @@ struct TieredBadgeRow: View {
 struct UnlockBadgeCell: View {
     let badge: Badge
 
-    // Deterministic faux serial from id hash — purely decorative
+    // Faux serial, FNV-1a over the id bytes — String.hashValue is seeded
+    // per process, which made serials reshuffle on every launch
     private var serialLabel: String {
-        let n = abs(badge.id.hashValue) % 999
-        return String(format: "SN-%03d", n)
+        var hash: UInt64 = 0xcbf29ce484222325
+        for byte in badge.id.utf8 { hash = (hash ^ UInt64(byte)) &* 0x100000001b3 }
+        return String(format: "SN-%03d", Int(hash % 999))
     }
 
     var body: some View {

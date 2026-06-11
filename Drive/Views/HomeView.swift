@@ -523,10 +523,10 @@ struct BadgeUnlockOverlay: View {
                 Spacer()
 
                 ZStack {
-                    Circle()
+                    PatchShape()
                         .fill(badge.color.opacity(0.16))
                         .frame(width: 114, height: 114)
-                        .overlay(Circle().stroke(badge.color.opacity(0.45), lineWidth: 1.5))
+                        .overlay(PatchShape().stroke(badge.color.opacity(0.45), lineWidth: 1.5))
                     PhosphorIcon.fill(badge.icon, size: 46, color: badge.color)
                 }
                 .scaleEffect(badgeScale)
