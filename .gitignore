@@ -35,6 +35,7 @@ AuthKey_*.p8
 # Logs / local tooling state
 firebase-debug.log
 .claude/settings.local.json
+.claude/scheduled_tasks.lock
 
 # Vendored icon reference set + root scratch assets — iCloud-evicted;
 # thousands of network round-trips to materialize. Re-add deliberately if needed.
