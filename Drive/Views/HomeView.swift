@@ -777,7 +777,7 @@ private struct SubScoreRing: View {
                     .animation(.easeOut(duration: 0.6).delay(delay + 0.15), value: progress)
 
                 // Ticks (major marks only at this scale)
-                GaugeTicks(diameter: 58, majorTickLen: 5, minorTickLen: 3, lineWidth: 0.75)
+                GaugeTicks(diameter: 58, majorTickLen: 7, minorTickLen: 5, lineWidth: 0.75)
 
                 Text("\(Int(score))")
                     .font(DS.Typography.data(14))
@@ -850,7 +850,7 @@ struct ScoreGauge: View {
                 .animation(.easeOut(duration: 0.6).delay(0.2), value: progress)
 
             // Tachometer ticks
-            GaugeTicks(diameter: 180, majorTickLen: 10, minorTickLen: 6, lineWidth: 1)
+            GaugeTicks(diameter: 180, majorTickLen: 12, minorTickLen: 7, lineWidth: 1)
 
             // Center
             VStack(spacing: 2) {
@@ -1399,19 +1399,23 @@ struct MetricScoreCard: View {
                     .stroke(Color.white.opacity(0.06), style: StrokeStyle(lineWidth: 6, lineCap: .round))
                     .rotationEffect(.degrees(135))
 
-                // Fill
+                // Redline zone
                 Circle()
-                    .trim(from: 0, to: arcProgress * 0.75)
+                    .trim(from: 0.6375, to: 0.75)
                     .stroke(
-                        LinearGradient(
-                            colors: [color.opacity(0.5), color],
-                            startPoint: .topLeading, endPoint: .bottomTrailing
-                        ),
+                        Color(red: 0.42, green: 0.05, blue: 0.05),
                         style: StrokeStyle(lineWidth: 6, lineCap: .round)
                     )
                     .rotationEffect(.degrees(135))
-                    .shadow(color: color.opacity(0.4), radius: 4)
-                    .animation(.spring(duration: 0.8, bounce: 0.1).delay(0.15), value: arcProgress)
+
+                // Score arc
+                Circle()
+                    .trim(from: 0, to: arcProgress * 0.75)
+                    .stroke(color, style: StrokeStyle(lineWidth: 6, lineCap: .round))
+                    .rotationEffect(.degrees(135))
+                    .animation(.easeOut(duration: 0.6).delay(0.15), value: arcProgress)
+
+                GaugeTicks(diameter: 58, majorTickLen: 7, minorTickLen: 5, lineWidth: 0.75)
 
                 Text(grade)
                     .font(.system(size: 18, weight: .black, design: .monospaced))
@@ -1431,7 +1435,7 @@ struct MetricScoreCard: View {
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(.vertical, DS.Spacing.m)
         .onAppear {
-            withAnimation(.spring(duration: 0.8, bounce: 0.1).delay(0.2)) {
+            withAnimation(.easeOut(duration: 0.6).delay(0.2)) {
                 arcProgress = progress
             }
         }
