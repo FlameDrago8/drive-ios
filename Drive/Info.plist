@@ -1,0 +1,34 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>NSCameraUsageDescription</key>
+	<string>Drive records the road ahead to analyze your driving and generate a score.</string>
+	<key>NSLocationWhenInUseUsageDescription</key>
+	<string>Drive tracks your route and speed while you drive to calculate your driving score.</string>
+	<key>NSMicrophoneUsageDescription</key>
+	<string>Drive may capture audio as part of the dashcam recording during your drive.</string>
+	<key>UILaunchScreen</key>
+	<dict>
+		<key>UIColorName</key>
+		<string>LaunchBackground</string>
+	</dict>
+	<key>UIAppFonts</key>
+	<array>
+		<string>Phosphor.ttf</string>
+		<string>Phosphor-Fill.ttf</string>
+		<string>Phosphor-Bold.ttf</string>
+	</array>
+	<key>CFBundleURLTypes</key>
+	<array>
+		<dict>
+			<key>CFBundleTypeRole</key>
+			<string>Editor</string>
+			<key>CFBundleURLSchemes</key>
+			<array>
+				<string>com.googleusercontent.apps.744929252412-jbdhgpbu4ephr16c93vmskops9fqc54k</string>
+			</array>
+		</dict>
+	</array>
+</dict>
+</plist>

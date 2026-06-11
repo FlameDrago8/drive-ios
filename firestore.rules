@@ -1,0 +1,128 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // ── Helpers ────────────────────────────────────────────────────────────────
+    function isAuth() {
+      return request.auth != null;
+    }
+
+    function isOwner(uid) {
+      return isAuth() && request.auth.uid == uid;
+    }
+
+    // School accounts carry a custom claim set by the createSchoolAccount
+    // Cloud Function via Admin SDK at school-account creation time.
+    function isSchool() {
+      return isAuth() && request.auth.token.get('role', '') == 'school';
+    }
+
+    function isSchoolFor(schoolCode) {
+      return isSchool() && request.auth.token.get('schoolCode', '') == schoolCode;
+    }
+
+    // True when the authenticated user's document shows they are linked to this school.
+    // Used to gate drive mirroring — the user doc is already committed before
+    // the mirror write happens (confirmJoin writes users/{uid} first).
+    function studentLinkedTo(schoolCode) {
+      return isAuth()
+        && exists(/databases/$(database)/documents/users/$(request.auth.uid))
+        && get(/databases/$(database)/documents/users/$(request.auth.uid)).data.get('orgId', '') == schoolCode;
+    }
+
+
+    // ── User data ──────────────────────────────────────────────────────────────
+    match /users/{userId} {
+      allow read, write: if isOwner(userId);
+
+      // School instructors can read any linked student's profile
+      // (needed to display student names/avatars in the web dashboard).
+      allow read: if isSchool()
+        && get(/databases/$(database)/documents/users/$(userId)).data.get('orgId', '') == request.auth.token.get('schoolCode', '');
+
+      // Drives sub-collection
+      match /drives/{driveId} {
+        allow read, delete: if isOwner(userId);
+
+        allow create, update: if isOwner(userId)
+          && request.resource.data.score is number
+          && request.resource.data.score >= 0
+          && request.resource.data.score <= 100
+          && request.resource.data.duration is number
+          && request.resource.data.duration > 0
+          && request.resource.data.duration < 86400;
+      }
+
+      // Public profile is readable by anyone (leaderboard badge display).
+      match /public_profile/{document=**} {
+        allow read:  if true;
+        allow write: if isOwner(userId);
+      }
+    }
+
+
+    // ── Schools ────────────────────────────────────────────────────────────────
+    match /schools/{schoolCode} {
+      // Any authenticated user can read (students need to fetch school name by code).
+      allow read:  if isAuth();
+      // School accounts can update their own school document (e.g. change name).
+      // Creation is Admin SDK only (via createSchoolAccount Cloud Function).
+      allow update: if isSchoolFor(schoolCode);
+      allow create, delete: if false;
+
+      // ── Student roster ─────────────────────────────────────────────────────
+      // Written by the syncStudentRoster Cloud Function (Admin SDK) when
+      // users/{uid}.orgId changes. The student and school can read; no one writes directly.
+      match /students/{uid} {
+        allow read:  if isSchoolFor(schoolCode) || isOwner(uid);
+        allow write: if false; // Cloud Function only
+
+        // ── Mirrored drives ───────────────────────────────────────────────────
+        // The iOS app writes here directly (SchoolManager.mirrorDrive).
+        // Allowed only when the student is actually linked to this school.
+        // Score validation mirrors the users/{uid}/drives rule.
+        match /drives/{driveId} {
+          allow read:  if isSchoolFor(schoolCode) || isOwner(uid);
+          allow create: if isOwner(uid)
+            && studentLinkedTo(schoolCode)
+            && request.resource.data.score is number
+            && request.resource.data.score >= 0
+            && request.resource.data.score <= 100
+            && request.resource.data.duration is number
+            && request.resource.data.duration > 0;
+          // No update/delete — mirrors are write-once from the app
+        }
+      }
+
+      // ── Assignments ───────────────────────────────────────────────────────
+      // Created/managed by school instructors via the web dashboard.
+      // Students linked to this school can read.
+      match /assignments/{assignmentId} {
+        allow read:   if isSchoolFor(schoolCode) || studentLinkedTo(schoolCode);
+        allow create, update: if isSchoolFor(schoolCode)
+          && request.resource.data.title is string
+          && request.resource.data.title.size() > 0
+          && request.resource.data.title.size() <= 120
+          && request.resource.data.type is string
+          && request.resource.data.targetCount is number
+          && request.resource.data.targetCount > 0;
+        allow delete: if isSchoolFor(schoolCode);
+      }
+    }
+
+
+    // ── Game Center ↔ Firebase UID cross-reference ─────────────────────────────
+    match /gc_users/{gcId} {
+      allow read: if isAuth();
+      allow write: if isAuth()
+        && request.resource.data.keys().hasOnly(['uid'])
+        && request.resource.data.uid == request.auth.uid;
+    }
+
+
+    // ── Deny everything else ───────────────────────────────────────────────────
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}

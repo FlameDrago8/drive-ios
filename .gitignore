@@ -1,0 +1,43 @@
+# Firebase — contains API keys and OAuth client credentials; never commit
+Drive/GoogleService-Info.plist
+
+# Xcode
+*.xcuserstate
+*.xccheckout
+*.moved-aside
+xcuserdata/
+DerivedData/
+*.hmap
+*.ipa
+*.dSYM.zip
+*.dSYM
+
+# Swift Package Manager
+.build/
+.swiftpm/
+
+# CocoaPods (if ever added)
+Pods/
+Podfile.lock
+
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+
+# Environment / secrets
+.env
+*.pem
+*.p12
+*.mobileprovision
+AuthKey_*.p8
+
+# Logs / local tooling state
+firebase-debug.log
+.claude/settings.local.json
+
+# Vendored icon reference set + root scratch assets — iCloud-evicted;
+# thousands of network round-trips to materialize. Re-add deliberately if needed.
+phosphor-icons/
+Onboarding Animation *.mp4
+Vector (6).png
