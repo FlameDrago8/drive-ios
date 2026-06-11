@@ -192,7 +192,7 @@ struct WeeklyTrendDetail: View {
                                 .foregroundColor(DS.Colors.secondary)
                             if weekAvg > 0 {
                                 Text("Avg \(Int(weekAvg))")
-                                    .font(.system(size: 12, weight: .bold, design: .rounded))
+                                    .font(.system(size: 12, weight: .bold, design: .monospaced))
                                     .foregroundColor(DS.Colors.accent)
                             }
                         }
@@ -275,7 +275,7 @@ struct WeeklyTrendDetail: View {
                                 // Day summary header
                                 HStack(alignment: .firstTextBaseline, spacing: DS.Spacing.s) {
                                     Text("\(Int(score))")
-                                        .font(.system(size: 32, weight: .black, design: .rounded))
+                                        .font(.system(size: 32, weight: .black, design: .monospaced))
                                         .foregroundColor(scoreColor(score))
                                     VStack(alignment: .leading, spacing: 1) {
                                         Text(day)
@@ -441,7 +441,7 @@ struct WeeklyTrendDetail: View {
                     .frame(width: 28)
                 VStack(alignment: .leading, spacing: 3) {
                     Text(info.period)
-                        .font(.system(size: 18, weight: .black, design: .rounded))
+                        .font(.system(size: 18, weight: .black, design: .monospaced))
                         .foregroundColor(.primary)
                     Text("Your avg score is \(Int(info.avg)) — \(String(format: "%.0f", info.delta)) pts higher than your other sessions")
                         .font(.system(size: 12, weight: .medium))
@@ -496,7 +496,7 @@ struct WeeklyTrendDetail: View {
                         Spacer()
                         VStack(alignment: .trailing, spacing: 2) {
                             Text("\(Int(route.avg))")
-                                .font(.system(size: 18, weight: .black, design: .rounded))
+                                .font(.system(size: 18, weight: .black, design: .monospaced))
                                 .foregroundColor(scoreColor(route.avg))
                             HStack(spacing: 3) {
                                 Image(systemName: route.trend > 1 ? "arrow.up" : route.trend < -1 ? "arrow.down" : "minus")
@@ -712,7 +712,7 @@ struct WeekComparisonCard: View {
 
         return VStack(spacing: 6) {
             Text(value > 0 ? "\(Int(value))" : "–")
-                .font(.system(size: isPrimary ? 22 : 17, weight: isPrimary ? .black : .semibold, design: .rounded))
+                .font(.system(size: isPrimary ? 22 : 17, weight: isPrimary ? .black : .semibold, design: .monospaced))
                 .foregroundColor(isPrimary ? Color.primary : DS.Colors.secondary)
 
             ZStack(alignment: .bottom) {
@@ -872,7 +872,7 @@ struct ScoreLineGraph: View {
                     if let idx = scrubIndex {
                         HStack(alignment: .firstTextBaseline, spacing: 6) {
                             Text("\(Int(sessions[idx].score))")
-                                .font(.system(size: 28, weight: .black, design: .rounded))
+                                .font(.system(size: 28, weight: .black, design: .monospaced))
                                 .foregroundColor(scoreColor(for: sessions[idx].score))
                             Text(Self.dateFmt.string(from: sessions[idx].date))
                                 .font(.system(size: 12, weight: .medium))
@@ -881,7 +881,7 @@ struct ScoreLineGraph: View {
                         .transition(.opacity)
                     } else {
                         Text("\(sessions.count) drives")
-                            .font(.system(size: 13, weight: .semibold, design: .rounded))
+                            .font(.system(size: 13, weight: .semibold, design: .monospaced))
                             .foregroundColor(.primary)
                             .transition(.opacity)
                     }
@@ -1144,7 +1144,7 @@ struct AchievementsDetail: View {
                     .animation(.spring(response: 1.1, dampingFraction: 0.7).delay(0.15), value: ringAnimated)
                 VStack(spacing: 0) {
                     Text("\(earnedCount)")
-                        .font(.system(size: 28, weight: .black, design: .rounded))
+                        .font(.system(size: 28, weight: .black, design: .monospaced))
                         .foregroundColor(.primary)
                     Text("/ \(allBadges.count)")
                         .font(.system(size: 10, weight: .heavy))
@@ -1172,7 +1172,7 @@ struct AchievementsDetail: View {
     private func overviewMiniStat(value: String, label: String, color: Color) -> some View {
         HStack(spacing: DS.Spacing.s) {
             Text(value)
-                .font(.system(size: 18, weight: .black, design: .rounded))
+                .font(.system(size: 18, weight: .black, design: .monospaced))
                 .foregroundColor(color)
             Text(label)
                 .font(DS.Typography.label(9))
@@ -1568,7 +1568,7 @@ struct RouteStatCard: View {
 
     private func routeStat(value: String, label: String) -> some View {
         VStack(spacing: 2) {
-            Text(value).font(.system(size: 18, weight: .black, design: .rounded)).foregroundColor(.primary)
+            Text(value).font(.system(size: 18, weight: .black, design: .monospaced)).foregroundColor(.primary)
             Text(label).font(.system(size: 9, weight: .heavy)).tracking(1.5).foregroundColor(DS.Colors.secondary)
         }
     }
@@ -1603,7 +1603,7 @@ struct AchievementRow: View {
                         PhosphorIcon.fill("check-circle", size: 14, color: .green)
                     } else {
                         Text("\(Int(progress * 100))%")
-                            .font(.system(size: 12, weight: .semibold, design: .rounded))
+                            .font(.system(size: 12, weight: .semibold, design: .monospaced))
                             .foregroundColor(DS.Colors.secondary)
                     }
                 }

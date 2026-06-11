@@ -385,7 +385,7 @@ struct HomeView: View {
                 if let session = latestDrive {
                     VStack(alignment: .trailing, spacing: 0) {
                         Text("\(Int(session.score))")
-                            .font(.system(size: 30, weight: .black, design: .rounded))
+                            .font(.system(size: 30, weight: .black, design: .monospaced))
                             .foregroundColor(latestScoreColor)
                         Text(grade(for: session.score))
                             .font(.system(size: 11, weight: .semibold))
@@ -1363,7 +1363,7 @@ struct DriveReportView: View {
         VStack(spacing: 2) {
             HStack(alignment: .lastTextBaseline, spacing: 2) {
                 Text(value)
-                    .font(.system(size: 22, weight: .black, design: .rounded))
+                    .font(.system(size: 22, weight: .black, design: .monospaced))
                     .foregroundColor(.primary)
                 Text(unit)
                     .font(.system(size: 10, weight: .heavy))
@@ -1525,7 +1525,7 @@ struct StatCard: View {
         VStack(alignment: .leading, spacing: DS.Spacing.s) {
             PhosphorIcon.fill(icon, size: 16, color: color)
             Text(value)
-                .font(.system(size: 22, weight: .black, design: .rounded))
+                .font(.system(size: 22, weight: .black, design: .monospaced))
                 .foregroundColor(.primary)
             Text(label)
                 .font(.system(size: 10, weight: .heavy))
@@ -1758,7 +1758,7 @@ struct SessionRowView: View {
                 VStack(alignment: .leading, spacing: 3) {
                     HStack(spacing: 6) {
                         Text(session.date.formatted(.dateTime.month(.abbreviated).day().year()))
-                            .font(.system(size: 14, weight: .semibold, design: .rounded))
+                            .font(.system(size: 14, weight: .semibold, design: .monospaced))
                             .foregroundColor(.primary)
                         if let tag = session.routeTag, !tag.isEmpty {
                             Text(tag)
@@ -1777,7 +1777,7 @@ struct SessionRowView: View {
                 Spacer()
 
                 Text("\(Int(session.score))")
-                    .font(.system(size: 18, weight: .black, design: .rounded))
+                    .font(.system(size: 18, weight: .black, design: .monospaced))
                     .foregroundColor(scoreColor(for: session.score))
 
                 PhosphorIcon(name: "caret-right", size: 12, color: DS.Colors.secondary, weight: .bold)
