@@ -1523,7 +1523,8 @@ struct RouteStatCard: View {
                     MapPolyline(coordinates: routeCoordinates)
                         .stroke(DS.Colors.accent, lineWidth: 3)
                 }
-                .mapStyle(.standard)
+                .mapStyle(.standard(pointsOfInterest: .excludingAll, showsTraffic: false))
+                .colorScheme(.dark)
                 .frame(height: 130)
                 .clipShape(
                     UnevenRoundedRectangle(
