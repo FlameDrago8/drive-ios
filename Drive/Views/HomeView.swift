@@ -502,6 +502,27 @@ private struct GaugeTicks: View {
     }
 }
 
+// MARK: – Instrument Boot (sheet power-on)
+
+/// Sheet content fades up from dark like a cluster powering on.
+/// `.transition` does nothing on a sheet's root view — the presentation
+/// animation owns it — so opacity is driven explicitly from onAppear.
+struct InstrumentBootModifier: ViewModifier {
+    @State private var booted = false
+
+    func body(content: Content) -> some View {
+        content
+            .opacity(booted ? 1 : 0)
+            .onAppear {
+                withAnimation(.easeOut(duration: 0.35).delay(0.05)) { booted = true }
+            }
+    }
+}
+
+extension View {
+    func instrumentBoot() -> some View { modifier(InstrumentBootModifier()) }
+}
+
 // MARK: – Score Gauge
 // MARK: – Badge Unlock Overlay
 

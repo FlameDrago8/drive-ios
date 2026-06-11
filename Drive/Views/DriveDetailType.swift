@@ -1122,6 +1122,7 @@ struct AchievementsDetail: View {
         }
         .sheet(item: $selectedBadge) { badge in
             BadgeDetailSheet(badge: badge)
+                .instrumentBoot()
                 .presentationBackground(.regularMaterial)
         }
     }

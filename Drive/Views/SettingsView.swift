@@ -274,6 +274,7 @@ struct SettingsView: View {
                 profileManager.save(displayName: nameInput)
                 showNameSheet = false
             }, onCancel: { showNameSheet = false })
+            .instrumentBoot()
         }
         // Car sheet
         .sheet(isPresented: $showCarSheet) {
@@ -290,6 +291,7 @@ struct SettingsView: View {
                 carModelInput = profileManager.carModel
                 carYearInput  = profileManager.carYear
             }
+            .instrumentBoot()
         }
         // School link sheet
         .sheet(isPresented: $showSchoolSheet) {
@@ -304,6 +306,7 @@ struct SettingsView: View {
                 },
                 onDismiss: { showSchoolSheet = false }
             )
+            .instrumentBoot()
         }
         // Consent sheet (shown after code validated)
         .sheet(isPresented: $showConsentSheet) {
@@ -319,6 +322,7 @@ struct SettingsView: View {
                         showConsentSheet = false
                     }
                 )
+                .instrumentBoot()
             }
         }
         // Leave school confirmation
