@@ -315,10 +315,10 @@ struct WeeklyTrendDetail: View {
                         detailStatRow(icon: "arrow-up-right", color: DS.Colors.secondary,
                                       title: "Best Day", value: "–")
                     }
-                    Rectangle().fill(Color(red: 0.133, green: 0.133, blue: 0.157)).frame(height: 0.5).padding(.horizontal, 20)
+                    Rectangle().fill(DS.Colors.hairline).frame(height: 0.5).padding(.horizontal, 20)
                     detailStatRow(icon: "car", color: DS.Colors.accent,
                                   title: "Drives", value: "\(driveCount)")
-                    Rectangle().fill(Color(red: 0.133, green: 0.133, blue: 0.157)).frame(height: 0.5).padding(.horizontal, 20)
+                    Rectangle().fill(DS.Colors.hairline).frame(height: 0.5).padding(.horizontal, 20)
                     detailStatRow(icon: "chart-bar", color: DS.Colors.accent,
                                   title: "Weekly Avg", value: weekAvg > 0 ? "\(Int(weekAvg))" : "–")
                 }
@@ -1426,7 +1426,7 @@ struct TieredBadgeRow: View {
             .padding(.vertical, DS.Spacing.m)
 
             Rectangle()
-                .fill(Color(red: 0.133, green: 0.133, blue: 0.157))
+                .fill(DS.Colors.hairline)
                 .frame(height: 0.5)
         }
         .onAppear { barAnimated = true }
