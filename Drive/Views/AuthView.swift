@@ -180,6 +180,18 @@ struct AuthView: View {
                 .opacity(appeared ? 1 : 0)
                 .offset(y: appeared ? 0 : 40)
 
+                // Account-creation disclosure (App Review 5.1.1)
+                HStack(spacing: 3) {
+                    Text("By continuing, you agree to our")
+                        .foregroundColor(DS.Colors.secondary)
+                    Link("Privacy Policy",
+                         destination: URL(string: "https://flamedrago8.github.io/privacy.html")!)
+                        .foregroundColor(DS.Colors.accent)
+                }
+                .font(.system(size: 11, weight: .medium))
+                .padding(.top, DS.Spacing.m)
+                .opacity(appeared ? 1 : 0)
+
                 Spacer(minLength: 50)
             }
         }

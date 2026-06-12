@@ -208,12 +208,12 @@ struct SettingsView: View {
                         settingSection("About") {
                             SettingsRow(label: "Version \(appVersion)", showChevron: false)
                             settingDivider
-                            Link(destination: URL(string: "https://your-site.com/privacy")!) {
+                            Link(destination: URL(string: "https://flamedrago8.github.io/privacy.html")!) {
                                 SettingsRow(label: "Privacy Policy", showChevron: true)
                             }
                             settingDivider
-                            Link(destination: URL(string: "mailto:feedback@your-site.com")!) {
-                                SettingsRow(label: "Send Feedback", showChevron: true)
+                            Link(destination: URL(string: "https://flamedrago8.github.io/index.html")!) {
+                                SettingsRow(label: "Support", showChevron: true)
                             }
                         }
 
