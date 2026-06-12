@@ -1049,31 +1049,18 @@ struct StartDriveButton: View {
 struct GradeStamp: View {
     let grade: String
     let color: Color
-    let issueDate: Date
-
-    private var issuedLabel: String {
-        let f = DateFormatter()
-        f.dateFormat = "MM.dd.yy"
-        return "ISSUED \(f.string(from: issueDate))"
-    }
 
     var body: some View {
-        VStack(spacing: 4) {
-            Text(grade)
-                .font(.system(size: 26, weight: .black, design: .monospaced))
-                .foregroundColor(color)
-                .padding(.horizontal, 10)
-                .padding(.vertical, 5)
-                .overlay(
-                    RoundedRectangle(cornerRadius: 3)
-                        .stroke(color.opacity(0.55), lineWidth: 1.5)
-                )
-            Text(issuedLabel)
-                .font(DS.Typography.label(6))
-                .tracking(1.5)
-                .foregroundColor(color.opacity(0.45))
-        }
-        .rotationEffect(.degrees(-2))
+        Text(grade)
+            .font(.system(size: 26, weight: .black, design: .monospaced))
+            .foregroundColor(color)
+            .padding(.horizontal, 10)
+            .padding(.vertical, 5)
+            .overlay(
+                RoundedRectangle(cornerRadius: 3)
+                    .stroke(color.opacity(0.55), lineWidth: 1.5)
+            )
+            .rotationEffect(.degrees(-2))
     }
 }
 
@@ -1206,8 +1193,7 @@ struct DriveReportView: View {
                         HStack(spacing: 16) {
                             GradeStamp(
                                 grade: grade(for: session.score),
-                                color: scoreColor(for: session.score),
-                                issueDate: session.date
+                                color: scoreColor(for: session.score)
                             )
                             Spacer()
                             VStack(alignment: .center, spacing: 2) {
