@@ -20,11 +20,11 @@ struct SchoolConsentSheet: View {
 
     var body: some View {
         ZStack {
-            Color(red: 0.07, green: 0.07, blue: 0.11).ignoresSafeArea()
+            DS.Colors.bg.ignoresSafeArea()
 
             VStack(spacing: 0) {
                 Capsule()
-                    .fill(Color.white.opacity(0.15))
+                    .fill(DS.Colors.secondary.opacity(0.4))
                     .frame(width: 36, height: 4)
                     .padding(.top, DS.Spacing.m)
 
@@ -44,8 +44,8 @@ struct SchoolConsentSheet: View {
                         .animation(.spring(duration: 0.5, bounce: 0.35), value: appeared)
 
                         Text("Join \(school.name)?")
-                            .font(.system(size: 22, weight: .black, design: .rounded))
-                            .foregroundColor(.white)
+                            .font(DS.Typography.display(22))
+                            .foregroundColor(.primary)
                             .multilineTextAlignment(.center)
                     }
                     .padding(.top, DS.Spacing.m)
@@ -77,7 +77,7 @@ struct SchoolConsentSheet: View {
                     VStack(spacing: DS.Spacing.s) {
                         Button(action: onAgree) {
                             Text("I Agree — Join School")
-                                .font(.system(size: 16, weight: .bold))
+                                .font(DS.Typography.heading(16))
                                 .foregroundColor(.white)
                                 .frame(maxWidth: .infinity)
                                 .padding(.vertical, 16)
@@ -88,7 +88,7 @@ struct SchoolConsentSheet: View {
                         }
                         Button(action: onCancel) {
                             Text("Cancel")
-                                .font(.system(size: 15, weight: .semibold))
+                                .font(DS.Typography.body(15, weight: .semibold))
                                 .foregroundColor(DS.Colors.secondary)
                                 .frame(maxWidth: .infinity)
                                 .padding(.vertical, 12)
@@ -114,7 +114,7 @@ struct SchoolConsentSheet: View {
                 .background(color.opacity(0.12))
                 .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
             Text(text)
-                .font(.system(size: 13, weight: .medium))
+                .font(DS.Typography.body(13))
                 .foregroundColor(DS.Colors.secondary)
                 .lineSpacing(2)
                 .fixedSize(horizontal: false, vertical: true)
@@ -139,7 +139,7 @@ struct SchoolBannerView: View {
                             .font(.system(size: 14, weight: .semibold))
                             .foregroundColor(.orange)
                         Text("Contact \(name) to reactivate access.")
-                            .font(.system(size: 13, weight: .medium))
+                            .font(DS.Typography.body(13))
                             .foregroundColor(.orange.opacity(0.9))
                         Spacer()
                     }
@@ -159,12 +159,12 @@ struct SchoolBannerView: View {
                             .font(.system(size: 11, weight: .semibold))
                             .foregroundColor(DS.Colors.accent)
                         Text(name.uppercased())
-                            .font(.system(size: 10, weight: .heavy))
+                            .font(DS.Typography.label(10))
                             .tracking(1.2)
                             .foregroundColor(DS.Colors.accent)
                         Spacer()
                         Text("LINKED")
-                            .font(.system(size: 9, weight: .heavy))
+                            .font(DS.Typography.label(9))
                             .tracking(1)
                             .foregroundColor(DS.Colors.scoreGreat.opacity(0.7))
                     }
@@ -193,11 +193,9 @@ struct InstructorGoalsCard: View {
         if !goals.isEmpty {
             VStack(alignment: .leading, spacing: DS.Spacing.s) {
                 HStack {
-                    Image(systemName: "flag.fill")
-                        .font(.system(size: 11, weight: .semibold))
-                        .foregroundColor(DS.Colors.scoreOkay)
+                    PhosphorIcon.fill("flag", size: 12, color: DS.Colors.scoreOkay)
                     Text("INSTRUCTOR GOALS")
-                        .font(.system(size: 10, weight: .heavy))
+                        .font(DS.Typography.label(10))
                         .tracking(1.2)
                         .foregroundColor(DS.Colors.secondary)
                     Spacer()
@@ -211,11 +209,11 @@ struct InstructorGoalsCard: View {
                             .padding(.top, 5)
                         VStack(alignment: .leading, spacing: 2) {
                             Text(goal.title)
-                                .font(.system(size: 14, weight: .semibold))
+                                .font(DS.Typography.heading(14))
                                 .foregroundColor(.primary)
                             if let body = goal.body {
                                 Text(body)
-                                    .font(.system(size: 12, weight: .regular))
+                                    .font(DS.Typography.body(12))
                                     .foregroundColor(DS.Colors.secondary)
                                     .lineSpacing(2)
                             }
@@ -246,26 +244,26 @@ struct SchoolCodeField: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
-            Text("School Code")
-                .font(.system(size: 12, weight: .semibold))
+            Text("SCHOOL CODE")
+                .font(DS.Typography.label(10)).tracking(2)
                 .foregroundColor(focused ? DS.Colors.accent : DS.Colors.secondary)
                 .animation(.easeInOut(duration: 0.2), value: focused)
 
             TextField("e.g. DRIVE123", text: $code)
                 .focused($focused)
-                .font(.system(size: 16, weight: .medium, design: .monospaced))
-                .foregroundColor(.white)
+                .font(DS.Typography.data(16, weight: .medium))
+                .foregroundColor(.primary)
                 .autocapitalization(.allCharacters)
                 .disableAutocorrection(true)
                 .submitLabel(.done)
                 .padding(.vertical, 14)
                 .padding(.horizontal, 16)
-                .background(Color.white.opacity(focused ? 0.09 : 0.06))
+                .background(focused ? DS.Surface.weak : DS.Surface.subtle)
                 .clipShape(RoundedRectangle(cornerRadius: DS.Radius.m, style: .continuous))
                 .overlay(
                     RoundedRectangle(cornerRadius: DS.Radius.m, style: .continuous)
                         .stroke(
-                            focused ? DS.Colors.accent.opacity(0.7) : Color.white.opacity(0.10),
+                            focused ? DS.Colors.accent.opacity(0.7) : DS.Colors.cardStroke,
                             lineWidth: focused ? 1.5 : 1
                         )
                 )
@@ -273,7 +271,7 @@ struct SchoolCodeField: View {
 
             if let err = errorMessage {
                 Text(err)
-                    .font(.system(size: 12, weight: .medium))
+                    .font(DS.Typography.body(12))
                     .foregroundColor(.red.opacity(0.8))
             }
         }

@@ -307,7 +307,7 @@ struct LeaderboardView: View {
                 VStack(alignment: .trailing, spacing: 4) {
                     if localScore > 0 {
                         Text("\(Int(localScore))")
-                            .font(DS.Typography.data(32))
+                            .font(DS.Typography.display(36))
                             .foregroundColor(scoreColor(for: localScore))
                         Text(grade(for: localScore))
                             .font(DS.Typography.label(11))
@@ -569,7 +569,7 @@ private struct PodiumColumn: View {
                 .lineLimit(1)
 
             Text("\(Int(entry.score))")
-                .font(.system(size: isWinner ? 20 : 16, weight: .black, design: .monospaced))
+                .font(DS.Typography.data(isWinner ? 20 : 16))
                 .foregroundColor(.primary)
 
             Text("#\(entry.rank)")

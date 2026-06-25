@@ -341,7 +341,7 @@ struct CardFrontFace: View {
                             Image(systemName: "shield.fill")
                                 .font(.system(size: 10, weight: .bold))
                             Text("DRIVE")
-                                .font(.system(size: 11, weight: .black, design: .rounded))
+                                .font(DS.Typography.display(12))
                                 .tracking(1)
                         }
                         .foregroundColor(.white)
@@ -398,7 +398,7 @@ struct CardFrontFace: View {
                                         .font(.system(size: 26, weight: .medium))
                                         .foregroundColor(DS.Colors.accent.opacity(0.6))
                                     Text(profile.displayName.isEmpty ? "D" : String(profile.displayName.prefix(1).uppercased()))
-                                        .font(.system(size: 16, weight: .black, design: .rounded))
+                                        .font(DS.Typography.display(16))
                                         .foregroundColor(DS.Colors.accent)
                                 }
                             }
@@ -509,7 +509,7 @@ struct CardFrontFace: View {
                 .tracking(1.5)
                 .foregroundColor(DS.Colors.secondary.opacity(0.55))
             Text(value)
-                .font(.system(size: 13, weight: .bold, design: .rounded))
+                .font(DS.Typography.data(13, weight: .bold))
                 .foregroundColor(.white)
                 .lineLimit(1)
         }
@@ -522,7 +522,7 @@ struct CardFrontFace: View {
                 .tracking(1)
                 .foregroundColor(DS.Colors.secondary.opacity(0.55))
             Text(value)
-                .font(.system(size: 11, weight: .black, design: .rounded))
+                .font(DS.Typography.data(11, weight: .black))
                 .foregroundColor(valueColor)
                 .lineLimit(1)
         }
@@ -697,7 +697,7 @@ struct CardBackFace: View {
                 .tracking(1)
                 .foregroundColor(DS.Colors.secondary.opacity(0.55))
             Text(value)
-                .font(.system(size: 13, weight: .black, design: .rounded))
+                .font(DS.Typography.data(13, weight: .black))
                 .foregroundColor(valueColor)
         }
         .frame(maxWidth: .infinity)
@@ -845,14 +845,14 @@ struct DriverLicenseView: View {
                 Spacer()
 
                 Text("YOUR DRIVER CARD")
-                    .font(.system(size: 10, weight: .heavy))
+                    .font(DS.Typography.label(10))
                     .tracking(3)
                     .foregroundColor(DS.Colors.secondary)
                     .opacity(isRevealing ? 0 : 1)
 
                 // Drag to spin hint
                 Text(showBack ? "SWIPE TO SEE FRONT" : "SWIPE TO FLIP CARD")
-                    .font(.system(size: 9, weight: .heavy, design: .monospaced))
+                    .font(DS.Typography.label(9))
                     .tracking(2)
                     .foregroundColor(DS.Colors.secondary.opacity(0.4))
                     .opacity(isRevealing ? 0 : 1)
@@ -872,7 +872,7 @@ struct DriverLicenseView: View {
                         radius: 28, y: 10)
 
                 Text("A shareable snapshot of your driving identity")
-                    .font(.system(size: 13, weight: .medium, design: .rounded))
+                    .font(DS.Typography.body(13))
                     .foregroundColor(DS.Colors.secondary)
                     .multilineTextAlignment(.center)
                     .opacity(isRevealing ? 0 : 1)
@@ -886,7 +886,7 @@ struct DriverLicenseView: View {
                         Image(systemName: "square.and.arrow.up")
                             .font(.system(size: 15, weight: .semibold))
                         Text("Share Card")
-                            .font(.system(size: 16, weight: .bold))
+                            .font(DS.Typography.heading(16))
                             .tracking(0.3)
                     }
                     .foregroundColor(.white)

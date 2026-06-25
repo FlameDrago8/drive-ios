@@ -46,12 +46,12 @@ struct DriveShareCard: View {
             // ── Header
             HStack {
                 Text("DRIVE")
-                    .font(.system(size: 12, weight: .heavy))
+                    .font(DS.Typography.display(13))
                     .tracking(5)
                     .foregroundColor(Self.accent)
                 Spacer()
                 Text(session.date.formatted(.dateTime.month(.abbreviated).day().year()))
-                    .font(.system(size: 11, weight: .medium))
+                    .font(DS.Typography.body(11))
                     .foregroundColor(Self.secondary)
             }
             .padding(.horizontal, 24)
@@ -83,10 +83,10 @@ struct DriveShareCard: View {
 
                 VStack(spacing: 2) {
                     Text("\(Int(session.score))")
-                        .font(.system(size: 48, weight: .black, design: .monospaced))
+                        .font(DS.Typography.data(48))
                         .foregroundColor(.white)
                     Text("SCORE")
-                        .font(.system(size: 9, weight: .heavy))
+                        .font(DS.Typography.label(9))
                         .tracking(3)
                         .foregroundColor(Self.secondary)
                 }
@@ -115,10 +115,10 @@ struct DriveShareCard: View {
                     ForEach(metrics, id: \.0) { label, gradeStr, color in
                         HStack(spacing: 10) {
                             Text(gradeStr)
-                                .font(.system(size: 20, weight: .black, design: .monospaced))
+                                .font(DS.Typography.data(20))
                                 .foregroundColor(color)
                             Text(label)
-                                .font(.system(size: 12, weight: .semibold))
+                                .font(DS.Typography.heading(12))
                                 .foregroundColor(.white)
                             Spacer()
                         }
@@ -139,7 +139,7 @@ struct DriveShareCard: View {
             // ── Footer
             HStack {
                 Text("drive")
-                    .font(.system(size: 10, weight: .black))
+                    .font(DS.Typography.label(10))
                     .tracking(4)
                     .foregroundColor(Self.secondary.opacity(0.4))
                 Spacer()
@@ -165,11 +165,11 @@ struct DriveShareCard: View {
                            color: Color = .white, size: CGFloat) -> some View {
         VStack(spacing: 2) {
             Text(value)
-                .font(.system(size: size, weight: .black, design: .monospaced))
+                .font(DS.Typography.data(size))
                 .foregroundColor(color)
                 .lineLimit(1)
             Text(label)
-                .font(.system(size: 9, weight: .heavy))
+                .font(DS.Typography.label(9))
                 .tracking(2)
                 .foregroundColor(Self.secondary)
         }
