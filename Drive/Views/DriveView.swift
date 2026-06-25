@@ -11,7 +11,7 @@ import ActivityKit
 import StoreKit
 
 private enum UploadStatus: Equatable {
-    case idle, uploading, done, failed(String), tooShort
+    case idle, uploading, done, failed(String), tooShort, notScored(String)
 }
 
 struct DriveView: View {
@@ -82,8 +82,23 @@ struct DriveView: View {
                 let evaluation = aiEngine.buildEvaluation(
                     samples: samples,
                     route: route,
-                    driverType: ProfileManager.shared.driverType
+                    driverType: ProfileManager.shared.driverType,
+                    duration: duration,
+                    history: driveStorage.sessions
                 )
+
+                // No road in view / too little usable footage — tell the user why
+                // and don't persist a misleading score.
+                if !evaluation.isScored {
+                    DispatchQueue.main.async {
+                        withAnimation { uploadStatus = .notScored(evaluation.notScoredReason ?? "This drive wasn't scored.") }
+                        DispatchQueue.main.asyncAfter(deadline: .now() + 4) {
+                            withAnimation { uploadStatus = .idle }
+                        }
+                        endLiveActivity(finalScore: 0)
+                    }
+                    return
+                }
                 // Copy temp video to permanent Documents storage before AVFoundation deletes it
                 let permanentVideoURL: URL? = {
                     let docs = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
@@ -178,6 +193,7 @@ struct DriveView: View {
                             .frame(width: 36, height: 36)
                             .background(.ultraThinMaterial)
                             .clipShape(Circle())
+                            .overlay(Circle().strokeBorder(Color.white.opacity(0.15), lineWidth: 1))
                     }
                     .opacity(hudAppeared ? 1 : 0)
                     .offset(x: hudAppeared ? 0 : -20)
@@ -197,7 +213,7 @@ struct DriveView: View {
                                 .frame(width: 7, height: 7)
                         }
                         Text(isRecording ? timeString : "READY")
-                            .font(.system(size: 13, weight: .bold, design: .monospaced))
+                            .font(DS.Typography.data(13, weight: .bold))
                             .foregroundColor(.white)
                             .tracking(0.5)
                     }
@@ -205,6 +221,12 @@ struct DriveView: View {
                     .padding(.vertical, 8)
                     .background(.ultraThinMaterial)
                     .clipShape(Capsule())
+                    .overlay(
+                        Capsule().strokeBorder(
+                            (isRecording ? Color(red: 0.91, green: 0.38, blue: 0.29) : .white).opacity(isRecording ? 0.5 : 0.15),
+                            lineWidth: 1
+                        )
+                    )
                     .fixedSize()
                     .rotationEffect(.degrees(90))
                     .padding(.top, DS.Spacing.l)
@@ -250,15 +272,14 @@ struct DriveView: View {
                         }
                     } label: {
                         ZStack {
+                            // Crisp concentric ring — shutter-button presence without a blurry glow
+                            Circle()
+                                .stroke((isRecording ? Color(red: 0.91, green: 0.38, blue: 0.29) : DS.Colors.accent).opacity(0.35),
+                                        lineWidth: 2)
+                                .frame(width: 80, height: 80)
                             Circle()
                                 .fill(isRecording ? Color(red: 0.91, green: 0.38, blue: 0.29) : DS.Colors.accent)
                                 .frame(width: 68, height: 68)
-                                .shadow(
-                                    color: (isRecording
-                                        ? Color(red: 0.91, green: 0.38, blue: 0.29)
-                                        : DS.Colors.accent).opacity(0.45),
-                                    radius: 14
-                                )
                             Image(systemName: isRecording ? "stop.fill" : "play.fill")
                                 .font(.system(size: 22, weight: .black))
                                 .foregroundColor(.white)
@@ -270,26 +291,39 @@ struct DriveView: View {
 
                     Spacer()
 
-                    // Live score — landscape top-right
-                    VStack(alignment: .leading, spacing: 4) {
+                    // Live score — landscape top-right. Colored by value so a glance
+                    // reads good/easy-up while driving, echoing the home gauge.
+                    VStack(alignment: .center, spacing: 4) {
                         Text("LIVE SCORE")
-                            .font(.system(size: 9, weight: .heavy))
+                            .font(DS.Typography.label(9))
                             .tracking(DS.Tracking.display)
                             .foregroundColor(.white.opacity(0.45))
-                        Text("\(Int(currentScore))")
-                            .font(.system(size: 56, weight: .heavy))
-                            .foregroundColor(.white)
-                            .contentTransition(.numericText())
+                        HStack(alignment: .firstTextBaseline, spacing: 8) {
+                            Text("\(Int(currentScore))")
+                                .font(DS.Typography.data(56))
+                                .foregroundColor(scoreColor(for: currentScore))
+                                .contentTransition(.numericText())
+                            Text(grade(for: currentScore))
+                                .font(DS.Typography.label(15))
+                                .tracking(1)
+                                .foregroundColor(scoreColor(for: currentScore).opacity(0.85))
+                        }
                     }
+                    .animation(.easeOut(duration: 0.4), value: currentScore)
                     .rotationEffect(.degrees(90))
                 }
                 .padding(.horizontal, DS.Spacing.xl)
                 .padding(.vertical, DS.Spacing.l)
                 .background(.ultraThinMaterial)
                 .clipShape(RoundedRectangle(cornerRadius: DS.Radius.l, style: .continuous))
+                .overlay(
+                    RoundedRectangle(cornerRadius: DS.Radius.l, style: .continuous)
+                        .strokeBorder(Color.white.opacity(0.12), lineWidth: 1)
+                )
                 .padding(.horizontal, DS.Spacing.l)
                 .padding(.bottom, DS.Spacing.l)
                 .opacity(hudAppeared ? 1 : 0)
+                .scaleEffect(hudAppeared ? 1 : 0.96)
                 .offset(y: hudAppeared ? 0 : 30)
             }
         }
@@ -304,11 +338,15 @@ struct DriveView: View {
         .statusBarHidden(true)
         .onAppear {
             locationManager.requestPermission()
-            withAnimation(.easeOut(duration: 0.5)) { hudAppeared = true }
+            // Instrument power-on — the dock springs up rather than a flat fade
+            withAnimation(.spring(response: 0.55, dampingFraction: 0.78)) { hudAppeared = true }
             aiEngine.onScoreUpdate = { score in
+                // Ignore any update that lands after the drive has ended.
+                guard isRecording else { return }
                 withAnimation(.easeOut(duration: 0.4)) { currentScore = score }
             }
             aiEngine.onRoadStatusChange = { onRoad in
+                guard isRecording else { return }
                 withAnimation(.easeInOut(duration: 0.4)) { isOnRoad = onRoad }
             }
         }
@@ -395,12 +433,12 @@ struct DriveView: View {
                 .font(.system(size: 28, weight: .bold))
                 .foregroundColor(.white)
             Text("Point camera at the road")
-                .font(.system(size: 15, weight: .bold))
+                .font(DS.Typography.heading(15))
                 .foregroundColor(.white)
-            Text("Scoring paused")
-                .font(.system(size: 11, weight: .medium))
-                .foregroundColor(.white.opacity(0.65))
-                .tracking(1.5)
+            Text("SCORING PAUSED")
+                .font(DS.Typography.label(11))
+                .foregroundColor(DS.Colors.warning.opacity(0.9))
+                .tracking(2)
         }
         .padding(.horizontal, 28)
         .padding(.vertical, 20)
@@ -409,7 +447,7 @@ struct DriveView: View {
                 .fill(Color.black.opacity(0.72))
                 .overlay(
                     RoundedRectangle(cornerRadius: DS.Radius.l, style: .continuous)
-                        .stroke(Color.white.opacity(0.18), lineWidth: 1)
+                        .strokeBorder(DS.Colors.warning.opacity(0.4), lineWidth: 1)
                 )
         )
         .rotationEffect(.degrees(90))
@@ -434,16 +472,20 @@ struct DriveView: View {
             case .tooShort:
                 Image(systemName: "clock.badge.xmark").foregroundColor(DS.Colors.scoreOkay)
                 Text("Drive too short to save")
+            case .notScored(let reason):
+                Image(systemName: "eye.slash").foregroundColor(DS.Colors.scoreOkay)
+                Text(reason).lineLimit(2)
             case .idle:
                 EmptyView()
             }
         }
-        .font(.system(size: 12, weight: .semibold))
+        .font(DS.Typography.body(12, weight: .semibold))
         .foregroundColor(.white)
         .padding(.horizontal, 14)
         .padding(.vertical, 8)
         .background(.ultraThinMaterial)
         .clipShape(Capsule())
+        .overlay(Capsule().strokeBorder(Color.white.opacity(0.15), lineWidth: 1))
     }
 
     // MARK: – Timer
@@ -504,17 +546,17 @@ struct RouteTagSheet: View {
 
     var body: some View {
         ZStack {
-            Color(red: 0.039, green: 0.039, blue: 0.059).ignoresSafeArea()
+            DS.Colors.bg.ignoresSafeArea()
             VStack(spacing: 0) {
-                Capsule().fill(Color.white.opacity(0.15))
+                Capsule().fill(DS.Colors.secondary.opacity(0.4))
                     .frame(width: 36, height: 4).padding(.top, DS.Spacing.m)
 
                 VStack(spacing: DS.Spacing.l) {
                     VStack(alignment: .leading, spacing: 4) {
                         Text("Name this route?")
-                            .font(.system(size: 20, weight: .semibold)).foregroundColor(.white)
+                            .font(DS.Typography.heading(20)).foregroundColor(.primary)
                         Text("Tag this drive to track your improvement on familiar routes.")
-                            .font(.system(size: 13)).foregroundColor(DS.Colors.secondary)
+                            .font(DS.Typography.body(13)).foregroundColor(DS.Colors.secondary)
                     }
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .padding(.top, DS.Spacing.m)
@@ -525,11 +567,11 @@ struct RouteTagSheet: View {
                                 ForEach(existingRoutes, id: \.self) { name in
                                     Button { input = name } label: {
                                         Text(name)
-                                            .font(.system(size: 13, weight: .semibold))
+                                            .font(DS.Typography.body(13, weight: .semibold))
                                             .foregroundColor(input == name ? .white : DS.Colors.secondary)
                                             .padding(.horizontal, 14).padding(.vertical, 8)
                                             .background(
-                                                Capsule().fill(input == name ? DS.Colors.accent.opacity(0.3) : Color.white.opacity(0.08))
+                                                Capsule().fill(input == name ? DS.Colors.accent.opacity(0.3) : DS.Surface.weak)
                                                     .overlay(Capsule().stroke(input == name ? DS.Colors.accent.opacity(0.6) : Color.clear, lineWidth: 1))
                                             )
                                     }.buttonStyle(.plain)
@@ -540,25 +582,25 @@ struct RouteTagSheet: View {
 
                     VStack(alignment: .leading, spacing: 8) {
                         Text("ROUTE NAME")
-                            .font(.system(size: 10, weight: .bold)).tracking(2)
+                            .font(DS.Typography.label(10)).tracking(2)
                             .foregroundColor(focused ? DS.Colors.accent : DS.Colors.secondary)
                         TextField("e.g. Morning Commute", text: $input)
                             .focused($focused)
-                            .font(.system(size: 16, weight: .medium)).foregroundColor(.white)
+                            .font(DS.Typography.body(16)).foregroundColor(.primary)
                             .autocapitalization(.words).disableAutocorrection(true)
                             .submitLabel(.done).onSubmit { onSave(input) }
                             .padding(.vertical, 14).padding(.horizontal, 16)
-                            .background(Color.white.opacity(focused ? 0.09 : 0.06))
+                            .background(focused ? DS.Surface.weak : DS.Surface.subtle)
                             .clipShape(RoundedRectangle(cornerRadius: DS.Radius.m, style: .continuous))
                             .overlay(RoundedRectangle(cornerRadius: DS.Radius.m, style: .continuous)
-                                .stroke(focused ? DS.Colors.accent.opacity(0.7) : Color.white.opacity(0.10),
+                                .stroke(focused ? DS.Colors.accent.opacity(0.7) : DS.Colors.cardStroke,
                                         lineWidth: focused ? 1.5 : 1))
                     }
 
                     VStack(spacing: DS.Spacing.s) {
                         Button { onSave(input) } label: {
                             Text(input.trimmingCharacters(in: .whitespaces).isEmpty ? "Save Without Tag" : "Save Route Tag")
-                                .font(.system(size: 16, weight: .bold)).foregroundColor(.white)
+                                .font(DS.Typography.heading(16)).foregroundColor(.white)
                                 .frame(maxWidth: .infinity).padding(.vertical, 16)
                                 .background(RoundedRectangle(cornerRadius: DS.Radius.l, style: .continuous)
                                     .fill(input.trimmingCharacters(in: .whitespaces).isEmpty
@@ -566,7 +608,7 @@ struct RouteTagSheet: View {
                         }
                         Button { onSave("") } label: {
                             Text("Skip")
-                                .font(.system(size: 15, weight: .semibold)).foregroundColor(DS.Colors.secondary)
+                                .font(DS.Typography.body(15, weight: .semibold)).foregroundColor(DS.Colors.secondary)
                                 .frame(maxWidth: .infinity).padding(.vertical, 12)
                         }
                     }

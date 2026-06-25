@@ -678,7 +678,7 @@ private struct ScreenHome: View {
 
                     VStack(spacing: 2) {
                         Text(gaugeProgress > 0 ? "87" : "—")
-                            .font(.system(size: 42, weight: .black, design: .rounded))
+                            .font(DS.Typography.data(42))
                             .foregroundStyle(gaugeProgress > 0 ? DC.amber : Color.white.opacity(0.18))
                         Text("SCORE")
                             .font(.system(size: 9, weight: .medium))
@@ -757,7 +757,7 @@ private struct ScreenDriving: View {
                 HStack {
                     VStack(alignment: .leading, spacing: 1) {
                         Text("74")
-                            .font(.system(size: 24, weight: .black, design: .rounded))
+                            .font(DS.Typography.data(24))
                             .foregroundStyle(DC.amber)
                         Text("SCORE")
                             .font(.system(size: 7, weight: .medium))
@@ -767,7 +767,7 @@ private struct ScreenDriving: View {
                     Spacer()
                     VStack(alignment: .trailing, spacing: 2) {
                         Text("34 MPH")
-                            .font(.system(size: 14, weight: .semibold, design: .rounded))
+                            .font(DS.Typography.data(14, weight: .semibold))
                             .foregroundStyle(.white)
                         Text("8 MIN")
                             .font(.system(size: 10, weight: .regular))
@@ -825,7 +825,7 @@ private struct ScreenGaugeHero: View {
 
                     VStack(spacing: 2) {
                         Text(String(format: "%.0f", gaugeProgress * 100))
-                            .font(.system(size: 46, weight: .black, design: .rounded))
+                            .font(DS.Typography.data(46))
                             .foregroundStyle(DC.amber)
                             .contentTransition(.numericText())
                             .animation(.easeInOut(duration: 5.6), value: gaugeProgress)
@@ -875,7 +875,7 @@ private struct ScreenSubScores: View {
 
                     VStack(spacing: 1) {
                         Text("87")
-                            .font(.system(size: 34, weight: .black, design: .rounded))
+                            .font(DS.Typography.data(34))
                             .foregroundStyle(DC.amber)
                         Text("SCORE")
                             .font(.system(size: 8, weight: .medium))
@@ -927,7 +927,7 @@ private struct DemoSubRing: View {
                     .animation(.spring(duration: 0.9, bounce: 0.08).delay(delay + 0.15), value: progress)
 
                 Text("\(Int(score))")
-                    .font(.system(size: 13, weight: .black, design: .rounded))
+                    .font(DS.Typography.data(13))
                     .foregroundStyle(.white)
             }
             Text(label)
@@ -952,10 +952,12 @@ private struct DemoSubRing: View {
 private struct ScreenCoachTips: View {
     let appeared: Bool
 
-    private let tips: [(Color, String, String)] = [
-        (DC.sGreen, "Smooth Braking",    "Anticipate stops 2 seconds earlier to improve your score."),
-        (DC.sBlue,  "Cornering Speed",   "Reduce entry speed on tight turns for better control."),
-        (DC.amber,  "Great Consistency", "5 drives above 85 this week. Keep the streak going.")
+    // (color, icon, title, message, isFocus) — mirrors the real CoachTipCard:
+    // icon tile, a FOCUS badge on the priority tip, category-tinted styling.
+    private let tips: [(Color, String, String, String, Bool)] = [
+        (DC.sGreen, "gauge.with.dots.needle.33percent", "Smooth Braking",    "Anticipate stops 2 seconds earlier to improve your score.", true),
+        (DC.sBlue,  "steeringwheel",                    "Cornering Speed",   "Reduce entry speed on tight turns for better control.",     false),
+        (DC.amber,  "trophy.fill",                      "Great Consistency", "5 drives above 85 this week. Keep the streak going.",       false)
     ]
 
     var body: some View {
@@ -976,23 +978,47 @@ private struct ScreenCoachTips: View {
                 .padding(.bottom, 16)
 
                 ForEach(Array(tips.enumerated()), id: \.0) { i, tip in
-                    VStack(alignment: .leading, spacing: 5) {
-                        HStack(spacing: 7) {
-                            Circle().fill(tip.0).frame(width: 6, height: 6)
-                            Text(tip.1)
-                                .font(.system(size: 12, weight: .semibold))
-                                .foregroundStyle(.white)
+                    HStack(alignment: .top, spacing: 10) {
+                        // Icon tile
+                        RoundedRectangle(cornerRadius: 9, style: .continuous)
+                            .fill(tip.0.opacity(0.16))
+                            .frame(width: 30, height: 30)
+                            .overlay(
+                                Image(systemName: tip.1)
+                                    .font(.system(size: 13, weight: .semibold))
+                                    .foregroundStyle(tip.0)
+                            )
+
+                        VStack(alignment: .leading, spacing: 4) {
+                            HStack(spacing: 6) {
+                                Text(tip.2)
+                                    .font(.system(size: 12, weight: .semibold))
+                                    .foregroundStyle(.white)
+                                if tip.4 {
+                                    Text("FOCUS")
+                                        .font(.system(size: 7.5, weight: .heavy))
+                                        .tracking(1)
+                                        .foregroundStyle(tip.0)
+                                        .padding(.horizontal, 5)
+                                        .padding(.vertical, 2)
+                                        .background(tip.0.opacity(0.16))
+                                        .clipShape(Capsule())
+                                }
+                            }
+                            Text(tip.3)
+                                .font(.system(size: 11))
+                                .foregroundStyle(DC.sub)
+                                .fixedSize(horizontal: false, vertical: true)
                         }
-                        Text(tip.2)
-                            .font(.system(size: 11))
-                            .foregroundStyle(DC.sub)
-                            .fixedSize(horizontal: false, vertical: true)
-                            .padding(.leading, 13)
                     }
-                    .padding(.horizontal, 14)
+                    .padding(.horizontal, 12)
                     .padding(.vertical, 11)
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .background(tip.0.opacity(0.07))
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 14, style: .continuous)
+                            .strokeBorder(tip.0.opacity(tip.4 ? 0.35 : 0.0), lineWidth: 1)
+                    )
                     .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
                     .padding(.horizontal, 14)
                     .padding(.bottom, 8)

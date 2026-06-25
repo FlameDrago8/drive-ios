@@ -29,9 +29,10 @@ enum DS {
         static let display:  CGFloat = 2.5
     }
     enum Surface {
-        static let subtle = Color.white.opacity(0.05)
-        static let weak   = Color.white.opacity(0.08)
-        static let medium = Color.white.opacity(0.12)
+        // Adaptive faint surfaces — visible on both dark and light backgrounds
+        static let subtle = Color(UIColor { $0.userInterfaceStyle == .dark ? UIColor.white.withAlphaComponent(0.05) : UIColor.black.withAlphaComponent(0.06) })
+        static let weak   = Color(UIColor { $0.userInterfaceStyle == .dark ? UIColor.white.withAlphaComponent(0.08) : UIColor.black.withAlphaComponent(0.08) })
+        static let medium = Color(UIColor { $0.userInterfaceStyle == .dark ? UIColor.white.withAlphaComponent(0.12) : UIColor.black.withAlphaComponent(0.12) })
     }
     enum Colors {
         // ── Backgrounds — adaptive dark/light
@@ -56,21 +57,22 @@ enum DS {
                 : UIColor(red: 1.0,   green: 1.0,   blue: 1.0,   alpha: 1)
         })
 
-        // ── Instrument-cluster palette
-        // Option A (default): sodium-amber primary, instrument-cyan secondary
-        // Option B: swap primary/secondary — cyan as the dominant ring color
-        // Option C: amber-only — no cyan, red as secondary accent
-        static let accentPrimary   = Color(red: 1.000, green: 0.690, blue: 0.125)  // #FFB020 sodium-amber
-        static let accentSecondary = Color(red: 0.357, green: 0.820, blue: 0.878)  // #5BD1E0 instrument cyan
-        static let warning         = Color(red: 0.925, green: 0.325, blue: 0.235)  // #EC5338 redline/danger
+        // ── Accent + performance palette
+        static let accentPrimary   = Color(UIColor { t in
+            t.userInterfaceStyle == .dark
+                ? UIColor(red: 0.118, green: 0.588, blue: 1.0,   alpha: 1)  // #1E96FF — electric, glows on black
+                : UIColor(red: 0.039, green: 0.451, blue: 0.898, alpha: 1)  // #0A73E5 — deeper for light-mode contrast
+        })
+        static let accentSecondary = Color(red: 0.357, green: 0.820, blue: 0.878)  // #5BD1E0 cyan — Start Drive "ready" light only
+        static let warning         = Color(red: 0.925, green: 0.325, blue: 0.235)  // #EC5338 danger
 
-        // Legacy alias — all prior .accent callsites shift to amber automatically
+        // Primary app accent
         static let accent = accentPrimary
 
-        // ── Performance tokens
-        static let scoreGreat = Color(red: 0.18, green: 0.82, blue: 0.50)          // green — universally safe
-        static let scoreOkay  = Color(red: 0.357, green: 0.820, blue: 0.878)       // cyan — instrument nominal
-        static let scorePoor  = Color(red: 0.925, green: 0.325, blue: 0.235)       // red — redline
+        // ── Performance tokens (score-reactive gauge colors)
+        static let scoreGreat = Color(red: 0.18,  green: 0.82,  blue: 0.50)        // green — strong score
+        static let scoreOkay  = Color(red: 1.000, green: 0.690, blue: 0.125)       // #FFB020 sharp amber — nominal
+        static let scorePoor  = Color(red: 0.960, green: 0.400, blue: 0.360)       // #F5665C sharp coral (reconstructed — exact original not in git)
 
         // ── Hairline dividers — near-black, subtle not absent
         static let hairline = Color(red: 0.086, green: 0.086, blue: 0.086)         // #161616
@@ -93,21 +95,21 @@ enum DS {
         static let card       = bgCard
     }
     enum Typography {
-        /// Wordmark / hero display — DIN Condensed, automotive condensed presence
+        /// Wordmark / hero display — Space Grotesk Bold (bundled)
         static func display(_ size: CGFloat) -> Font {
-            .custom("DINCondensed-Bold", size: size)
+            .custom("SpaceGroteskLight-Bold", size: size)
         }
-        /// Section / card headings — DIN Alternate, geometric precision
+        /// Section / card headings — Space Grotesk Medium
         static func heading(_ size: CGFloat) -> Font {
-            .custom("DINAlternate-Bold", size: size)
+            .custom("SpaceGroteskLight-Medium", size: size)
         }
         /// Scores and numeric data — SF Mono, telemetry readout presence
         static func data(_ size: CGFloat, weight: Font.Weight = .black) -> Font {
             .system(size: size, weight: weight, design: .monospaced)
         }
-        /// ALL-CAPS metadata labels
+        /// ALL-CAPS metadata labels — Space Grotesk Medium
         static func label(_ size: CGFloat) -> Font {
-            .custom("DINAlternate-Bold", size: size)
+            .custom("SpaceGroteskLight-Medium", size: size)
         }
         /// Body copy
         static func body(_ size: CGFloat, weight: Font.Weight = .medium) -> Font {
@@ -213,6 +215,7 @@ struct HomeView: View {
                             .padding(.top, DS.Spacing.s)
                             .opacity(appeared ? 1 : 0)
                             .offset(y: appeared ? 0 : -52)
+                            .animation(.spring(response: 0.55, dampingFraction: 0.9), value: appeared)
 
                         // Score gauge — hero, dominates the top
                         ExpandableScoreGauge(
@@ -227,6 +230,7 @@ struct HomeView: View {
                         .opacity(appeared ? 1 : 0)
                         .offset(y: appeared ? 0 : 20)
                         .offset(tilt(0.85))
+                        .animation(.spring(response: 0.6, dampingFraction: 0.88).delay(0.10), value: appeared)
 
                         // Start Drive — tight below gauge
                         StartDriveButton { isDriving = true }
@@ -234,18 +238,14 @@ struct HomeView: View {
                             .padding(.top, DS.Spacing.xl)
                             .opacity(appeared ? 1 : 0)
                             .offset(y: appeared ? 0 : 20)
+                            .animation(.spring(response: 0.6, dampingFraction: 0.88).delay(0.18), value: appeared)
 
-                        latestDriveHeroCard
+                        clusterPanel
                             .padding(.horizontal, 20)
-                            .padding(.top, 20)
+                            .padding(.top, 22)
                             .opacity(appeared ? 1 : 0)
                             .offset(y: appeared ? 0 : 30)
-
-                        navGrid
-                            .padding(.horizontal, 20)
-                            .padding(.top, 14)
-                            .opacity(appeared ? 1 : 0)
-                            .offset(y: appeared ? 0 : 30)
+                            .animation(.spring(response: 0.6, dampingFraction: 0.88).delay(0.26), value: appeared)
 
                         // Instructor goals (shown only when instructor has set goals)
                         if !schoolManager.instructorGoals.isEmpty {
@@ -316,10 +316,20 @@ struct HomeView: View {
     }
 
     private var headerRow: some View {
-        HStack {
+        HStack(alignment: .firstTextBaseline) {
+            VStack(alignment: .leading, spacing: 1) {
+                Text(Date().formatted(.dateTime.weekday(.abbreviated).month(.abbreviated).day()).uppercased())
+                    .font(DS.Typography.label(11))
+                    .tracking(2)
+                    .foregroundColor(DS.Colors.secondary)
+                Text("DRIVE")
+                    .font(DS.Typography.display(34))
+                    .tracking(1)
+                    .foregroundColor(.primary)
+            }
             Spacer()
             Button { showingSettings = true } label: {
-                PhosphorIcon(name: "user-circle", size: 28, color: Color(red: 0.557, green: 0.557, blue: 0.604))
+                PhosphorIcon(name: "user-circle", size: 28, color: DS.Colors.secondary)
             }
             .sensoryFeedback(.impact(weight: .light), trigger: showingSettings)
         }
@@ -348,66 +358,56 @@ struct HomeView: View {
                 destination: LeaderboardView()
             )
         }
-        .padding(.bottom, 32)
     }
 
-    private var latestScoreColor: Color {
-        latestDrive.map { scoreColor(for: $0.score) } ?? DS.Colors.accent
+    private var seam: some View {
+        Rectangle().fill(DS.Colors.hairline).frame(height: 1)
     }
 
-
+    // Last drive + navigation as one etched instrument panel — hairline seams, no floating card.
+    private var clusterPanel: some View {
+        VStack(spacing: 0) {
+            latestDriveHeroCard
+            seam
+            navGrid
+        }
+    }
 
     private var latestDriveHeroCard: some View {
         NavigationLink(destination: latestDrive != nil
             ? AnyView(DriveReportView(session: latestDrive!))
             : AnyView(LatestDriveEmptyView())) {
             HStack(alignment: .center, spacing: 14) {
-                Rectangle()
-                    .fill(latestScoreColor)
-                    .frame(width: 3)
-                    .frame(maxHeight: .infinity)
-
-                VStack(alignment: .leading, spacing: 4) {
-                    Text("Latest Drive")
-                        .font(.system(size: 16, weight: .semibold))
-                        .foregroundColor(.primary)
+                VStack(alignment: .leading, spacing: 3) {
+                    Text("LATEST DRIVE")
+                        .font(DS.Typography.label(10))
+                        .tracking(2)
+                        .foregroundColor(DS.Colors.secondary)
                     if let session = latestDrive {
-                        Text("\(session.date.formatted(.dateTime.month(.abbreviated).day()))  ·  \(Int(session.duration / 60)) min")
-                            .font(.system(size: 13))
-                            .foregroundColor(DS.Colors.secondary)
+                        Text("\(session.date.formatted(.dateTime.weekday(.wide))) · \(Int(session.duration / 60)) min")
+                            .font(DS.Typography.heading(16))
+                            .foregroundColor(.primary)
                     } else {
-                        Text("No drives recorded yet")
-                            .font(.system(size: 13))
+                        Text("No drives yet")
+                            .font(DS.Typography.heading(16))
                             .foregroundColor(DS.Colors.secondary)
                     }
                 }
                 Spacer()
                 if let session = latestDrive {
-                    VStack(alignment: .trailing, spacing: 0) {
-                        Text("\(Int(session.score))")
-                            .font(.system(size: 30, weight: .black, design: .monospaced))
-                            .foregroundColor(latestScoreColor)
-                        Text(grade(for: session.score))
-                            .font(.system(size: 11, weight: .semibold))
-                            .foregroundColor(latestScoreColor.opacity(0.7))
-                    }
+                    // Readout pill: subtle housing, score in its own live color
+                    Text("\(Int(session.score)) \(grade(for: session.score))")
+                        .font(DS.Typography.data(13, weight: .bold))
+                        .foregroundColor(scoreColor(for: session.score))
+                        .padding(.horizontal, 10)
+                        .padding(.vertical, 4)
+                        .background(Capsule().fill(DS.Surface.weak))
                 } else {
                     PhosphorIcon(name: "caret-right", size: 12, color: DS.Colors.secondary.opacity(0.55), weight: .bold)
-                        .padding(.trailing, 16)
                 }
             }
-            .padding(.vertical, 16)
-            .padding(.trailing, 16)
+            .padding(.vertical, 14)
             .frame(maxWidth: .infinity)
-            .background(
-                RoundedRectangle(cornerRadius: DS.Radius.m, style: .continuous)
-                    .fill(DS.Colors.bgCard)
-                    .overlay(
-                        RoundedRectangle(cornerRadius: DS.Radius.m, style: .continuous)
-                            .stroke(DS.Colors.cardStroke, lineWidth: 1)
-                    )
-            )
-            .clipShape(RoundedRectangle(cornerRadius: DS.Radius.m, style: .continuous))
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
@@ -446,59 +446,6 @@ struct GrainOverlay: View {
         .allowsHitTesting(false)
         .ignoresSafeArea()
         .drawingGroup()
-    }
-}
-
-// MARK: – Gauge Ticks (shared by all dial rings)
-
-private struct GaugeTicks: View {
-    let diameter: CGFloat
-    let majorTickLen: CGFloat
-    let minorTickLen: CGFloat
-    let lineWidth: CGFloat
-    var showLabels: Bool = false
-
-    private let allTicks: [(frac: Double, major: Bool)] = [
-        (0.00, true), (0.25, false), (0.50, true), (0.75, false), (1.00, true)
-    ]
-    private let labeledTicks: [(frac: Double, label: String)] = [
-        (0.00, "0"), (0.50, "50"), (1.00, "100")
-    ]
-
-    var body: some View {
-        Canvas { ctx, size in
-            let cx = size.width / 2
-            let cy = size.height / 2
-            let outerR = size.width / 2
-            let shading = GraphicsContext.Shading.color(.white.opacity(0.22))
-
-            for tick in allTicks {
-                let angle = (225.0 + tick.frac * 270.0) * .pi / 180.0
-                let s = CGFloat(sin(angle))
-                let c = CGFloat(cos(angle))
-                let len = tick.major ? majorTickLen : minorTickLen
-                var path = Path()
-                path.move(to:    CGPoint(x: cx + outerR * s,           y: cy - outerR * c))
-                path.addLine(to: CGPoint(x: cx + (outerR - len) * s,   y: cy - (outerR - len) * c))
-                ctx.stroke(path, with: shading, lineWidth: lineWidth)
-            }
-
-            if showLabels {
-                let labelR = outerR - majorTickLen - 10
-                let labelFont = Font.system(size: 7, design: .monospaced)
-                let labelShading = Color.white.opacity(0.30)
-                for item in labeledTicks {
-                    let angle = (225.0 + item.frac * 270.0) * .pi / 180.0
-                    let pt = CGPoint(x: cx + labelR * CGFloat(sin(angle)),
-                                     y: cy - labelR * CGFloat(cos(angle)))
-                    let resolved = ctx.resolve(
-                        Text(item.label).font(labelFont).foregroundStyle(labelShading)
-                    )
-                    ctx.draw(resolved, at: pt, anchor: .center)
-                }
-            }
-        }
-        .frame(width: diameter, height: diameter)
     }
 }
 
@@ -544,10 +491,10 @@ struct BadgeUnlockOverlay: View {
                 Spacer()
 
                 ZStack {
-                    PatchShape()
+                    Circle()
                         .fill(badge.color.opacity(0.16))
                         .frame(width: 114, height: 114)
-                        .overlay(PatchShape().stroke(badge.color.opacity(0.45), lineWidth: 1.5))
+                        .overlay(Circle().stroke(badge.color.opacity(0.45), lineWidth: 1.5))
                     PhosphorIcon.fill(badge.icon, size: 46, color: badge.color)
                 }
                 .scaleEffect(badgeScale)
@@ -563,7 +510,7 @@ struct BadgeUnlockOverlay: View {
                 }
 
                 Text(badge.title)
-                    .font(.system(size: 28, weight: .bold, design: .rounded))
+                    .font(DS.Typography.display(28))
                     .foregroundColor(.primary)
                     .multilineTextAlignment(.center)
                     .padding(.horizontal, DS.Spacing.xl)
@@ -641,7 +588,6 @@ struct ExpandableScoreGauge: View {
     @State private var isExpanded = false
     @State private var progress: Double = 0
     @State private var gaugeTapped = false
-    @State private var breathing = false
 
     var body: some View {
         VStack(spacing: DS.Spacing.xl) {
@@ -656,16 +602,6 @@ struct ExpandableScoreGauge: View {
                     .frame(width: 260, height: 260)
                     .rotationEffect(.degrees(135))
 
-                // Redline zone — top 15% always marks the precision boundary
-                Circle()
-                    .trim(from: 0.6375, to: 0.75)
-                    .stroke(
-                        Color(red: 0.42, green: 0.05, blue: 0.05),
-                        style: StrokeStyle(lineWidth: 12, lineCap: .round)
-                    )
-                    .frame(width: 260, height: 260)
-                    .rotationEffect(.degrees(135))
-
                 // Score arc
                 Circle()
                     .trim(from: 0, to: progress * 0.75)
@@ -675,19 +611,25 @@ struct ExpandableScoreGauge: View {
                     .rotationEffect(.degrees(135))
                     .animation(.easeOut(duration: 0.6).delay(0.2), value: progress)
 
-                // Tachometer tick marks with 0 / 50 / 100 labels
-                GaugeTicks(diameter: 260, majorTickLen: 14, minorTickLen: 8,
-                           lineWidth: 1, showLabels: true)
-
-                VStack(spacing: 2) {
-                    AnimatedScoreText(score: score, fontSize: 72)
-                    Text("Score")
-                        .font(.system(size: 12, weight: .medium))
-                        .foregroundColor(DS.Colors.secondary)
+                VStack(spacing: 4) {
+                    AnimatedScoreText(score: score, fontSize: 78, useDisplayFace: true)
+                    Text(grade(for: score))
+                        .font(DS.Typography.label(13))
+                        .tracking(2)
+                        .foregroundColor(scoreColor(for: score))
                 }
+
+                // Expand affordance — a caret nested in the dial's open bottom gap
+                // signals the gauge is tappable; it flips to point up while the
+                // sub-scores are showing.
+                PhosphorIcon(name: "caret-down", size: 13,
+                             color: DS.Colors.secondary.opacity(0.7), weight: .bold)
+                    .rotationEffect(.degrees(isExpanded ? 180 : 0))
+                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottom)
+                    .offset(y: -6)
+                    .allowsHitTesting(false)
             }
             .scaleEffect(isExpanded ? 1.04 : 1.0)
-            .scaleEffect(breathing ? 1.03 : 1.0)
             .animation(.spring(response: 0.45, dampingFraction: 0.72), value: isExpanded)
             .sensoryFeedback(.impact(weight: .light), trigger: gaugeTapped)
             .onTapGesture {
@@ -705,9 +647,9 @@ struct ExpandableScoreGauge: View {
                         SubScoreRing(label: "CORNERING", score: m.cornering,  delay: 0.07, isExpanded: isExpanded)
                         SubScoreRing(label: "SMOOTH",    score: m.smoothness, delay: 0.14, isExpanded: isExpanded)
                     } else {
-                        fallbackStat(value: "\(fallbackDrives)", label: "DRIVES",  color: .white,                delay: 0.00)
-                        fallbackStat(value: "\(fallbackStreak)", label: "STREAK",  color: .white,                delay: 0.07)
-                        fallbackStat(value: "\(fallbackBest)",   label: "BEST",    color: .white,                delay: 0.14)
+                        fallbackStat(value: "\(fallbackDrives)", label: "DRIVES",  color: .primary,                delay: 0.00)
+                        fallbackStat(value: "\(fallbackStreak)", label: "STREAK",  color: .primary,                delay: 0.07)
+                        fallbackStat(value: "\(fallbackBest)",   label: "BEST",    color: .primary,                delay: 0.14)
                     }
                 }
                 .frame(maxWidth: .infinity)
@@ -718,9 +660,6 @@ struct ExpandableScoreGauge: View {
             }
         }
         .onAppear {
-            withAnimation(.easeInOut(duration: 3.5).repeatForever(autoreverses: true)) {
-                breathing = true
-            }
             guard readyToAnimate else { return }
             withAnimation(.easeOut(duration: 0.6).delay(0.25)) {
                 progress = score / 100.0
@@ -773,18 +712,8 @@ private struct SubScoreRing: View {
                 // Track
                 Circle()
                     .trim(from: 0, to: 0.75)
-                    .stroke(Color.white.opacity(0.08),
+                    .stroke(DS.Surface.weak,
                             style: StrokeStyle(lineWidth: 6, lineCap: .round))
-                    .frame(width: 58, height: 58)
-                    .rotationEffect(.degrees(135))
-
-                // Redline zone
-                Circle()
-                    .trim(from: 0.6375, to: 0.75)
-                    .stroke(
-                        Color(red: 0.42, green: 0.05, blue: 0.05),
-                        style: StrokeStyle(lineWidth: 6, lineCap: .round)
-                    )
                     .frame(width: 58, height: 58)
                     .rotationEffect(.degrees(135))
 
@@ -796,9 +725,6 @@ private struct SubScoreRing: View {
                     .frame(width: 58, height: 58)
                     .rotationEffect(.degrees(135))
                     .animation(.easeOut(duration: 0.6).delay(delay + 0.15), value: progress)
-
-                // Ticks (major marks only at this scale)
-                GaugeTicks(diameter: 58, majorTickLen: 7, minorTickLen: 5, lineWidth: 0.75)
 
                 Text("\(Int(score))")
                     .font(DS.Typography.data(14))
@@ -836,6 +762,7 @@ private struct SubScoreRing: View {
 struct ScoreGauge: View {
     let score: Double
     @State private var progress: Double = 0
+    @State private var revealed = false
 
     var body: some View {
         ZStack {
@@ -843,17 +770,7 @@ struct ScoreGauge: View {
             Circle()
                 .trim(from: 0, to: 0.75)
                 .stroke(
-                    Color.white.opacity(0.06),
-                    style: StrokeStyle(lineWidth: 14, lineCap: .round)
-                )
-                .frame(width: 180, height: 180)
-                .rotationEffect(.degrees(135))
-
-            // Redline zone
-            Circle()
-                .trim(from: 0.6375, to: 0.75)
-                .stroke(
-                    Color(red: 0.42, green: 0.05, blue: 0.05),
+                    DS.Surface.subtle,
                     style: StrokeStyle(lineWidth: 14, lineCap: .round)
                 )
                 .frame(width: 180, height: 180)
@@ -868,23 +785,23 @@ struct ScoreGauge: View {
                 )
                 .frame(width: 180, height: 180)
                 .rotationEffect(.degrees(135))
-                .animation(.easeOut(duration: 0.6).delay(0.2), value: progress)
-
-            // Tachometer ticks
-            GaugeTicks(diameter: 180, majorTickLen: 12, minorTickLen: 7, lineWidth: 1)
+                .animation(.easeOut(duration: 0.7).delay(0.2), value: progress)
 
             // Center
             VStack(spacing: 2) {
-                AnimatedScoreText(score: score)
-                Text("Score")
-                    .font(.system(size: 11, weight: .medium))
+                AnimatedScoreText(score: score, fontSize: 60, useDisplayFace: true)
+                Text("SCORE")
+                    .font(DS.Typography.label(10))
+                    .tracking(4)
                     .foregroundColor(DS.Colors.secondary)
             }
         }
+        .sensoryFeedback(.success, trigger: revealed)
         .onAppear {
-            withAnimation(.easeOut(duration: 0.6).delay(0.25)) {
+            withAnimation(.easeOut(duration: 0.7).delay(0.25)) {
                 progress = score / 100.0
             }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.95) { revealed = true }
         }
         .onChange(of: score) { _, newScore in
             withAnimation(.easeOut(duration: 0.4)) {
@@ -897,11 +814,18 @@ struct ScoreGauge: View {
 struct AnimatedScoreText: View {
     let score: Double
     var fontSize: CGFloat = 52
+    var useDisplayFace: Bool = false   // DIN Condensed for the home instrument readout
     @State private var display: Double = 0
+
+    private var readoutFont: Font {
+        useDisplayFace
+            ? DS.Typography.display(fontSize)
+            : .system(size: fontSize, weight: .heavy, design: .monospaced)
+    }
 
     var body: some View {
         Text(String(format: "%.0f", display))
-            .font(.system(size: fontSize, weight: .heavy, design: .monospaced))
+            .font(readoutFont)
             .foregroundColor(.primary)
             .contentTransition(.numericText())
             .onAppear {
@@ -993,7 +917,7 @@ struct PremiumCardLink<Destination: View>: View {
                     .frame(width: 20)
                 VStack(alignment: .leading, spacing: 2) {
                     Text(title)
-                        .font(.system(size: 16, weight: .semibold))
+                        .font(DS.Typography.heading(16))
                         .foregroundColor(.primary)
                     Text(subtitle)
                         .font(.system(size: 14, weight: .regular))
@@ -1013,71 +937,40 @@ struct PremiumCardLink<Destination: View>: View {
 }
 
 // MARK: – Start Drive Button
+/// Quiet at rest, ignites on press. A defined instrument control — a subtle panel
+/// surface inside a blue hairline — that floods with the one blue when you set off.
 struct StartDriveButton: View {
     let action: () -> Void
-    @State private var tapped = false
     @State private var isPressed = false
-    @Environment(\.colorScheme) private var colorScheme
-
-    private var bgColor: Color { colorScheme == .dark ? .white : Color(red: 0.18, green: 0.18, blue: 0.22) }
-    private var fgColor: Color { colorScheme == .dark ? .black : .white }
+    @State private var tapped = false
 
     var body: some View {
         Button(action: action) {
-            Text("Start Drive")
-                .font(.system(size: 17, weight: .semibold))
-                .foregroundColor(fgColor)
+            Text("START DRIVE")
+                .font(DS.Typography.heading(16))
+                .tracking(2.5)
+                .foregroundColor(isPressed ? .white : .primary)
                 .frame(maxWidth: .infinity)
                 .frame(height: 56)
-                .background(bgColor)
-                .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
-                .scaleEffect(isPressed ? 0.97 : 1.0)
-                .animation(.spring(response: 0.2, dampingFraction: 0.75), value: isPressed)
+                .background(
+                    RoundedRectangle(cornerRadius: 14, style: .continuous)
+                        .fill(isPressed ? DS.Colors.accent : DS.Surface.subtle)
+                )
+                .overlay( // blue edge at rest; disappears as the fill ignites
+                    RoundedRectangle(cornerRadius: 14, style: .continuous)
+                        .strokeBorder(DS.Colors.accent.opacity(isPressed ? 0 : 0.55), lineWidth: 1)
+                )
+                .scaleEffect(isPressed ? 0.985 : 1.0)
+                .animation(.spring(response: 0.26, dampingFraction: 0.78), value: isPressed)
         }
-        .sensoryFeedback(.impact(flexibility: .rigid, intensity: 0.8), trigger: tapped)
+        .buttonStyle(.plain)
+        .sensoryFeedback(.impact(flexibility: .rigid, intensity: 0.85), trigger: tapped)
         .simultaneousGesture(TapGesture().onEnded { tapped.toggle() })
         .simultaneousGesture(
             DragGesture(minimumDistance: 0)
                 .onChanged { _ in isPressed = true }
                 .onEnded   { _ in isPressed = false }
         )
-    }
-}
-
-// MARK: – Grade Stamp (license-plate style grade badge)
-
-struct GradeStamp: View {
-    let grade: String
-    let color: Color
-
-    var body: some View {
-        Text(grade)
-            .font(.system(size: 26, weight: .black, design: .monospaced))
-            .foregroundColor(color)
-            .padding(.horizontal, 10)
-            .padding(.vertical, 5)
-            .overlay(
-                RoundedRectangle(cornerRadius: 3)
-                    .stroke(color.opacity(0.55), lineWidth: 1.5)
-            )
-            .rotationEffect(.degrees(-2))
-    }
-}
-
-// MARK: – Patch Shape (angular racing-patch silhouette for achievement tiles)
-
-struct PatchShape: Shape {
-    var cornerCut: CGFloat = 10
-
-    func path(in rect: CGRect) -> Path {
-        Path { p in
-            p.move(to:    CGPoint(x: rect.minX,             y: rect.minY))
-            p.addLine(to: CGPoint(x: rect.maxX - cornerCut, y: rect.minY))
-            p.addLine(to: CGPoint(x: rect.maxX,             y: rect.minY + cornerCut))
-            p.addLine(to: CGPoint(x: rect.maxX,             y: rect.maxY))
-            p.addLine(to: CGPoint(x: rect.minX,             y: rect.maxY))
-            p.closeSubpath()
-        }
     }
 }
 
@@ -1116,52 +1009,82 @@ struct DriveReportView: View {
     }
 
     // Coach tips — use AI-generated tips when available, fall back to computed
-    private var tips: [(String, String, Color)] {
+    // Timestamps (seconds from start) of the detected events of a given type
+    private func eventTimes(_ type: DriveEventType) -> [TimeInterval] {
+        (session.metrics?.events ?? []).filter { $0.type == type }.map(\.timeOffset).sorted()
+    }
+
+    private var reportCoaching: CoachingInsights.Summary {
+        CoachingInsights.summary(sessions: driveStorage.sessions)
+    }
+
+    /// Only show the report's trend line once there's something real to say —
+    /// a recurring focus area or an actual up/down move vs prior drives.
+    private var showReportInsight: Bool {
+        let c = reportCoaching
+        guard c.hasData else { return false }
+        return c.focusArea != nil || c.trends.contains { $0.previous > 0.5 && $0.direction != 0 }
+    }
+
+    private func tipTimes(_ category: CoachTip.Category) -> [TimeInterval] {
+        switch category {
+        case .braking:      return eventTimes(.hardBrake)
+        case .acceleration: return eventTimes(.hardAccel)
+        case .cornering:    return eventTimes(.hardCorner)
+        default:            return []
+        }
+    }
+
+    private var tips: [DisplayTip] {
+        var raw: [DisplayTip]
         // Prefer tips stored from the AI engine at drive time
         if let stored = session.coachTips, !stored.isEmpty {
-            return stored.map { tip in
-                let color: Color
-                switch tip.category {
-                case .braking:      color = DS.Colors.scoreOkay
-                case .acceleration: color = DS.Colors.scoreOkay
-                case .cornering:    color = DS.Colors.accent
-                case .smoothness:   color = DS.Colors.scoreOkay
-                case .positive:     color = DS.Colors.scoreGreat
-                case .safety:       color = DS.Colors.scorePoor
+            raw = stored.map { DisplayTip(title: $0.title, message: $0.message,
+                                          category: $0.category, times: tipTimes($0.category)) }
+        } else if let m = session.metrics {
+            // Fallback for sessions recorded before AI tips were stored
+            raw = []
+            if m.hardBrakeCount > 0 {
+                raw.append(DisplayTip(title: "Smooth Braking",
+                    message: "\(m.hardBrakeCount) hard braking event\(m.hardBrakeCount == 1 ? "" : "s") detected. Try releasing the brake 2 seconds earlier on approach.",
+                    category: .braking, times: eventTimes(.hardBrake)))
+            }
+            if m.hardAccelCount > 0 {
+                raw.append(DisplayTip(title: "Easy Acceleration",
+                    message: "\(m.hardAccelCount) rapid acceleration event\(m.hardAccelCount == 1 ? "" : "s") detected. Build speed gradually from stops.",
+                    category: .acceleration, times: eventTimes(.hardAccel)))
+            }
+            if m.hardCornerCount > 0 {
+                raw.append(DisplayTip(title: "Smoother Cornering",
+                    message: "\(m.hardCornerCount) sharp corner\(m.hardCornerCount == 1 ? "" : "s") detected. Brake before the bend, accelerate through it.",
+                    category: .cornering, times: eventTimes(.hardCorner)))
+            }
+            if raw.isEmpty {
+                let worst = min(m.braking, m.acceleration, m.cornering, m.smoothness)
+                if worst < 80 {
+                    let cat: CoachTip.Category = worst == m.smoothness ? .smoothness
+                        : worst == m.braking ? .braking
+                        : worst == m.acceleration ? .acceleration : .cornering
+                    raw.append(DisplayTip(title: "Keep Improving",
+                        message: "Your \(String(describing: cat)) score has room to grow. Focus on steady, controlled inputs.",
+                        category: cat, times: []))
+                } else {
+                    raw.append(DisplayTip(title: "Great Drive!",
+                        message: "Your inputs were smooth throughout. Keep building on this consistency.",
+                        category: .positive, times: []))
                 }
-                return (tip.title, tip.message, color)
             }
+            raw = Array(raw.prefix(3))
+        } else {
+            raw = [DisplayTip(title: "Scoring In Development",
+                              message: "Full AI coaching tips will appear once the scoring model is live.",
+                              category: .positive, times: [])]
         }
-        // Fallback for sessions recorded before this update
-        guard let m = session.metrics else {
-            return [("Scoring In Development", "Full AI coaching tips will appear once the scoring model is live.", DS.Colors.accent)]
+        // Highlight the first actionable (non-safety, non-positive) tip as the focus area
+        if let idx = raw.firstIndex(where: { $0.category != .safety && $0.category != .positive && $0.category != .notScored }) {
+            raw[idx].isFocus = true
         }
-        var result: [(String, String, Color)] = []
-        if m.hardBrakeCount > 0 {
-            result.append(("Smooth Braking",
-                "\(m.hardBrakeCount) hard braking event\(m.hardBrakeCount == 1 ? "" : "s") detected. Try releasing the brake 2 seconds earlier on approach.",
-                DS.Colors.scoreOkay))
-        }
-        if m.hardAccelCount > 0 {
-            result.append(("Easy Acceleration",
-                "\(m.hardAccelCount) rapid acceleration event\(m.hardAccelCount == 1 ? "" : "s") detected. Build speed gradually from stops.",
-                DS.Colors.scoreOkay))
-        }
-        if m.hardCornerCount > 0 {
-            result.append(("Smoother Cornering",
-                "\(m.hardCornerCount) sharp corner\(m.hardCornerCount == 1 ? "" : "s") detected. Brake before the bend, accelerate through it.",
-                DS.Colors.accent))
-        }
-        if result.isEmpty {
-            let worst = min(m.braking, m.acceleration, m.cornering, m.smoothness)
-            if worst < 80 {
-                let area = worst == m.smoothness ? "Smoothness" : worst == m.braking ? "Braking" : worst == m.acceleration ? "Acceleration" : "Cornering"
-                result.append(("Keep Improving", "Your \(area.lowercased()) score has room to grow. Focus on steady, controlled inputs.", DS.Colors.scoreOkay))
-            } else {
-                result.append(("Great Drive!", "Your inputs were smooth throughout. Keep building on this consistency.", DS.Colors.scoreGreat))
-            }
-        }
-        return Array(result.prefix(3))
+        return raw
     }
 
     var body: some View {
@@ -1177,6 +1100,8 @@ struct DriveReportView: View {
                             .font(.system(size: 10, weight: .heavy))
                             .tracking(3.5)
                             .foregroundColor(DS.Colors.secondary)
+                            .padding(.top, DS.Spacing.l)
+                            .padding(.bottom, DS.Spacing.xs)
                             .opacity(appeared ? 1 : 0)
 
                         if isPersonalBest {
@@ -1190,29 +1115,17 @@ struct DriveReportView: View {
                         ScoreGauge(score: session.score)
 
                         // Grade + date + duration row
-                        HStack(spacing: 16) {
-                            GradeStamp(
-                                grade: grade(for: session.score),
-                                color: scoreColor(for: session.score)
-                            )
+                        HStack(alignment: .firstTextBaseline, spacing: 16) {
+                            Text(grade(for: session.score))
+                                .font(DS.Typography.display(34))
+                                .foregroundColor(scoreColor(for: session.score))
                             Spacer()
-                            VStack(alignment: .center, spacing: 2) {
-                                Text(session.date.formatted(.dateTime.month(.abbreviated).day()))
-                                    .font(.system(size: 15, weight: .semibold))
-                                    .foregroundColor(.primary)
-                                Text("Date")
-                                    .font(.system(size: 11, weight: .medium))
-                                    .foregroundColor(DS.Colors.secondary)
-                            }
-                            Spacer()
-                            VStack(alignment: .trailing, spacing: 2) {
-                                Text("\(Int(session.duration / 60)) min")
-                                    .font(.system(size: 15, weight: .semibold))
-                                    .foregroundColor(.primary)
-                                Text("Duration")
-                                    .font(.system(size: 11, weight: .medium))
-                                    .foregroundColor(DS.Colors.secondary)
-                            }
+                            Text(session.date.formatted(.dateTime.month(.abbreviated).day()))
+                                .font(.system(size: 15, weight: .semibold))
+                                .foregroundColor(.primary)
+                            Text("\(Int(session.duration / 60)) min")
+                                .font(.system(size: 15, weight: .semibold))
+                                .foregroundColor(.primary)
                         }
                         .padding(.horizontal, DS.Spacing.l)
                         .opacity(appeared ? 1 : 0)
@@ -1302,6 +1215,20 @@ struct DriveReportView: View {
                     }
                     .padding(.horizontal, DS.Spacing.l)
 
+                    // ── Cross-drive coaching headline (how this drive fits the trend)
+                    if showReportInsight {
+                        HStack(spacing: DS.Spacing.s) {
+                            PhosphorIcon.fill("sparkle", size: 12, color: DS.Colors.accent)
+                            Text(reportCoaching.headline)
+                                .font(DS.Typography.heading(13))
+                                .foregroundColor(.primary)
+                            Spacer(minLength: 0)
+                        }
+                        .padding(.horizontal, DS.Spacing.l)
+                        .opacity(metricsRevealed ? 1 : 0)
+                        .animation(.spring(duration: 0.4).delay(0.22), value: metricsRevealed)
+                    }
+
                     // ── AI Coaching tips (staggered reveal)
                     VStack(alignment: .leading, spacing: DS.Spacing.s) {
                         // F1 lower-third style section label
@@ -1316,8 +1243,8 @@ struct DriveReportView: View {
                         }
                         .padding(.horizontal, DS.Spacing.l)
 
-                        ForEach(Array(tips.enumerated()), id: \.0) { i, tip in
-                            CoachTipCard(title: tip.0, message: tip.1, accent: tip.2)
+                        ForEach(Array(tips.enumerated()), id: \.element.id) { i, tip in
+                            CoachTipCard(tip: tip) { videoSeekOffset = $0 }
                                 .padding(.horizontal, DS.Spacing.l)
                                 .opacity(metricsRevealed ? 1 : 0)
                                 .offset(y: metricsRevealed ? 0 : 20)
@@ -1403,16 +1330,7 @@ struct MetricScoreCard: View {
                 // Track
                 Circle()
                     .trim(from: 0, to: 0.75)
-                    .stroke(Color.white.opacity(0.06), style: StrokeStyle(lineWidth: 6, lineCap: .round))
-                    .rotationEffect(.degrees(135))
-
-                // Redline zone
-                Circle()
-                    .trim(from: 0.6375, to: 0.75)
-                    .stroke(
-                        Color(red: 0.42, green: 0.05, blue: 0.05),
-                        style: StrokeStyle(lineWidth: 6, lineCap: .round)
-                    )
+                    .stroke(DS.Surface.subtle, style: StrokeStyle(lineWidth: 6, lineCap: .round))
                     .rotationEffect(.degrees(135))
 
                 // Score arc
@@ -1421,8 +1339,6 @@ struct MetricScoreCard: View {
                     .stroke(color, style: StrokeStyle(lineWidth: 6, lineCap: .round))
                     .rotationEffect(.degrees(135))
                     .animation(.easeOut(duration: 0.6).delay(0.15), value: arcProgress)
-
-                GaugeTicks(diameter: 58, majorTickLen: 7, minorTickLen: 5, lineWidth: 0.75)
 
                 Text(grade)
                     .font(.system(size: 18, weight: .black, design: .monospaced))
@@ -1450,75 +1366,118 @@ struct MetricScoreCard: View {
 }
 
 // MARK: – Coach Tip Card
-struct CoachTipCard: View {
+// MARK: – Coach Tip display model + styling
+
+/// View-model for a rendered coach tip — pairs a stored/derived `CoachTip` with
+/// its display styling (icon, colour) and the timestamps it relates to.
+struct DisplayTip: Identifiable {
+    let id = UUID()
     let title: String
     let message: String
-    let accent: Color
+    let category: CoachTip.Category
+    var times: [TimeInterval] = []
+    var isFocus: Bool = false
+
+    var color: Color { coachTipStyle(category).color }
+    var icon: String  { coachTipStyle(category).icon }
+}
+
+/// Single source of truth for how each coaching category looks.
+func coachTipStyle(_ category: CoachTip.Category) -> (color: Color, icon: String) {
+    switch category {
+    case .safety:       return (DS.Colors.scorePoor,  "warning")
+    case .braking:      return (DS.Colors.scoreOkay,  "gauge")
+    case .acceleration: return (DS.Colors.scoreOkay,  "lightning")
+    case .cornering:    return (DS.Colors.accent,     "steering-wheel")
+    case .smoothness:   return (DS.Colors.accent,     "wave-sine")
+    case .speed:        return (DS.Colors.scoreOkay,  "speedometer")
+    case .positive:     return (DS.Colors.scoreGreat, "trophy")
+    case .notScored:    return (DS.Colors.secondary,  "info")
+    }
+}
+
+struct CoachTipCard: View {
+    let tip: DisplayTip
+    var onSeek: (TimeInterval) -> Void = { _ in }
+
+    private var isSafety: Bool { tip.category == .safety }
+    private var isPositive: Bool { tip.category == .positive }
+
+    private func mmss(_ t: TimeInterval) -> String {
+        String(format: "%d:%02d", Int(t) / 60, Int(t) % 60)
+    }
 
     var body: some View {
-        HStack(alignment: .top, spacing: 12) {
-            // 2px edge stripe — color-coded to the gauge it relates to
-            Rectangle()
-                .fill(accent)
-                .frame(width: 2)
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(spacing: 10) {
+                PhosphorIcon.fill(tip.icon, size: 16, color: tip.color)
+                    .frame(width: 34, height: 34)
+                    .background(tip.color.opacity(0.15))
+                    .clipShape(RoundedRectangle(cornerRadius: 9, style: .continuous))
 
-            VStack(alignment: .leading, spacing: 6) {
-                // Sparkline placeholder — 60×24, will wire to real data later
-                HStack {
-                    Spacer()
-                    SparklinePlaceholder(accent: accent)
+                Text(tip.title)
+                    .font(DS.Typography.heading(14))
+                    .foregroundColor(.primary)
+
+                if tip.isFocus {
+                    Text("FOCUS")
+                        .font(DS.Typography.label(8))
+                        .tracking(1)
+                        .foregroundColor(tip.color)
+                        .padding(.horizontal, 6).padding(.vertical, 2)
+                        .background(Capsule().fill(tip.color.opacity(0.18)))
                 }
 
-                Text(title)
-                    .font(.system(size: 13, weight: .semibold))
-                    .foregroundColor(.primary)
-                Text(message)
-                    .font(.system(size: 12))
-                    .foregroundColor(DS.Colors.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
+                Spacer(minLength: 0)
             }
-            .padding(.vertical, DS.Spacing.s)
-            Spacer(minLength: 0)
+
+            Text(tip.message)
+                .font(DS.Typography.body(13))
+                .foregroundColor(DS.Colors.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+
+            // When the coach flagged it — tap a moment to jump to it in the footage
+            if !tip.times.isEmpty {
+                HStack(spacing: 6) {
+                    PhosphorIcon(name: "clock", size: 11, color: tip.color.opacity(0.8))
+                    ForEach(Array(tip.times.prefix(6).enumerated()), id: \.0) { _, t in
+                        Button { onSeek(t) } label: {
+                            Text(mmss(t))
+                                .font(DS.Typography.data(11, weight: .bold))
+                                .foregroundColor(tip.color)
+                                .padding(.horizontal, 7).padding(.vertical, 3)
+                                .background(Capsule().fill(tip.color.opacity(0.16)))
+                        }
+                        .buttonStyle(.plain)
+                    }
+                    Spacer(minLength: 0)
+                }
+                .padding(.top, 2)
+            }
         }
-        .padding(.trailing, DS.Spacing.m)
+        .padding(DS.Spacing.m)
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(
             RoundedRectangle(cornerRadius: DS.Radius.m, style: .continuous)
-                .fill(DS.Colors.bgCard)
+                .fill(cardFill)
                 .overlay(
                     RoundedRectangle(cornerRadius: DS.Radius.m, style: .continuous)
-                        .stroke(DS.Colors.cardStroke, lineWidth: 1)
+                        .stroke(cardStroke, lineWidth: 1)
                 )
         )
         .clipShape(RoundedRectangle(cornerRadius: DS.Radius.m, style: .continuous))
     }
-}
 
-private struct SparklinePlaceholder: View {
-    let accent: Color
-    // Static placeholder points — replaced with real session data in a future phase
-    private let points: [CGFloat] = [0.55, 0.40, 0.62, 0.45, 0.70, 0.60, 0.78]
-
-    var body: some View {
-        Canvas { ctx, size in
-            let n = CGFloat(points.count - 1)
-            var path = Path()
-            for (i, y) in points.enumerated() {
-                let pt = CGPoint(x: CGFloat(i) / n * size.width,
-                                 y: size.height * (1 - y))
-                i == 0 ? path.move(to: pt) : path.addLine(to: pt)
-            }
-            ctx.stroke(path, with: .color(accent.opacity(0.45)), lineWidth: 1)
-
-            if let last = points.last {
-                let dot = CGPoint(x: size.width, y: size.height * (1 - last))
-                ctx.fill(
-                    Path(ellipseIn: CGRect(x: dot.x - 2.5, y: dot.y - 2.5, width: 5, height: 5)),
-                    with: .color(accent)
-                )
-            }
-        }
-        .frame(width: 60, height: 24)
+    // Safety tips read as urgent; positive tips as celebratory; rest neutral.
+    private var cardFill: Color {
+        if isSafety   { return tip.color.opacity(0.10) }
+        if isPositive { return DS.Colors.scoreGreat.opacity(0.08) }
+        return DS.Colors.bgCard
+    }
+    private var cardStroke: Color {
+        if isSafety   { return tip.color.opacity(0.40) }
+        if isPositive { return DS.Colors.scoreGreat.opacity(0.30) }
+        return DS.Colors.cardStroke
     }
 }
 
@@ -1662,10 +1621,10 @@ struct LatestDriveEmptyView: View {
 
                 VStack(spacing: DS.Spacing.s) {
                     Text("No Drives Yet")
-                        .font(.system(size: 28, weight: .black, design: .rounded))
+                        .font(DS.Typography.display(28))
                         .foregroundColor(.primary)
                     Text("Complete your first drive to see your\nscore, coaching tips, and detailed\nperformance breakdown.")
-                        .font(.system(size: 15, weight: .medium, design: .rounded))
+                        .font(DS.Typography.body(15))
                         .foregroundColor(DS.Colors.secondary)
                         .multilineTextAlignment(.center)
                         .lineSpacing(3)
@@ -1724,9 +1683,31 @@ struct LatestDriveEmptyView: View {
             PhosphorIcon.fill(icon, size: 14, color: DS.Colors.accent)
                 .frame(width: 20)
             Text(text)
-                .font(.system(size: 13, weight: .medium, design: .rounded))
-                .foregroundColor(.white.opacity(0.80))
+                .font(DS.Typography.body(13))
+                .foregroundColor(.primary.opacity(0.85))
             Spacer()
+        }
+    }
+}
+
+// MARK: – Signature Route View
+/// Route readout — a label-free vector map keeps the line followable against real
+/// roads, with the drive drawn as our electric line and badged like an instrument
+/// display. The vector basemap supplies the road substrate; the styling, glow and
+/// route are ours, and the whole thing adapts to light/dark.
+struct SignatureRouteView: View {
+    let route: [RoutePoint]
+    @Environment(\.colorScheme) private var colorScheme
+
+    var body: some View {
+        MapLibreRouteRepresentable(route: route, colorScheme: colorScheme)
+        .overlay(alignment: .topLeading) {
+            // instrument tag — marks it as our readout, not a stock map
+            Text("GPS · ROUTE")
+                .font(DS.Typography.label(8))
+                .tracking(1.5)
+                .foregroundColor(DS.Colors.accent.opacity(0.7))
+                .padding(7)
         }
     }
 }
@@ -1735,15 +1716,9 @@ struct LatestDriveEmptyView: View {
 struct RouteMapView: View {
     let route: [RoutePoint]
 
-    private var coordinates: [CLLocationCoordinate2D] {
-        route.map { CLLocationCoordinate2D(latitude: $0.lat, longitude: $0.lng) }
-    }
-
     var body: some View {
         if route.count >= 2 {
-            Map { MapPolyline(coordinates: coordinates).stroke(DS.Colors.accent, lineWidth: 3) }
-                .mapStyle(.standard(pointsOfInterest: .excludingAll, showsTraffic: false))
-                .colorScheme(.dark)
+            SignatureRouteView(route: route)
                 .frame(height: 200)
                 .clipShape(RoundedRectangle(cornerRadius: DS.Radius.m, style: .continuous))
                 .padding(.horizontal, DS.Spacing.l)
@@ -1791,21 +1766,16 @@ struct SessionRowView: View {
             }
             .padding(DS.Spacing.m)
 
-            if coordinates.count >= 2 {
-                Map {
-                    MapPolyline(coordinates: coordinates)
-                        .stroke(DS.Colors.accent, lineWidth: 2.5)
-                }
-                .mapStyle(.standard(pointsOfInterest: .excludingAll, showsTraffic: false))
-                .colorScheme(.dark)
-                .frame(height: 110)
-                .clipShape(
-                    UnevenRoundedRectangle(
-                        topLeadingRadius: 0, bottomLeadingRadius: DS.Radius.m,
-                        bottomTrailingRadius: DS.Radius.m, topTrailingRadius: 0
+            if session.route.count >= 2 {
+                SignatureRouteView(route: session.route)
+                    .frame(height: 110)
+                    .clipShape(
+                        UnevenRoundedRectangle(
+                            topLeadingRadius: 0, bottomLeadingRadius: DS.Radius.m,
+                            bottomTrailingRadius: DS.Radius.m, topTrailingRadius: 0
+                        )
                     )
-                )
-                .allowsHitTesting(false)
+                    .allowsHitTesting(false)
             }
         }
         .background(

@@ -70,6 +70,8 @@ private let phosphorUnicode: [String: UInt32] = [
     "person":                   0xe3a8,
     "user-circle":              0xe4c4,
     "users":                    0xe4d6,
+    "graduation-cap":           0xe62c,
+    "bell":                     0xe0ce,
 
     // Time / calendar
     "timer":                    0xe492,
@@ -82,6 +84,7 @@ private let phosphorUnicode: [String: UInt32] = [
     "lock":                     0xe2fa,
     "lock-simple":              0xe308,
     "shield-check":             0xe40c,
+    "warning":                  0xe4e0,
     "check":                    0xe182,
     "check-circle":             0xe184,
     "check-square":             0xe186,
