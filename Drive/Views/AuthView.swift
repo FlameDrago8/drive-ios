@@ -33,9 +33,9 @@ struct AuthView: View {
                     Text("Drive")
                         .font(DS.Typography.display(56))
                         .tracking(1)
-                        .foregroundColor(.white)
+                        .foregroundColor(.primary)
                     Text("Drive smarter.")
-                        .font(.system(size: 14, weight: .medium))
+                        .font(DS.Typography.body(14))
                         .foregroundColor(DS.Colors.secondary)
                 }
                 .opacity(appeared ? 1 : 0)
@@ -60,7 +60,7 @@ struct AuthView: View {
                         }
                     }
                     .padding(4)
-                    .background(Color.white.opacity(0.07))
+                    .background(DS.Surface.weak)
                     .clipShape(Capsule())
 
                     // Fields — enter on email moves to password; enter on password submits
@@ -88,7 +88,7 @@ struct AuthView: View {
                             Image(systemName: "exclamationmark.circle.fill")
                                 .font(.system(size: 13))
                             Text(errorMessage)
-                                .font(.system(size: 13, weight: .medium))
+                                .font(DS.Typography.body(13))
                                 .fixedSize(horizontal: false, vertical: true)
                         }
                         .foregroundColor(DS.Colors.scorePoor)
@@ -98,7 +98,7 @@ struct AuthView: View {
                     // Primary CTA
                     Button(action: handleAuth) {
                         Text(isLoginMode ? "Sign In" : "Create Account")
-                            .font(.system(size: 16, weight: .semibold))
+                            .font(DS.Typography.heading(16))
                             .foregroundColor(.white)
                             .frame(maxWidth: .infinity)
                             .padding(.vertical, 16)
@@ -116,7 +116,7 @@ struct AuthView: View {
                                     .font(.system(size: 13))
                                     .foregroundColor(DS.Colors.scoreGreat)
                                 Text(resetConfirmation)
-                                    .font(.system(size: 13, weight: .medium))
+                                    .font(DS.Typography.body(13))
                                     .foregroundColor(DS.Colors.scoreGreat)
                             }
                             .transition(.opacity.combined(with: .move(edge: .top)))
@@ -126,7 +126,7 @@ struct AuthView: View {
                                     ProgressView().tint(DS.Colors.secondary)
                                 } else {
                                     Text("Forgot password?")
-                                        .font(.system(size: 13, weight: .medium))
+                                        .font(DS.Typography.body(13))
                                         .foregroundColor(DS.Colors.secondary)
                                 }
                             }
@@ -136,12 +136,12 @@ struct AuthView: View {
 
                     // Divider
                     HStack(spacing: 10) {
-                        Rectangle().fill(Color.white.opacity(0.10)).frame(height: 1)
+                        Rectangle().fill(DS.Colors.cardStroke).frame(height: 1)
                         Text("or continue with")
-                            .font(.system(size: 11, weight: .semibold))
+                            .font(DS.Typography.body(11, weight: .semibold))
                             .foregroundColor(DS.Colors.secondary)
                             .fixedSize()
-                        Rectangle().fill(Color.white.opacity(0.10)).frame(height: 1)
+                        Rectangle().fill(DS.Colors.cardStroke).frame(height: 1)
                     }
 
                     // Social sign-in buttons
@@ -180,17 +180,15 @@ struct AuthView: View {
                 .opacity(appeared ? 1 : 0)
                 .offset(y: appeared ? 0 : 40)
 
-                // Account-creation disclosure (App Review 5.1.1)
-                HStack(spacing: 3) {
-                    Text("By continuing, you agree to our")
-                        .foregroundColor(DS.Colors.secondary)
-                    Link("Privacy Policy",
-                         destination: URL(string: "https://flamedrago8.github.io/privacy.html")!)
-                        .foregroundColor(DS.Colors.accent)
-                }
-                .font(.system(size: 11, weight: .medium))
-                .padding(.top, DS.Spacing.m)
-                .opacity(appeared ? 1 : 0)
+                // Account-creation disclosure (App Review 5.1.1) — markdown links wrap naturally
+                Text("By continuing, you agree to our [Terms of Use](https://flamedrago8.github.io/terms.html) and [Privacy Policy](https://flamedrago8.github.io/privacy.html).")
+                    .font(DS.Typography.body(11))
+                    .foregroundColor(DS.Colors.secondary)
+                    .tint(DS.Colors.accent)
+                    .multilineTextAlignment(.center)
+                    .padding(.horizontal, DS.Spacing.xl)
+                    .padding(.top, DS.Spacing.m)
+                    .opacity(appeared ? 1 : 0)
 
                 Spacer(minLength: 50)
             }
@@ -209,24 +207,30 @@ struct AuthView: View {
         HStack(spacing: 10) {
             icon.frame(width: 20)
             Text(label)
-                .font(.system(size: 15, weight: .semibold))
+                .font(DS.Typography.heading(15))
                 .foregroundColor(.white)
         }
         .frame(maxWidth: .infinity)
         .padding(.vertical, 14)
     }
 
+    // Official Google "G" — must keep its colors (no tint). White rounded tile
+    // is Google's approved treatment on a dark button surface.
     private var googleBadge: some View {
-        Image(systemName: "globe")
-            .font(.system(size: 16, weight: .medium))
-            .foregroundColor(.white)
+        Image("GoogleLogo")
+            .resizable()
+            .scaledToFit()
+            .frame(width: 16, height: 16)
+            .padding(2)
+            .background(Color.white)
+            .clipShape(RoundedRectangle(cornerRadius: 4, style: .continuous))
     }
 
     @ViewBuilder
     private func modeToggle(_ label: String, active: Bool, action: @escaping () -> Void) -> some View {
         Button(action: action) {
             Text(label)
-                .font(.system(size: 14, weight: .semibold))
+                .font(DS.Typography.heading(14))
                 .foregroundColor(active ? .white : DS.Colors.secondary)
                 .padding(.vertical, 9)
                 .frame(maxWidth: .infinity)
@@ -318,10 +322,10 @@ private struct SocialButtonStyle: ButtonStyle {
         configuration.label
             .background(
                 RoundedRectangle(cornerRadius: DS.Radius.l, style: .continuous)
-                    .fill(Color.white.opacity(configuration.isPressed ? 0.13 : 0.07))
+                    .fill(configuration.isPressed ? DS.Surface.medium : DS.Surface.weak)
                     .overlay(
                         RoundedRectangle(cornerRadius: DS.Radius.l, style: .continuous)
-                            .stroke(Color.white.opacity(0.12), lineWidth: 1)
+                            .stroke(DS.Colors.cardStroke, lineWidth: 1)
                     )
             )
             .scaleEffect(configuration.isPressed ? 0.98 : 1.0)
@@ -344,8 +348,8 @@ struct AuthField: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
-            Text(label)
-                .font(.system(size: 12, weight: .medium))
+            Text(label.uppercased())
+                .font(DS.Typography.label(10)).tracking(2)
                 .foregroundColor(focused ? DS.Colors.accent : DS.Colors.secondary)
                 .animation(.easeInOut(duration: 0.2), value: focused)
 
@@ -362,16 +366,16 @@ struct AuthField: View {
             .focused($focused)
             .submitLabel(submitLabel)
             .onSubmit { onSubmit?() }
-            .font(.system(size: 16, weight: .medium))
-            .foregroundColor(.white)
+            .font(DS.Typography.body(16))
+            .foregroundColor(.primary)
             .padding(.vertical, 14)
             .padding(.horizontal, 16)
-            .background(Color.white.opacity(focused ? 0.09 : 0.06))
+            .background(focused ? DS.Surface.weak : DS.Surface.subtle)
             .clipShape(RoundedRectangle(cornerRadius: DS.Radius.m, style: .continuous))
             .overlay(
                 RoundedRectangle(cornerRadius: DS.Radius.m, style: .continuous)
                     .stroke(
-                        focused ? DS.Colors.accent.opacity(0.7) : Color.white.opacity(0.10),
+                        focused ? DS.Colors.accent.opacity(0.7) : DS.Colors.cardStroke,
                         lineWidth: focused ? 1.5 : 1
                     )
             )

@@ -34,6 +34,7 @@
 		38F3BFB92EB93B0700BF9601 /* FirebaseRemoteConfig in Frameworks */ = {isa = PBXBuildFile; productRef = 38F3BFB82EB93B0700BF9601 /* FirebaseRemoteConfig */; };
 		38F3BFBB2EB93B0700BF9601 /* FirebaseStorage in Frameworks */ = {isa = PBXBuildFile; productRef = 38F3BFBA2EB93B0700BF9601 /* FirebaseStorage */; };
 		38F3BFBD2EB93B0700BF9601 /* FirebaseStorageCombine-Community in Frameworks */ = {isa = PBXBuildFile; productRef = 38F3BFBC2EB93B0700BF9601 /* FirebaseStorageCombine-Community */; };
+		AA11BB22CC33DD44EE550003 /* MapLibre in Frameworks */ = {isa = PBXBuildFile; productRef = AA11BB22CC33DD44EE550002 /* MapLibre */; };
 		CCDD00042EB93B0700CCDD04 /* GoogleSignIn in Frameworks */ = {isa = PBXBuildFile; productRef = CCDD00022EB93B0700CCDD02 /* GoogleSignIn */; };
 		CCDD00052EB93B0700CCDD05 /* GoogleSignInSwift in Frameworks */ = {isa = PBXBuildFile; productRef = CCDD00032EB93B0700CCDD03 /* GoogleSignInSwift */; };
 /* End PBXBuildFile section */
@@ -180,6 +181,7 @@
 				38F3BFA92EB93B0700BF9601 /* FirebaseFirestoreCombine-Community in Frameworks */,
 				CCDD00042EB93B0700CCDD04 /* GoogleSignIn in Frameworks */,
 				CCDD00052EB93B0700CCDD05 /* GoogleSignInSwift in Frameworks */,
+				AA11BB22CC33DD44EE550003 /* MapLibre in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -300,6 +302,7 @@
 				38F3BFB82EB93B0700BF9601 /* FirebaseRemoteConfig */,
 				38F3BFBA2EB93B0700BF9601 /* FirebaseStorage */,
 				38F3BFBC2EB93B0700BF9601 /* FirebaseStorageCombine-Community */,
+				AA11BB22CC33DD44EE550002 /* MapLibre */,
 			);
 			productName = Drive;
 			productReference = 38DEE1CC2EB4172600D6C898 /* Drive.app */;
@@ -389,6 +392,7 @@
 			packageReferences = (
 				CCDD00012EB93B0700CCDD01 /* XCRemoteSwiftPackageReference "GoogleSignIn-iOS" */,
 				38F3BF702EB89A9600BF9601 /* XCRemoteSwiftPackageReference "firebase-ios-sdk" */,
+				AA11BB22CC33DD44EE550001 /* XCRemoteSwiftPackageReference "maplibre-gl-native-distribution" */,
 			);
 			preferredProjectObjectVersion = 77;
 			productRefGroup = 38DEE1CD2EB4172600D6C898 /* Products */;
@@ -870,6 +874,14 @@
 				minimumVersion = 12.5.0;
 			};
 		};
+		AA11BB22CC33DD44EE550001 /* XCRemoteSwiftPackageReference "maplibre-gl-native-distribution" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/maplibre/maplibre-gl-native-distribution";
+			requirement = {
+				kind = upToNextMajorVersion;
+				minimumVersion = 6.0.0;
+			};
+		};
 		CCDD00012EB93B0700CCDD01 /* XCRemoteSwiftPackageReference "GoogleSignIn-iOS" */ = {
 			isa = XCRemoteSwiftPackageReference;
 			repositoryURL = "https://github.com/google/GoogleSignIn-iOS";
@@ -1000,6 +1012,11 @@
 			isa = XCSwiftPackageProductDependency;
 			package = 38F3BF702EB89A9600BF9601 /* XCRemoteSwiftPackageReference "firebase-ios-sdk" */;
 			productName = "FirebaseStorageCombine-Community";
+		};
+		AA11BB22CC33DD44EE550002 /* MapLibre */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = AA11BB22CC33DD44EE550001 /* XCRemoteSwiftPackageReference "maplibre-gl-native-distribution" */;
+			productName = MapLibre;
 		};
 		CCDD00022EB93B0700CCDD02 /* GoogleSignIn */ = {
 			isa = XCSwiftPackageProductDependency;

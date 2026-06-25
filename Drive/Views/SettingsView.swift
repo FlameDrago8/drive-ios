@@ -89,7 +89,7 @@ struct SettingsView: View {
                                                 .padding(.horizontal, 14).padding(.vertical, 8)
                                                 .background(
                                                     RoundedRectangle(cornerRadius: 10, style: .continuous)
-                                                        .fill(sel ? DS.Colors.accent : Color.white.opacity(0.07))
+                                                        .fill(sel ? DS.Colors.accent : DS.Surface.weak)
                                                 )
                                         }
                                         .buttonStyle(.plain)
@@ -212,21 +212,37 @@ struct SettingsView: View {
                                 SettingsRow(label: "Privacy Policy", showChevron: true)
                             }
                             settingDivider
+                            Link(destination: URL(string: "https://flamedrago8.github.io/terms.html")!) {
+                                SettingsRow(label: "Terms of Use", showChevron: true)
+                            }
+                            settingDivider
+                            Link(destination: URL(string: "https://flamedrago8.github.io/license.html")!) {
+                                SettingsRow(label: "License Agreement", showChevron: true)
+                            }
+                            settingDivider
                             Link(destination: URL(string: "https://flamedrago8.github.io/index.html")!) {
                                 SettingsRow(label: "Support", showChevron: true)
                             }
                         }
 
-                        // Sign out — neutral primary action
+                        // Sign out — account action, contained to match the section panels
                         Button { userManager.signOut() } label: {
                             Text("Sign Out")
-                                .font(.system(size: 16, weight: .semibold))
+                                .font(DS.Typography.heading(16))
                                 .foregroundColor(.primary)
                                 .frame(maxWidth: .infinity)
                                 .padding(.vertical, DS.Spacing.m)
+                                .background(
+                                    RoundedRectangle(cornerRadius: DS.Radius.m, style: .continuous)
+                                        .fill(DS.Surface.subtle)
+                                )
+                                .overlay(
+                                    RoundedRectangle(cornerRadius: DS.Radius.m, style: .continuous)
+                                        .stroke(DS.Colors.cardStroke, lineWidth: 1)
+                                )
                         }
+                        .buttonStyle(.plain)
                         .sensoryFeedback(.impact(weight: .medium), trigger: userManager.user == nil)
-                        .padding(.top, DS.Spacing.xs)
 
                         // Danger Zone — grouped destructive actions
                         settingSection("Danger Zone") {
@@ -430,7 +446,7 @@ struct SettingsView: View {
                                 .clipShape(Circle())
                         } else {
                             Text(userInitial)
-                                .font(.system(size: 30, weight: .bold, design: .rounded))
+                                .font(DS.Typography.display(30))
                                 .foregroundColor(DS.Colors.accent)
                         }
                     }
@@ -443,7 +459,7 @@ struct SettingsView: View {
                     } label: {
                         HStack(spacing: 6) {
                             Text(displayNameOrFallback)
-                                .font(.system(size: 19, weight: .black, design: .rounded))
+                                .font(DS.Typography.heading(20))
                                 .foregroundColor(.primary)
                             PhosphorIcon(name: "pencil", size: 11, color: DS.Colors.accent)
                         }
@@ -471,7 +487,8 @@ struct SettingsView: View {
                 Spacer()
             }
 
-            // ── Stats row
+            // ── Stats row — bracketed in seams like an instrument readout band
+            settingDivider
             HStack(spacing: 0) {
                 statPill(value: "\(driveStorage.sessions.count)", label: "Drives")
                 statPill(
@@ -483,19 +500,21 @@ struct SettingsView: View {
                     label: "Best"
                 )
             }
-            .padding(.top, DS.Spacing.s)
+            .padding(.vertical, DS.Spacing.m)
 
             // ── Badges
             let earnedBadges = AchievementEngine.badges(from: driveStorage.sessions).filter(\.isEarned)
             if !earnedBadges.isEmpty {
                 settingDivider
                 HStack {
-                    Text("Badges")
-                        .font(.system(size: 12, weight: .semibold))
+                    Text("BADGES")
+                        .font(DS.Typography.label(10))
+                        .tracking(2)
                         .foregroundColor(DS.Colors.secondary)
                     Spacer()
-                    Text("\(earnedBadges.count) earned")
-                        .font(.system(size: 9, weight: .semibold))
+                    Text("\(earnedBadges.count) EARNED")
+                        .font(DS.Typography.label(9))
+                        .tracking(1)
                         .foregroundColor(DS.Colors.secondary)
                 }
                 ScrollView(.horizontal, showsIndicators: false) {
@@ -509,10 +528,10 @@ struct SettingsView: View {
                 HStack(spacing: DS.Spacing.m) {
                     VStack(alignment: .leading, spacing: 2) {
                         Text("Driver Card")
-                            .font(.system(size: 15, weight: .semibold))
+                            .font(DS.Typography.heading(15))
                             .foregroundColor(.primary)
                         Text("Share your driving identity")
-                            .font(.system(size: 12, weight: .medium))
+                            .font(DS.Typography.body(12))
                             .foregroundColor(DS.Colors.secondary)
                     }
                     Spacer()
@@ -524,83 +543,15 @@ struct SettingsView: View {
             }
             .buttonStyle(.plain)
         }
-        .padding(.horizontal, 20)
-    }
-
-    // MARK: – Chip Setting Row (generic via erased Any)
-
-    private func chipSettingRow<T: Hashable>(
-        label: String,
-        description: String? = nil,
-        options: [(T, String)],
-        selection: Binding<T>
-    ) -> some View {
-        VStack(alignment: .leading, spacing: DS.Spacing.s) {
-            VStack(alignment: .leading, spacing: 3) {
-                Text(label)
-                    .font(.system(size: 15, weight: .medium))
-                    .foregroundColor(.primary)
-                if let description {
-                    Text(description)
-                        .font(.system(size: 12, weight: .regular))
-                        .foregroundColor(DS.Colors.secondary)
-                }
-            }
-            Group {
-                if #available(iOS 26, *) {
-                    GlassEffectContainer(spacing: 6) {
-                        HStack(spacing: 6) {
-                            ForEach(options.indices, id: \.self) { i in
-                                let (val, lbl) = options[i]
-                                let isSelected = selection.wrappedValue == val
-                                Button {
-                                    withAnimation(.spring(response: 0.3, dampingFraction: 0.8)) {
-                                        selection.wrappedValue = val
-                                    }
-                                } label: {
-                                    Text(lbl)
-                                        .font(.system(size: 12, weight: .semibold))
-                                        .foregroundColor(isSelected ? .white : DS.Colors.secondary)
-                                        .padding(.horizontal, 12).padding(.vertical, 7)
-                                        .glassEffect(
-                                            isSelected ? .regular.tint(DS.Colors.accent.opacity(0.35)).interactive() : .regular.interactive(),
-                                            in: .rect(cornerRadius: 8)
-                                        )
-                                }
-                                .buttonStyle(.plain)
-                            }
-                        }
-                    }
-                } else {
-                    HStack(spacing: 6) {
-                        ForEach(options.indices, id: \.self) { i in
-                            let (val, lbl) = options[i]
-                            let isSelected = selection.wrappedValue == val
-                            Button {
-                                withAnimation(.spring(response: 0.3, dampingFraction: 0.8)) {
-                                    selection.wrappedValue = val
-                                }
-                            } label: {
-                                Text(lbl)
-                                    .font(.system(size: 12, weight: .semibold))
-                                    .foregroundColor(isSelected ? .white : DS.Colors.secondary)
-                                    .padding(.horizontal, 12).padding(.vertical, 7)
-                                    .background(
-                                        RoundedRectangle(cornerRadius: 8, style: .continuous)
-                                            .fill(isSelected ? DS.Colors.accent : Color.white.opacity(0.07))
-                                            .overlay(
-                                                RoundedRectangle(cornerRadius: 8, style: .continuous)
-                                                    .stroke(isSelected ? Color.clear : Color.white.opacity(0.08), lineWidth: 1)
-                                            )
-                                    )
-                            }
-                            .buttonStyle(.plain)
-                        }
-                    }
-                }
-            }
-        }
-        .padding(.vertical, DS.Spacing.s)
+        .padding(16)
+        .background(
+            RoundedRectangle(cornerRadius: DS.Radius.l, style: .continuous)
+                .fill(DS.Surface.subtle)
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: DS.Radius.l, style: .continuous)
+                .stroke(DS.Colors.cardStroke, lineWidth: 1)
+        )
     }
 
     // MARK: – Shared helpers
@@ -616,23 +567,35 @@ struct SettingsView: View {
         _ title: String,
         @ViewBuilder content: () -> Content
     ) -> some View {
-        VStack(alignment: .leading, spacing: DS.Spacing.m) {
-            Text(title)
-                .font(.system(size: 12, weight: .medium))
+        VStack(alignment: .leading, spacing: DS.Spacing.s) {
+            Text(title.uppercased())
+                .font(DS.Typography.label(11))
+                .tracking(2)
                 .foregroundColor(DS.Colors.secondary)
-                .padding(.leading, 20)
+                .padding(.leading, 4)
+            // Etched instrument panel — matches Home's seamed cluster
             VStack(spacing: 0) { content() }
-                .padding(.horizontal, 20)
+                .padding(.horizontal, 16)
+                .padding(.vertical, 2)
+                .background(
+                    RoundedRectangle(cornerRadius: DS.Radius.m, style: .continuous)
+                        .fill(DS.Surface.subtle)
+                )
+                .overlay(
+                    RoundedRectangle(cornerRadius: DS.Radius.m, style: .continuous)
+                        .stroke(DS.Colors.cardStroke, lineWidth: 1)
+                )
         }
     }
 
     private func statPill(value: String, label: String) -> some View {
-        VStack(spacing: 3) {
+        VStack(spacing: 4) {
             Text(value)
-                .font(.system(size: 22, weight: .black, design: .monospaced))
+                .font(DS.Typography.data(22))
                 .foregroundColor(.primary)
-            Text(label)
-                .font(.system(size: 10, weight: .medium))
+            Text(label.uppercased())
+                .font(DS.Typography.label(9))
+                .tracking(1)
                 .foregroundColor(DS.Colors.secondary)
         }
         .frame(maxWidth: .infinity)
@@ -649,42 +612,42 @@ struct NameEditSheet: View {
 
     var body: some View {
         ZStack {
-            Color(red: 0.07, green: 0.07, blue: 0.11).ignoresSafeArea()
+            DS.Colors.bg.ignoresSafeArea()
             VStack(spacing: 0) {
-                Capsule().fill(Color.white.opacity(0.15))
+                Capsule().fill(DS.Colors.secondary.opacity(0.4))
                     .frame(width: 36, height: 4).padding(.top, DS.Spacing.m)
                 VStack(spacing: DS.Spacing.xl) {
                     Text("Your name")
-                        .font(.system(size: 20, weight: .semibold))
+                        .font(DS.Typography.heading(20))
                         .foregroundColor(.primary)
                         .frame(maxWidth: .infinity, alignment: .leading)
                         .padding(.top, DS.Spacing.l)
                     VStack(alignment: .leading, spacing: 8) {
-                        Text("Name")
-                            .font(.system(size: 12, weight: .medium))
+                        Text("NAME")
+                            .font(DS.Typography.label(10)).tracking(2)
                             .foregroundColor(focused ? DS.Colors.accent : DS.Colors.secondary)
                             .animation(.easeInOut(duration: 0.2), value: focused)
                         TextField("Your name", text: $name)
                             .focused($focused)
-                            .font(.system(size: 16, weight: .medium)).foregroundColor(.primary)
+                            .font(DS.Typography.body(16)).foregroundColor(.primary)
                             .autocapitalization(.words).disableAutocorrection(true)
                             .submitLabel(.done).onSubmit(onSave)
                             .padding(.vertical, 14).padding(.horizontal, 16)
-                            .background(Color.white.opacity(focused ? 0.09 : 0.06))
+                            .background(focused ? DS.Surface.weak : DS.Surface.subtle)
                             .clipShape(RoundedRectangle(cornerRadius: DS.Radius.m, style: .continuous))
                             .overlay(RoundedRectangle(cornerRadius: DS.Radius.m, style: .continuous)
-                                .stroke(focused ? DS.Colors.accent.opacity(0.7) : Color.white.opacity(0.10),
+                                .stroke(focused ? DS.Colors.accent.opacity(0.7) : DS.Colors.cardStroke,
                                         lineWidth: focused ? 1.5 : 1))
                             .animation(.easeInOut(duration: 0.2), value: focused)
                     }
                     VStack(spacing: DS.Spacing.s) {
                         Button(action: onSave) {
-                            Text("Save").font(.system(size: 16, weight: .bold)).foregroundColor(.primary)
+                            Text("Save").font(DS.Typography.heading(16)).foregroundColor(.white)
                                 .frame(maxWidth: .infinity).padding(.vertical, 16)
                                 .background(RoundedRectangle(cornerRadius: DS.Radius.l, style: .continuous).fill(DS.Colors.accent))
                         }
                         Button(action: onCancel) {
-                            Text("Cancel").font(.system(size: 15, weight: .semibold)).foregroundColor(DS.Colors.secondary)
+                            Text("Cancel").font(DS.Typography.body(15, weight: .semibold)).foregroundColor(DS.Colors.secondary)
                                 .frame(maxWidth: .infinity).padding(.vertical, 12)
                         }
                     }
@@ -719,13 +682,13 @@ struct CarEditSheet: View {
 
     var body: some View {
         ZStack {
-            Color(red: 0.07, green: 0.07, blue: 0.11).ignoresSafeArea()
+            DS.Colors.bg.ignoresSafeArea()
             VStack(spacing: 0) {
-                Capsule().fill(Color.white.opacity(0.15))
+                Capsule().fill(DS.Colors.secondary.opacity(0.4))
                     .frame(width: 36, height: 4).padding(.top, DS.Spacing.m)
                 VStack(spacing: DS.Spacing.xl) {
                     Text("Your car")
-                        .font(.system(size: 20, weight: .semibold))
+                        .font(DS.Typography.heading(20))
                         .foregroundColor(.primary)
                         .frame(maxWidth: .infinity, alignment: .leading)
                         .padding(.top, DS.Spacing.l)
@@ -733,8 +696,8 @@ struct CarEditSheet: View {
                     VStack(spacing: DS.Spacing.m) {
                         // Year picker
                         VStack(alignment: .leading, spacing: 8) {
-                            Text("Year")
-                                .font(.system(size: 12, weight: .medium))
+                            Text("YEAR")
+                                .font(DS.Typography.label(10)).tracking(2)
                                 .foregroundColor(DS.Colors.secondary)
                             Menu {
                                 ForEach(yearOptions, id: \.self) { y in
@@ -743,16 +706,16 @@ struct CarEditSheet: View {
                             } label: {
                                 HStack {
                                     Text(year.isEmpty ? "Select year" : year)
-                                        .font(.system(size: 16, weight: .medium))
-                                        .foregroundColor(year.isEmpty ? DS.Colors.secondary : .white)
+                                        .font(DS.Typography.body(16))
+                                        .foregroundColor(year.isEmpty ? DS.Colors.secondary : .primary)
                                     Spacer()
                                     PhosphorIcon(name: "arrows-down-up", size: 12, color: DS.Colors.secondary)
                                 }
                                 .padding(.vertical, 14).padding(.horizontal, 16)
-                                .background(Color.white.opacity(0.06))
+                                .background(DS.Surface.subtle)
                                 .clipShape(RoundedRectangle(cornerRadius: DS.Radius.m, style: .continuous))
                                 .overlay(RoundedRectangle(cornerRadius: DS.Radius.m, style: .continuous)
-                                    .stroke(Color.white.opacity(0.10), lineWidth: 1))
+                                    .stroke(DS.Colors.cardStroke, lineWidth: 1))
                             }
                         }
                         carField(label: "Make",  placeholder: "e.g. Toyota", text: $make,  field: .make)
@@ -761,12 +724,12 @@ struct CarEditSheet: View {
 
                     VStack(spacing: DS.Spacing.s) {
                         Button(action: onSave) {
-                            Text("Save").font(.system(size: 16, weight: .bold)).foregroundColor(.primary)
+                            Text("Save").font(DS.Typography.heading(16)).foregroundColor(.white)
                                 .frame(maxWidth: .infinity).padding(.vertical, 16)
                                 .background(RoundedRectangle(cornerRadius: DS.Radius.l, style: .continuous).fill(DS.Colors.accent))
                         }
                         Button(action: onCancel) {
-                            Text("Cancel").font(.system(size: 15, weight: .semibold)).foregroundColor(DS.Colors.secondary)
+                            Text("Cancel").font(DS.Typography.body(15, weight: .semibold)).foregroundColor(DS.Colors.secondary)
                                 .frame(maxWidth: .infinity).padding(.vertical, 12)
                         }
                     }
@@ -782,19 +745,19 @@ struct CarEditSheet: View {
     @ViewBuilder
     private func carField(label: String, placeholder: String, text: Binding<String>, field: CarField) -> some View {
         VStack(alignment: .leading, spacing: 8) {
-            Text(label)
-                .font(.system(size: 12, weight: .medium))
+            Text(label.uppercased())
+                .font(DS.Typography.label(10)).tracking(2)
                 .foregroundColor(focusedField == field ? DS.Colors.accent : DS.Colors.secondary)
                 .animation(.easeInOut(duration: 0.2), value: focusedField)
             TextField(placeholder, text: text)
                 .focused($focusedField, equals: field)
-                .font(.system(size: 16, weight: .medium)).foregroundColor(.primary)
+                .font(DS.Typography.body(16)).foregroundColor(.primary)
                 .autocapitalization(.words).disableAutocorrection(true)
                 .padding(.vertical, 14).padding(.horizontal, 16)
-                .background(Color.white.opacity(focusedField == field ? 0.09 : 0.06))
+                .background(focusedField == field ? DS.Surface.weak : DS.Surface.subtle)
                 .clipShape(RoundedRectangle(cornerRadius: DS.Radius.m, style: .continuous))
                 .overlay(RoundedRectangle(cornerRadius: DS.Radius.m, style: .continuous)
-                    .stroke(focusedField == field ? DS.Colors.accent.opacity(0.7) : Color.white.opacity(0.10),
+                    .stroke(focusedField == field ? DS.Colors.accent.opacity(0.7) : DS.Colors.cardStroke,
                             lineWidth: focusedField == field ? 1.5 : 1))
                 .animation(.easeInOut(duration: 0.2), value: focusedField)
         }
@@ -851,17 +814,17 @@ struct SchoolLinkSheet: View {
 
     var body: some View {
         ZStack {
-            Color(red: 0.07, green: 0.07, blue: 0.11).ignoresSafeArea()
+            DS.Colors.bg.ignoresSafeArea()
             VStack(spacing: 0) {
-                Capsule().fill(Color.white.opacity(0.15))
+                Capsule().fill(DS.Colors.secondary.opacity(0.4))
                     .frame(width: 36, height: 4).padding(.top, DS.Spacing.m)
                 VStack(spacing: DS.Spacing.xl) {
                     VStack(alignment: .leading, spacing: 4) {
                         Text("Link a school")
-                            .font(.system(size: 20, weight: .semibold))
+                            .font(DS.Typography.heading(20))
                             .foregroundColor(.primary)
                         Text("Enter the code from your instructor")
-                            .font(.system(size: 13))
+                            .font(DS.Typography.body(13))
                             .foregroundColor(DS.Colors.secondary)
                     }
                     .frame(maxWidth: .infinity, alignment: .leading)
@@ -880,7 +843,7 @@ struct SchoolLinkSheet: View {
                                     ProgressView().tint(.white)
                                 } else {
                                     Text("Find School")
-                                        .font(.system(size: 16, weight: .bold))
+                                        .font(DS.Typography.heading(16))
                                         .foregroundColor(.white)
                                 }
                             }
@@ -894,7 +857,7 @@ struct SchoolLinkSheet: View {
                         .disabled(codeInput.trimmingCharacters(in: .whitespaces).isEmpty || manager.isLoading)
                         Button(action: onDismiss) {
                             Text("Cancel")
-                                .font(.system(size: 15, weight: .semibold))
+                                .font(DS.Typography.body(15, weight: .semibold))
                                 .foregroundColor(DS.Colors.secondary)
                                 .frame(maxWidth: .infinity)
                                 .padding(.vertical, 12)
