@@ -46,7 +46,7 @@ struct RecentDriveDetail: View {
                 VStack(spacing: DS.Spacing.m) {
                     PhosphorIcon.fill("car", size: 40, color: DS.Colors.secondary)
                     Text("No drives yet")
-                        .font(.system(size: 18, weight: .bold, design: .rounded))
+                        .font(DS.Typography.heading(18))
                         .foregroundColor(.primary)
                     Text("Complete your first drive to see your report here.")
                         .font(.system(size: 14, weight: .medium))
@@ -138,16 +138,6 @@ struct WeeklyTrendDetail: View {
         return [great, good, okay, poor].filter { $0.count > 0 }
     }
 
-    private var activeScores: [Double] { weekData.map(\.1).filter { $0 > 0 } }
-    private var minActive: Double { activeScores.min() ?? 0 }
-    private var maxActive: Double { activeScores.max() ?? 100 }
-
-    // Fixed 0-100 scale — tick marks at 60/70/80/90 map to consistent absolute heights
-    private func barHeight(for score: Double) -> Double {
-        guard score > 0 else { return 4 }
-        return 4 + (score / 100.0) * 116
-    }
-
     private func scoreColor(_ score: Double) -> Color {
         switch score {
         case 90...:    return DS.Colors.scoreGreat
@@ -188,7 +178,7 @@ struct WeeklyTrendDetail: View {
                         Spacer()
                         VStack(spacing: 2) {
                             Text(weekLabel)
-                                .font(.system(size: 13, weight: .semibold))
+                                .font(DS.Typography.heading(13))
                                 .foregroundColor(DS.Colors.secondary)
                             if weekAvg > 0 {
                                 Text("Avg \(Int(weekAvg))")
@@ -209,44 +199,37 @@ struct WeeklyTrendDetail: View {
                         .disabled(weekOffset >= 0)
                     }
 
-                    // Tappable bars
-                    HStack(alignment: .bottom, spacing: DS.Spacing.s) {
+                    // Daily score rings — a week of mini-gauges echoing the hero
+                    HStack(alignment: .top, spacing: 4) {
                         ForEach(Array(weekData.enumerated()), id: \.0) { i, pair in
                             let (day, score) = pair
                             let isSelected = selectedDayIndex == i
-                            let isBest = score > 0 && score == bestEntry?.1
                             let hasData = score > 0
-                            let barFill: Color = {
-                                if isSelected { return scoreColor(score) }
-                                if isBest     { return DS.Colors.accent }
-                                if hasData    { return DS.Colors.accent.opacity(0.5) }
-                                return DS.Surface.weak
-                            }()
-                            VStack(spacing: DS.Spacing.xs) {
-                                RoundedRectangle(cornerRadius: 2, style: .continuous)
-                                    .fill(barFill)
-                                    .frame(height: barsAnimated ? barHeight(for: score) : 4)
-                                    .overlay(
-                                        // Horizontal tick marks at score thresholds (60/70/80/90)
-                                        Canvas { ctx, size in
-                                            for tick in [60.0, 70.0, 80.0, 90.0] {
-                                                let tickH = CGFloat(4 + tick / 100.0 * 116)
-                                                guard tickH <= size.height else { continue }
-                                                let y = size.height - tickH
-                                                var path = Path()
-                                                path.move(to:    CGPoint(x: 0, y: y))
-                                                path.addLine(to: CGPoint(x: size.width, y: y))
-                                                ctx.stroke(path, with: .color(.black.opacity(0.30)), lineWidth: 0.5)
-                                            }
-                                        }
-                                    )
-                                    .animation(.easeOut(duration: 0.5).delay(Double(i) * 0.06), value: barsAnimated)
-                                    .animation(.spring(response: 0.3, dampingFraction: 0.7), value: isSelected)
-                                Text(day)
-                                    .font(.system(size: 10, weight: isBest || isSelected ? .semibold : .regular,
-                                                  design: .monospaced))
-                                    .foregroundColor(isSelected || isBest ? .primary : DS.Colors.secondary)
+                            VStack(spacing: 7) {
+                                ZStack {
+                                    Circle()
+                                        .trim(from: 0, to: 0.75)
+                                        .stroke(DS.Surface.weak, style: StrokeStyle(lineWidth: 4, lineCap: .round))
+                                        .rotationEffect(.degrees(135))
+                                    if hasData {
+                                        Circle()
+                                            .trim(from: 0, to: barsAnimated ? score / 100.0 * 0.75 : 0)
+                                            .stroke(scoreColor(score), style: StrokeStyle(lineWidth: 4, lineCap: .round))
+                                            .rotationEffect(.degrees(135))
+                                            .animation(.easeOut(duration: 0.6).delay(Double(i) * 0.06), value: barsAnimated)
+                                    }
+                                    Text(hasData ? "\(Int(score))" : "–")
+                                        .font(DS.Typography.data(11, weight: .bold))
+                                        .foregroundColor(hasData ? .primary : DS.Colors.secondary.opacity(0.5))
+                                }
+                                .frame(width: 40, height: 40)
+                                Text(day.uppercased())
+                                    .font(DS.Typography.label(9))
+                                    .tracking(0.5)
+                                    .foregroundColor(isSelected ? .primary : DS.Colors.secondary)
                             }
+                            .scaleEffect(isSelected ? 1.12 : 1.0)
+                            .animation(.spring(response: 0.3, dampingFraction: 0.7), value: isSelected)
                             .frame(maxWidth: .infinity)
                             .contentShape(Rectangle())
                             .onTapGesture {
@@ -256,7 +239,6 @@ struct WeeklyTrendDetail: View {
                             }
                         }
                     }
-                    .frame(height: 150)
 
                     // Selected day detail panel
                     if let idx = selectedDayIndex {
@@ -275,11 +257,11 @@ struct WeeklyTrendDetail: View {
                                 // Day summary header
                                 HStack(alignment: .firstTextBaseline, spacing: DS.Spacing.s) {
                                     Text("\(Int(score))")
-                                        .font(.system(size: 32, weight: .black, design: .monospaced))
+                                        .font(DS.Typography.data(32))
                                         .foregroundColor(scoreColor(score))
                                     VStack(alignment: .leading, spacing: 1) {
                                         Text(day)
-                                            .font(.system(size: 13, weight: .bold))
+                                            .font(DS.Typography.heading(14))
                                             .foregroundColor(.primary)
                                         Text("\(daySessions.count) drive\(daySessions.count == 1 ? "" : "s")  ·  \(scoreGrade(score))")
                                             .font(.system(size: 11, weight: .heavy))
@@ -374,10 +356,10 @@ struct WeeklyTrendDetail: View {
 
             VStack(spacing: DS.Spacing.s) {
                 Text("No Data Yet")
-                    .font(.system(size: 24, weight: .black, design: .rounded))
+                    .font(DS.Typography.display(24))
                     .foregroundColor(.primary)
                 Text("Complete your first drive and your\nweekly trends will appear here.")
-                    .font(.system(size: 14, weight: .medium, design: .rounded))
+                    .font(.system(size: 14, weight: .medium))
                     .foregroundColor(DS.Colors.secondary)
                     .multilineTextAlignment(.center)
                     .lineSpacing(3)
@@ -441,7 +423,7 @@ struct WeeklyTrendDetail: View {
                     .frame(width: 28)
                 VStack(alignment: .leading, spacing: 3) {
                     Text(info.period)
-                        .font(.system(size: 18, weight: .black, design: .monospaced))
+                        .font(DS.Typography.data(18))
                         .foregroundColor(.primary)
                     Text("Your avg score is \(Int(info.avg)) — \(String(format: "%.0f", info.delta)) pts higher than your other sessions")
                         .font(.system(size: 12, weight: .medium))
@@ -496,7 +478,7 @@ struct WeeklyTrendDetail: View {
                         Spacer()
                         VStack(alignment: .trailing, spacing: 2) {
                             Text("\(Int(route.avg))")
-                                .font(.system(size: 18, weight: .black, design: .monospaced))
+                                .font(DS.Typography.data(18))
                                 .foregroundColor(scoreColor(route.avg))
                             HStack(spacing: 3) {
                                 Image(systemName: route.trend > 1 ? "arrow.up" : route.trend < -1 ? "arrow.down" : "minus")
@@ -517,68 +499,55 @@ struct WeeklyTrendDetail: View {
 
     // MARK: – Score Quality Card
 
-    // Returns 10 segment colors for the fuel-gauge bar: poor→great, left to right
-    private func fuelSegments(from dist: [(label: String, count: Int, color: Color)], total: Int) -> [Color] {
-        var colors: [Color] = []
-        let orderedKeys = ["Poor", "Okay", "Good", "Great"]
-        for key in orderedKeys {
-            if let band = dist.first(where: { $0.label == key }) {
-                let n = Int((Double(band.count) / Double(total) * 10).rounded())
-                colors.append(contentsOf: Array(repeating: band.color, count: n))
-            }
-        }
-        // Pad or trim to exactly 10 segments
-        let empty = Color.white.opacity(0.06)
-        while colors.count < 10 { colors.append(empty) }
-        return Array(colors.prefix(10))
-    }
-
     private var scoreQualityCard: some View {
         let dist = scoreDistribution
         let total = dist.map(\.count).reduce(0, +)
         return VStack(alignment: .leading, spacing: DS.Spacing.m) {
-            Text("Drive quality")
-                .font(.system(size: 12, weight: .semibold))
+            Text("DRIVE QUALITY")
+                .font(DS.Typography.label(11))
+                .tracking(2)
                 .foregroundColor(DS.Colors.secondary)
 
-            Group {
             if total == 0 {
                 HStack {
-                    PhosphorIcon.fill("car", size: 18, color: DS.Colors.secondary.opacity(0.35))
-                    Text("No drives recorded this week")
+                    PhosphorIcon.fill("car", size: 16, color: DS.Colors.secondary.opacity(0.35))
+                    Text("No drives this week")
                         .font(.system(size: 13, weight: .medium))
                         .foregroundColor(DS.Colors.secondary)
                     Spacer()
                 }
-                .frame(maxWidth: .infinity)
+                .frame(minHeight: 48, alignment: .leading)
             } else {
-                // Fuel-gauge stripe — 10 discrete segments ordered by quality
-                let segments = fuelSegments(from: dist, total: total)
-                HStack(spacing: 3) {
-                    ForEach(Array(segments.enumerated()), id: \.0) { _, seg in
-                        RoundedRectangle(cornerRadius: 1)
-                            .fill(seg)
-                            .frame(maxWidth: .infinity, maxHeight: 10)
+                // One continuous bar split by quality proportion
+                GeometryReader { geo in
+                    HStack(spacing: 0) {
+                        ForEach(dist, id: \.label) { band in
+                            Rectangle()
+                                .fill(band.color)
+                                .frame(width: geo.size.width * CGFloat(band.count) / CGFloat(max(total, 1)))
+                        }
                     }
                 }
+                .frame(height: 12)
+                .clipShape(Capsule())
 
                 // Legend
-                HStack(spacing: DS.Spacing.m) {
+                HStack(spacing: DS.Spacing.l) {
                     ForEach(dist, id: \.label) { band in
-                        HStack(spacing: 4) {
-                            RoundedRectangle(cornerRadius: 1)
-                                .fill(band.color)
-                                .frame(width: 10, height: 4)
-                            Text("\(band.count) \(band.label)")
-                                .font(.system(size: 11, weight: .semibold))
+                        HStack(spacing: 5) {
+                            Circle().fill(band.color).frame(width: 6, height: 6)
+                            Text("\(band.count)")
+                                .font(DS.Typography.data(13, weight: .bold))
                                 .foregroundColor(.primary)
+                            Text(band.label.uppercased())
+                                .font(DS.Typography.label(9))
+                                .tracking(1)
+                                .foregroundColor(DS.Colors.secondary)
                         }
                     }
                     Spacer()
                 }
             }
-        }
-        .frame(minHeight: 58, alignment: .leading)
         }
         .padding(.horizontal, 20)
     }
@@ -635,7 +604,7 @@ struct WeekComparisonCard: View {
             // Header
             HStack {
                 Text("VS LAST WEEK")
-                    .font(.system(size: 10, weight: .heavy))
+                    .font(DS.Typography.label(11))
                     .tracking(2)
                     .foregroundColor(DS.Colors.secondary)
                 Spacer()
@@ -673,11 +642,10 @@ struct WeekComparisonCard: View {
             }
             .sensoryFeedback(.impact(weight: .light), trigger: selectedMetric)
 
-            // Bar comparison — vertical, Apple Health style
-            HStack(alignment: .bottom, spacing: 16) {
-                vertBar(label: currLabel, value: currVal, maxVal: maxVal, color: tab.color, isPrimary: true)
-                vertBar(label: prevLabel, value: hasPrev ? prevVal : 0, maxVal: maxVal, color: tab.color.opacity(0.38), isPrimary: false)
-                Spacer()
+            // Comparison bars — horizontal, fills the width cleanly
+            VStack(spacing: 10) {
+                compBar(label: currLabel, value: currVal, maxVal: maxVal, color: tab.color, isPrimary: true)
+                compBar(label: prevLabel, value: hasPrev ? prevVal : 0, maxVal: maxVal, color: tab.color.opacity(0.4), isPrimary: false)
             }
 
             // Delta line
@@ -705,32 +673,27 @@ struct WeekComparisonCard: View {
         .onChange(of: selectedMetric) { _, _ in }  // keeps barsIn trigger clean
     }
 
-    private func vertBar(label: String, value: Double, maxVal: Double, color: Color, isPrimary: Bool) -> some View {
+    private func compBar(label: String, value: Double, maxVal: Double, color: Color, isPrimary: Bool) -> some View {
         let fraction = CGFloat(barsIn && value > 0 ? value / maxVal : 0)
-        let barW: CGFloat = 54
-        let barMaxH: CGFloat = 100
-
-        return VStack(spacing: 6) {
-            Text(value > 0 ? "\(Int(value))" : "–")
-                .font(.system(size: isPrimary ? 22 : 17, weight: isPrimary ? .black : .semibold, design: .monospaced))
-                .foregroundColor(isPrimary ? Color.primary : DS.Colors.secondary)
-
-            ZStack(alignment: .bottom) {
-                RoundedRectangle(cornerRadius: 8, style: .continuous)
-                    .fill(Color.white.opacity(0.05))
-                    .frame(width: barW, height: barMaxH)
-                RoundedRectangle(cornerRadius: 8, style: .continuous)
-                    .fill(LinearGradient(
-                        colors: [color.opacity(0.75), color],
-                        startPoint: .bottom, endPoint: .top
-                    ))
-                    .frame(width: barW, height: barMaxH * fraction)
-                    .animation(.spring(duration: 0.55, bounce: 0.12).delay(isPrimary ? 0 : 0.07), value: fraction)
+        return HStack(spacing: DS.Spacing.m) {
+            Text(label.uppercased())
+                .font(DS.Typography.label(9))
+                .tracking(1)
+                .foregroundColor(isPrimary ? .primary : DS.Colors.secondary)
+                .frame(width: 78, alignment: .leading)
+            GeometryReader { geo in
+                ZStack(alignment: .leading) {
+                    Capsule().fill(DS.Surface.weak)
+                    Capsule().fill(color)
+                        .frame(width: max(0, geo.size.width * fraction))
+                        .animation(.spring(duration: 0.55, bounce: 0.12).delay(isPrimary ? 0 : 0.07), value: fraction)
+                }
             }
-
-            Text(label)
-                .font(.system(size: 10, weight: isPrimary ? .semibold : .regular))
-                .foregroundColor(isPrimary ? Color.primary.opacity(0.75) : DS.Colors.secondary)
+            .frame(height: 8)
+            Text(value > 0 ? "\(Int(value))" : "–")
+                .font(DS.Typography.data(isPrimary ? 18 : 15, weight: isPrimary ? .black : .bold))
+                .foregroundColor(isPrimary ? .primary : DS.Colors.secondary)
+                .frame(width: 34, alignment: .trailing)
         }
     }
 }
@@ -739,6 +702,7 @@ struct WeekComparisonCard: View {
 
 struct WeekRouteMapCard: View {
     let sessions: [DriveSession]
+    @Environment(\.colorScheme) private var colorScheme
 
     private struct RoutePair: Identifiable {
         let id: UUID; let coords: [CLLocationCoordinate2D]; let score: Double
@@ -751,18 +715,6 @@ struct WeekRouteMapCard: View {
                              coords: s.route.map { CLLocationCoordinate2D(latitude: $0.lat, longitude: $0.lng) },
                              score: s.score)
         }
-    }
-
-    private var mapRegion: MKCoordinateRegion? {
-        let all = routePairs.flatMap(\.coords)
-        guard !all.isEmpty else { return nil }
-        let lats = all.map(\.latitude); let lngs = all.map(\.longitude)
-        return MKCoordinateRegion(
-            center: CLLocationCoordinate2D(latitude: (lats.min()! + lats.max()!) / 2,
-                                           longitude: (lngs.min()! + lngs.max()!) / 2),
-            span: MKCoordinateSpan(latitudeDelta:  max((lats.max()! - lats.min()!) * 1.5, 0.02),
-                                   longitudeDelta: max((lngs.max()! - lngs.min()!) * 1.5, 0.02))
-        )
     }
 
     var body: some View {
@@ -789,61 +741,18 @@ struct WeekRouteMapCard: View {
                 }
                 .frame(height: 56, alignment: .leading)
             } else {
-                // Abstract vector route — instrument-cluster schematic, no map tiles
-                RouteVectorCanvas(routePairs: routePairs.map { ($0.coords, $0.score) })
-                    .frame(height: 180)
-                    .clipShape(RoundedRectangle(cornerRadius: DS.Radius.m, style: .continuous))
+                // Real basemap with each route tinted by its score.
+                MapLibreMultiRouteRepresentable(
+                    items: routePairs.map {
+                        .init(coords: $0.coords, color: UIColor(scoreColor(for: $0.score)))
+                    },
+                    colorScheme: colorScheme
+                )
+                .frame(height: 180)
+                .clipShape(RoundedRectangle(cornerRadius: DS.Radius.m, style: .continuous))
             }
         }
         .padding(.horizontal, 20)
-    }
-}
-
-// MARK: – Abstract Route Canvas (instrument-schematic, no map tiles)
-
-struct RouteVectorCanvas: View {
-    let routePairs: [([CLLocationCoordinate2D], Double)]
-
-    var body: some View {
-        Canvas { ctx, size in
-            let allCoords = routePairs.flatMap(\.0)
-            guard !allCoords.isEmpty else { return }
-
-            let lats   = allCoords.map(\.latitude)
-            let lngs   = allCoords.map(\.longitude)
-            let latMin = lats.min()!,  latMax = lats.max()!
-            let lngMin = lngs.min()!,  lngMax = lngs.max()!
-            let latSpan = max(latMax - latMin, 0.001)
-            let lngSpan = max(lngMax - lngMin, 0.001)
-            let m: CGFloat = 16
-
-            func pt(_ c: CLLocationCoordinate2D) -> CGPoint {
-                CGPoint(
-                    x: m + CGFloat((c.longitude - lngMin) / lngSpan) * (size.width  - m * 2),
-                    y: size.height - m - CGFloat((c.latitude - latMin) / latSpan) * (size.height - m * 2)
-                )
-            }
-
-            for (coords, score) in routePairs {
-                guard coords.count >= 2 else { continue }
-                let color = scoreColor(for: score)
-
-                var path = Path()
-                path.move(to: pt(coords[0]))
-                for c in coords.dropFirst() { path.addLine(to: pt(c)) }
-                ctx.stroke(path, with: .color(color.opacity(0.75)), lineWidth: 1.5)
-
-                let s = pt(coords.first!)
-                ctx.fill(Path(ellipseIn: CGRect(x: s.x-3, y: s.y-3, width: 6, height: 6)),
-                         with: .color(color))
-
-                let e = pt(coords.last!)
-                var ring = Path()
-                ring.addEllipse(in: CGRect(x: e.x-3.5, y: e.y-3.5, width: 7, height: 7))
-                ctx.stroke(ring, with: .color(color), lineWidth: 1.5)
-            }
-        }
-        .background(Color.black)
     }
 }
 
@@ -872,7 +781,7 @@ struct ScoreLineGraph: View {
                     if let idx = scrubIndex {
                         HStack(alignment: .firstTextBaseline, spacing: 6) {
                             Text("\(Int(sessions[idx].score))")
-                                .font(.system(size: 28, weight: .black, design: .monospaced))
+                                .font(DS.Typography.data(28))
                                 .foregroundColor(scoreColor(for: sessions[idx].score))
                             Text(Self.dateFmt.string(from: sessions[idx].date))
                                 .font(.system(size: 12, weight: .medium))
@@ -1129,26 +1038,26 @@ struct AchievementsDetail: View {
 
     private var overviewCard: some View {
         HStack(spacing: DS.Spacing.xl) {
-            // Progress ring
+            // Progress ring — the achievements gauge, echoing the home dial
             ZStack {
                 Circle()
-                    .stroke(Color.white.opacity(0.08), lineWidth: 7)
-                    .frame(width: 86, height: 86)
+                    .stroke(DS.Surface.weak, lineWidth: 8)
+                    .frame(width: 100, height: 100)
                 Circle()
                     .trim(from: 0, to: ringAnimated
                           ? CGFloat(earnedCount) / CGFloat(max(1, allBadges.count))
                           : 0)
                     .stroke(DS.Colors.accent,
-                            style: StrokeStyle(lineWidth: 7, lineCap: .round))
-                    .frame(width: 86, height: 86)
+                            style: StrokeStyle(lineWidth: 8, lineCap: .round))
+                    .frame(width: 100, height: 100)
                     .rotationEffect(.degrees(-90))
                     .animation(.spring(response: 1.1, dampingFraction: 0.7).delay(0.15), value: ringAnimated)
                 VStack(spacing: 0) {
                     Text("\(earnedCount)")
-                        .font(.system(size: 28, weight: .black, design: .monospaced))
+                        .font(DS.Typography.display(38))
                         .foregroundColor(.primary)
                     Text("/ \(allBadges.count)")
-                        .font(.system(size: 10, weight: .heavy))
+                        .font(DS.Typography.label(10))
                         .foregroundColor(DS.Colors.secondary)
                 }
             }
@@ -1173,7 +1082,7 @@ struct AchievementsDetail: View {
     private func overviewMiniStat(value: String, label: String, color: Color) -> some View {
         HStack(spacing: DS.Spacing.s) {
             Text(value)
-                .font(.system(size: 18, weight: .black, design: .monospaced))
+                .font(DS.Typography.data(18))
                 .foregroundColor(color)
             Text(label)
                 .font(DS.Typography.label(9))
@@ -1226,10 +1135,10 @@ struct BadgeDetailSheet: View {
 
                     // Hero icon
                     ZStack {
-                        PatchShape()
+                        Circle()
                             .fill(badge.color.opacity(badge.isEarned ? 0.16 : 0.06))
                             .frame(width: 100, height: 100)
-                            .overlay(PatchShape().stroke(
+                            .overlay(Circle().stroke(
                                 badge.isEarned ? badge.color.opacity(0.45) : Color.white.opacity(0.08),
                                 lineWidth: 2))
                         PhosphorIcon.fill(badge.icon, size: 40, color: badge.isEarned ? badge.color : Color.white.opacity(0.15))
@@ -1246,7 +1155,7 @@ struct BadgeDetailSheet: View {
                     // Title + earned status
                     VStack(spacing: DS.Spacing.s) {
                         Text(badge.title)
-                            .font(.system(size: 26, weight: .black, design: .rounded))
+                            .font(DS.Typography.display(26))
                             .foregroundColor(.primary)
                             .multilineTextAlignment(.center)
                         if badge.isEarned {
@@ -1376,13 +1285,13 @@ struct TieredBadgeRow: View {
         VStack(spacing: 0) {
             HStack(spacing: DS.Spacing.m) {
                 ZStack {
-                    PatchShape()
+                    Circle()
                         .fill(badge.isEarned
                               ? badge.color.opacity(0.15)
                               : Color.white.opacity(0.04))
                         .frame(width: 56, height: 56)
                         .overlay(
-                            PatchShape()
+                            Circle()
                                 .stroke(badge.isEarned ? badge.color.opacity(0.40) : Color.white.opacity(0.06),
                                         lineWidth: 1)
                         )
@@ -1452,13 +1361,13 @@ struct UnlockBadgeCell: View {
     var body: some View {
         VStack(spacing: DS.Spacing.xs) {
             ZStack {
-                PatchShape()
+                Circle()
                     .fill(badge.isEarned
                           ? badge.color.opacity(0.15)
                           : Color.white.opacity(0.04))
                     .frame(width: 62, height: 62)
                     .overlay(
-                        PatchShape()
+                        Circle()
                             .stroke(badge.isEarned
                                     ? badge.color.opacity(0.40)
                                     : Color.white.opacity(0.06),
@@ -1468,7 +1377,7 @@ struct UnlockBadgeCell: View {
                 if badge.isEarned {
                     PhosphorIcon.fill(badge.icon, size: 22, color: badge.color)
                 } else {
-                    // Blanked-out patch — no icon, no lock
+                    // Blanked-out circle — no icon, no lock
                     Rectangle()
                         .fill(Color.white.opacity(0.04))
                         .frame(width: 28, height: 4)
@@ -1499,9 +1408,8 @@ struct UnlockBadgeCell: View {
 struct RouteStatCard: View {
     let stats: RouteStats
 
-    private var routeCoordinates: [CLLocationCoordinate2D] {
-        (stats.sessions.sorted { $0.date > $1.date }.first { $0.route.count >= 2 }?.route ?? [])
-            .map { CLLocationCoordinate2D(latitude: $0.lat, longitude: $0.lng) }
+    private var routePoints: [RoutePoint] {
+        stats.sessions.sorted { $0.date > $1.date }.first { $0.route.count >= 2 }?.route ?? []
     }
 
     private var improvementText: String {
@@ -1519,21 +1427,16 @@ struct RouteStatCard: View {
         VStack(alignment: .leading, spacing: 0) {
 
             // Mini route map (when GPS data available)
-            if routeCoordinates.count >= 2 {
-                Map {
-                    MapPolyline(coordinates: routeCoordinates)
-                        .stroke(DS.Colors.accent, lineWidth: 3)
-                }
-                .mapStyle(.standard(pointsOfInterest: .excludingAll, showsTraffic: false))
-                .colorScheme(.dark)
-                .frame(height: 130)
-                .clipShape(
-                    UnevenRoundedRectangle(
-                        topLeadingRadius: DS.Radius.m, bottomLeadingRadius: 0,
-                        bottomTrailingRadius: 0, topTrailingRadius: DS.Radius.m
+            if routePoints.count >= 2 {
+                SignatureRouteView(route: routePoints)
+                    .frame(height: 130)
+                    .clipShape(
+                        UnevenRoundedRectangle(
+                            topLeadingRadius: DS.Radius.m, bottomLeadingRadius: 0,
+                            bottomTrailingRadius: 0, topTrailingRadius: DS.Radius.m
+                        )
                     )
-                )
-                .allowsHitTesting(false)
+                    .allowsHitTesting(false)
             }
 
             VStack(alignment: .leading, spacing: DS.Spacing.s) {
@@ -1575,7 +1478,7 @@ struct RouteStatCard: View {
 
     private func routeStat(value: String, label: String) -> some View {
         VStack(spacing: 2) {
-            Text(value).font(.system(size: 18, weight: .black, design: .monospaced)).foregroundColor(.primary)
+            Text(value).font(DS.Typography.data(18)).foregroundColor(.primary)
             Text(label).font(.system(size: 9, weight: .heavy)).tracking(1.5).foregroundColor(DS.Colors.secondary)
         }
     }
