@@ -4,8 +4,10 @@
 //
 
 import SwiftUI
+import UIKit
 import CoreLocation
 import AVFoundation
+import UserNotifications
 
 // MARK: – Looping silent video player
 
@@ -47,19 +49,103 @@ private struct LoopingVideoPlayer: UIViewRepresentable {
     func updateUIView(_ uiView: _LoopingPlayerUIView, context: Context) {}
 }
 
+// MARK: – Permission state
+
+/// State of a single permission, used to drive each card's affordance.
+enum PermState { case undetermined, granted, denied }
+
+/// Reactive permission manager — replaces the old `asyncAfter` status guess with
+/// real callbacks, so the cards update the instant the system returns a result,
+/// and again whenever the app comes back from Settings.
+@MainActor
+final class OnboardingPermissions: NSObject, ObservableObject, CLLocationManagerDelegate {
+    @Published var location: PermState = .undetermined
+    @Published var camera: PermState = .undetermined
+    @Published var notifications: PermState = .undetermined
+
+    private let locationManager = CLLocationManager()
+
+    override init() {
+        super.init()
+        locationManager.delegate = self
+        refresh()
+    }
+
+    /// Re-read every status — call on appear and when returning to foreground.
+    func refresh() {
+        location = Self.map(locationManager.authorizationStatus)
+        camera = Self.map(AVCaptureDevice.authorizationStatus(for: .video))
+        UNUserNotificationCenter.current().getNotificationSettings { settings in
+            Task { @MainActor in self.notifications = Self.map(settings.authorizationStatus) }
+        }
+    }
+
+    func requestLocation() {
+        guard location == .undetermined else { return openSettings() }
+        locationManager.requestWhenInUseAuthorization()
+    }
+
+    func requestCamera() {
+        guard camera == .undetermined else { return openSettings() }
+        AVCaptureDevice.requestAccess(for: .video) { _ in
+            Task { @MainActor in self.refresh() }
+        }
+    }
+
+    func requestNotifications() {
+        guard notifications == .undetermined else { return openSettings() }
+        UNUserNotificationCenter.current()
+            .requestAuthorization(options: [.alert, .badge, .sound]) { _, _ in
+                Task { @MainActor in self.refresh() }
+            }
+    }
+
+    nonisolated func locationManagerDidChangeAuthorization(_ manager: CLLocationManager) {
+        let status = manager.authorizationStatus
+        Task { @MainActor in self.location = Self.map(status) }
+    }
+
+    private func openSettings() {
+        if let url = URL(string: UIApplication.openSettingsURLString) {
+            UIApplication.shared.open(url)
+        }
+    }
+
+    private static func map(_ s: CLAuthorizationStatus) -> PermState {
+        switch s {
+        case .authorizedWhenInUse, .authorizedAlways: return .granted
+        case .denied, .restricted: return .denied
+        default: return .undetermined
+        }
+    }
+    private static func map(_ s: AVAuthorizationStatus) -> PermState {
+        switch s {
+        case .authorized: return .granted
+        case .denied, .restricted: return .denied
+        default: return .undetermined
+        }
+    }
+    private static func map(_ s: UNAuthorizationStatus) -> PermState {
+        switch s {
+        case .authorized, .provisional, .ephemeral: return .granted
+        case .denied: return .denied
+        default: return .undetermined
+        }
+    }
+}
+
 // MARK: – Root container
 
 struct OnboardingView: View {
     var onComplete: () -> Void
 
-    @State private var page            = 0
-    @State private var locationGranted = false
-    @State private var cameraGranted   = false
-    @State private var notifGranted    = false
-    @State private var name            = ""
+    @State private var page = 0
+    @State private var name = ""
     @State private var driverType: DriverType = .full
+    @StateObject private var perms = OnboardingPermissions()
+    @Environment(\.scenePhase) private var scenePhase
 
-    private let totalPages = 4
+    private let totalPages = 5
 
     var body: some View {
         ZStack {
@@ -97,16 +183,10 @@ struct OnboardingView: View {
                 // Pages
                 TabView(selection: $page) {
                     OnboardingWelcomePage().tag(0)
-                    OnboardingPermissionsPage(
-                        locationGranted: $locationGranted,
-                        cameraGranted:   $cameraGranted,
-                        notifGranted:    $notifGranted,
-                        onRequestLocation:     requestLocation,
-                        onRequestCamera:       requestCamera,
-                        onRequestNotifications: requestNotifications
-                    ).tag(1)
-                    OnboardingAboutYouPage(name: $name, driverType: $driverType).tag(2)
-                    OnboardingReadyPage(name: name).tag(3)
+                    OnboardingHowItWorksPage().tag(1)
+                    OnboardingPermissionsPage(perms: perms).tag(2)
+                    OnboardingAboutYouPage(name: $name, driverType: $driverType).tag(3)
+                    OnboardingReadyPage(name: name).tag(4)
                 }
                 .tabViewStyle(.page(indexDisplayMode: .never))
                 .animation(.easeInOut(duration: 0.38), value: page)
@@ -114,34 +194,35 @@ struct OnboardingView: View {
                 // CTA area
                 VStack(spacing: DS.Spacing.s) {
                     Button(action: advance) {
-                        HStack(spacing: 8) {
-                            Text(ctaLabel)
-                                .font(.system(size: 17, weight: .bold))
-                        }
-                        .foregroundColor(.white)
-                        .frame(maxWidth: .infinity)
-                        .padding(.vertical, 18)
-                        .background(
-                            LinearGradient(
-                                colors: [DS.Colors.accent, DS.Colors.accent.opacity(0.78)],
-                                startPoint: .topLeading, endPoint: .bottomTrailing
+                        Text(ctaLabel)
+                            .font(DS.Typography.heading(17))
+                            .foregroundColor(.white)
+                            .frame(maxWidth: .infinity)
+                            .padding(.vertical, 18)
+                            .background(
+                                LinearGradient(
+                                    colors: [DS.Colors.accent, DS.Colors.accent.opacity(0.78)],
+                                    startPoint: .topLeading, endPoint: .bottomTrailing
+                                )
                             )
-                        )
-                        .clipShape(RoundedRectangle(cornerRadius: DS.Radius.l, style: .continuous))
-                        .shadow(color: DS.Colors.accent.opacity(0.38), radius: 18, y: 6)
+                            .clipShape(RoundedRectangle(cornerRadius: DS.Radius.l, style: .continuous))
+                            .shadow(color: DS.Colors.accent.opacity(0.38), radius: 18, y: 6)
                     }
 
                     if page < totalPages - 1 {
                         Button("Skip for now") {
                             withAnimation { page += 1 }
                         }
-                        .font(.system(size: 14, weight: .medium))
+                        .font(DS.Typography.body(14))
                         .foregroundColor(DS.Colors.secondary)
                     }
                 }
                 .padding(.horizontal, DS.Spacing.xl)
                 .padding(.bottom, DS.Spacing.xxl)
             }
+        }
+        .onChange(of: scenePhase) { _, phase in
+            if phase == .active { perms.refresh() }
         }
     }
 
@@ -165,30 +246,6 @@ struct OnboardingView: View {
         let trimmed = name.trimmingCharacters(in: .whitespaces)
         if !trimmed.isEmpty { ProfileManager.shared.save(displayName: trimmed) }
         ProfileManager.shared.save(driverType: driverType)
-    }
-
-    // MARK: – Permissions
-
-    private func requestLocation() {
-        let mgr = CLLocationManager()
-        mgr.requestWhenInUseAuthorization()
-        DispatchQueue.main.asyncAfter(deadline: .now() + 1) {
-            let status = mgr.authorizationStatus
-            locationGranted = status == .authorizedWhenInUse || status == .authorizedAlways
-        }
-    }
-
-    private func requestCamera() {
-        AVCaptureDevice.requestAccess(for: .video) { granted in
-            DispatchQueue.main.async { cameraGranted = granted }
-        }
-    }
-
-    private func requestNotifications() {
-        UNUserNotificationCenter.current()
-            .requestAuthorization(options: [.alert, .badge, .sound]) { granted, _ in
-                DispatchQueue.main.async { notifGranted = granted }
-            }
     }
 }
 
@@ -216,12 +273,12 @@ private struct OnboardingWelcomePage: View {
                 // Headline + body
                 VStack(spacing: DS.Spacing.s) {
                     Text("Score every drive.")
-                        .font(.system(size: 34, weight: .black, design: .rounded))
-                        .foregroundColor(.white)
+                        .font(DS.Typography.display(34))
+                        .foregroundColor(.primary)
                         .multilineTextAlignment(.center)
 
-                    Text("Drive uses your camera and sensors to grade your driving in real time.")
-                        .font(.system(size: 15, weight: .medium))
+                    Text("Your camera and motion sensors grade every trip in real time — then show you exactly how to improve.")
+                        .font(DS.Typography.body(15))
                         .foregroundColor(DS.Colors.secondary)
                         .multilineTextAlignment(.center)
                         .lineSpacing(3)
@@ -235,15 +292,9 @@ private struct OnboardingWelcomePage: View {
 
                 // Feature chips
                 VStack(spacing: DS.Spacing.s) {
-                    featureChip(icon: "sparkles",
-                                color: DS.Colors.accent,
-                                label: "AI Camera Scoring")
-                    featureChip(icon: "chart.line.uptrend.xyaxis",
-                                color: DS.Colors.scoreGreat,
-                                label: "Weekly Trends & Streaks")
-                    featureChip(icon: "trophy.fill",
-                                color: DS.Colors.scoreOkay,
-                                label: "Friends Leaderboard")
+                    featureChip(icon: "sparkle",       color: DS.Colors.accent,     label: "AI Camera Scoring")
+                    featureChip(icon: "chart-line-up", color: DS.Colors.scoreGreat, label: "Weekly Trends & Streaks")
+                    featureChip(icon: "trophy",        color: DS.Colors.scoreOkay,  label: "Friends Leaderboard")
                 }
                 .padding(.horizontal, DS.Spacing.xl)
                 .opacity(appeared ? 1 : 0)
@@ -258,19 +309,15 @@ private struct OnboardingWelcomePage: View {
 
     private func featureChip(icon: String, color: Color, label: String) -> some View {
         HStack(spacing: DS.Spacing.m) {
-            Image(systemName: icon)
-                .font(.system(size: 15, weight: .semibold))
-                .foregroundColor(color)
+            PhosphorIcon.fill(icon, size: 17, color: color)
                 .frame(width: 38, height: 38)
                 .background(color.opacity(0.12))
                 .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
             Text(label)
-                .font(.system(size: 15, weight: .semibold))
+                .font(DS.Typography.heading(15))
                 .foregroundColor(.white)
             Spacer()
-            Image(systemName: "checkmark")
-                .font(.system(size: 12, weight: .bold))
-                .foregroundColor(DS.Colors.scoreGreat)
+            PhosphorIcon(name: "check", size: 13, color: DS.Colors.scoreGreat, weight: .bold)
         }
         .padding(.horizontal, DS.Spacing.m)
         .padding(.vertical, DS.Spacing.s)
@@ -283,16 +330,95 @@ private struct OnboardingWelcomePage: View {
     }
 }
 
-// MARK: – Page 2: Permissions
+// MARK: – Page 2: How It Works (value / content)
+
+private struct OnboardingHowItWorksPage: View {
+    @State private var appeared = false
+
+    var body: some View {
+        VStack(spacing: 0) {
+            Spacer()
+
+            VStack(spacing: 6) {
+                Text("How it works")
+                    .font(DS.Typography.display(30))
+                    .foregroundColor(.primary)
+                Text("Three steps, every drive.")
+                    .font(DS.Typography.body(14))
+                    .foregroundColor(DS.Colors.secondary)
+            }
+            .opacity(appeared ? 1 : 0)
+            .offset(y: appeared ? 0 : 10)
+            .animation(.spring(duration: 0.5, bounce: 0.1).delay(0.05), value: appeared)
+
+            Spacer().frame(height: DS.Spacing.xl)
+
+            VStack(spacing: DS.Spacing.m) {
+                stepRow(n: 1, icon: "car", color: DS.Colors.accent,
+                        title: "Mount your phone",
+                        desc: "Clip it to the windshield with the camera facing the road.",
+                        delay: 0.15)
+                stepRow(n: 2, icon: "lightning", color: DS.Colors.scoreGreat,
+                        title: "Start a drive",
+                        desc: "AI vision and motion sensors watch the road and your inputs as you go.",
+                        delay: 0.25)
+                stepRow(n: 3, icon: "chart-line-up", color: DS.Colors.scoreOkay,
+                        title: "Get your score",
+                        desc: "A grade, a braking and cornering breakdown, and tips after every trip.",
+                        delay: 0.35)
+            }
+            .padding(.horizontal, DS.Spacing.xl)
+
+            Spacer()
+        }
+        .onAppear { appeared = true }
+    }
+
+    private func stepRow(n: Int, icon: String, color: Color,
+                         title: String, desc: String, delay: Double) -> some View {
+        HStack(spacing: DS.Spacing.m) {
+            ZStack(alignment: .topTrailing) {
+                PhosphorIcon.fill(icon, size: 22, color: color)
+                    .frame(width: 52, height: 52)
+                    .background(color.opacity(0.14))
+                    .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+                // Step number badge
+                Text("\(n)")
+                    .font(DS.Typography.data(11, weight: .bold))
+                    .foregroundColor(.white)
+                    .frame(width: 20, height: 20)
+                    .background(Circle().fill(color))
+                    .offset(x: 7, y: -7)
+            }
+
+            VStack(alignment: .leading, spacing: 3) {
+                Text(title)
+                    .font(DS.Typography.heading(16))
+                    .foregroundColor(.white)
+                Text(desc)
+                    .font(DS.Typography.body(13))
+                    .foregroundColor(DS.Colors.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            Spacer(minLength: 0)
+        }
+        .padding(DS.Spacing.m)
+        .background(
+            RoundedRectangle(cornerRadius: DS.Radius.m, style: .continuous)
+                .fill(Color.white.opacity(0.05))
+                .overlay(RoundedRectangle(cornerRadius: DS.Radius.m, style: .continuous)
+                    .stroke(DS.Colors.cardStroke))
+        )
+        .opacity(appeared ? 1 : 0)
+        .offset(y: appeared ? 0 : 20)
+        .animation(.spring(duration: 0.55, bounce: 0.1).delay(delay), value: appeared)
+    }
+}
+
+// MARK: – Page 3: Permissions
 
 private struct OnboardingPermissionsPage: View {
-    @Binding var locationGranted: Bool
-    @Binding var cameraGranted: Bool
-    @Binding var notifGranted: Bool
-    let onRequestLocation: () -> Void
-    let onRequestCamera: () -> Void
-    let onRequestNotifications: () -> Void
-
+    @ObservedObject var perms: OnboardingPermissions
     @State private var appeared = false
 
     var body: some View {
@@ -304,9 +430,7 @@ private struct OnboardingPermissionsPage: View {
                 Circle()
                     .fill(DS.Colors.accent.opacity(0.12))
                     .frame(width: 80, height: 80)
-                Image(systemName: "lock.shield.fill")
-                    .font(.system(size: 32, weight: .semibold))
-                    .foregroundColor(DS.Colors.accent)
+                PhosphorIcon.fill("shield-check", size: 34, color: DS.Colors.accent)
             }
             .opacity(appeared ? 1 : 0)
             .scaleEffect(appeared ? 1 : 0.6)
@@ -315,11 +439,12 @@ private struct OnboardingPermissionsPage: View {
             Spacer().frame(height: DS.Spacing.m)
 
             VStack(spacing: 6) {
-                Text("Quick setup")
-                    .font(.system(size: 30, weight: .black, design: .rounded))
-                    .foregroundColor(.white)
-                Text("Allow these to enable full AI scoring\nand drive tracking.")
-                    .font(.system(size: 14, weight: .medium))
+                Text("Three quick permissions")
+                    .font(DS.Typography.display(28))
+                    .foregroundColor(.primary)
+                    .multilineTextAlignment(.center)
+                Text("Drive only uses these while you're driving.\nNothing runs in the background.")
+                    .font(DS.Typography.body(14))
                     .foregroundColor(DS.Colors.secondary)
                     .multilineTextAlignment(.center)
                     .lineSpacing(2)
@@ -331,21 +456,21 @@ private struct OnboardingPermissionsPage: View {
             Spacer()
 
             VStack(spacing: DS.Spacing.m) {
-                permCard(icon: "location.fill", color: .green,
+                permCard(icon: "map-pin", color: .green,
                          title: "Location",
-                         desc:  "Routes your drive and captures GPS speed",
-                         granted: locationGranted, delay: 0.18,
-                         action: onRequestLocation)
-                permCard(icon: "camera.fill", color: DS.Colors.accent,
+                         desc: "Maps your route and captures GPS speed.",
+                         state: perms.location, delay: 0.18,
+                         action: perms.requestLocation)
+                permCard(icon: "camera", color: DS.Colors.accent,
                          title: "Camera",
-                         desc:  "Powers the AI vision model that scores your driving",
-                         granted: cameraGranted, delay: 0.28,
-                         action: onRequestCamera)
-                permCard(icon: "bell.fill", color: DS.Colors.scoreOkay,
+                         desc: "Powers the AI vision model that scores your driving.",
+                         state: perms.camera, delay: 0.28,
+                         action: perms.requestCamera)
+                permCard(icon: "bell", color: DS.Colors.scoreOkay,
                          title: "Notifications",
-                         desc:  "Streak reminders and badge unlock alerts",
-                         granted: notifGranted, delay: 0.38,
-                         action: onRequestNotifications)
+                         desc: "Streak reminders and badge-unlock alerts.",
+                         state: perms.notifications, delay: 0.38,
+                         action: perms.requestNotifications)
             }
             .padding(.horizontal, DS.Spacing.xl)
 
@@ -354,43 +479,42 @@ private struct OnboardingPermissionsPage: View {
         .onAppear { appeared = true }
     }
 
+    @ViewBuilder
     private func permCard(
         icon: String, color: Color,
         title: String, desc: String,
-        granted: Bool, delay: Double,
+        state: PermState, delay: Double,
         action: @escaping () -> Void
     ) -> some View {
+        let granted = state == .granted
         HStack(spacing: DS.Spacing.m) {
             ZStack {
                 RoundedRectangle(cornerRadius: 12, style: .continuous)
                     .fill(color.opacity(0.14))
                     .frame(width: 50, height: 50)
-                Image(systemName: icon)
-                    .font(.system(size: 20, weight: .semibold))
-                    .foregroundColor(color)
+                PhosphorIcon.fill(icon, size: 21, color: color)
             }
 
             VStack(alignment: .leading, spacing: 3) {
                 Text(title)
-                    .font(.system(size: 15, weight: .bold))
+                    .font(DS.Typography.heading(15))
                     .foregroundColor(.white)
                 Text(desc)
-                    .font(.system(size: 12, weight: .medium))
+                    .font(DS.Typography.body(12))
                     .foregroundColor(DS.Colors.secondary)
                     .fixedSize(horizontal: false, vertical: true)
             }
 
             Spacer(minLength: 0)
 
-            if granted {
-                Image(systemName: "checkmark.circle.fill")
-                    .font(.system(size: 26))
-                    .foregroundColor(.green)
+            switch state {
+            case .granted:
+                PhosphorIcon.fill("check-circle", size: 26, color: .green)
                     .transition(.scale.combined(with: .opacity))
-            } else {
+            case .undetermined, .denied:
                 Button(action: action) {
-                    Text("Allow")
-                        .font(.system(size: 13, weight: .bold))
+                    Text(state == .denied ? "Settings" : "Allow")
+                        .font(DS.Typography.body(13, weight: .bold))
                         .foregroundColor(DS.Colors.accent)
                         .padding(.horizontal, 14)
                         .padding(.vertical, 8)
@@ -411,14 +535,14 @@ private struct OnboardingPermissionsPage: View {
                         .stroke(granted ? Color.green.opacity(0.28) : DS.Colors.cardStroke)
                 )
         )
-        .animation(.spring(duration: 0.3), value: granted)
+        .animation(.spring(duration: 0.3), value: state)
         .opacity(appeared ? 1 : 0)
         .offset(y: appeared ? 0 : 20)
         .animation(.spring(duration: 0.55, bounce: 0.1).delay(delay), value: appeared)
     }
 }
 
-// MARK: – Page 3: About You
+// MARK: – Page 4: About You
 
 private struct OnboardingAboutYouPage: View {
     @Binding var name: String
@@ -435,9 +559,7 @@ private struct OnboardingAboutYouPage: View {
                 Circle()
                     .fill(DS.Colors.scoreOkay.opacity(0.12))
                     .frame(width: 80, height: 80)
-                Image(systemName: "person.fill")
-                    .font(.system(size: 30, weight: .semibold))
-                    .foregroundColor(DS.Colors.scoreOkay)
+                PhosphorIcon.fill("person", size: 32, color: DS.Colors.scoreOkay)
             }
             .opacity(appeared ? 1 : 0)
             .scaleEffect(appeared ? 1 : 0.6)
@@ -446,11 +568,11 @@ private struct OnboardingAboutYouPage: View {
             Spacer().frame(height: DS.Spacing.m)
 
             VStack(spacing: 6) {
-                Text("About you")
-                    .font(.system(size: 30, weight: .black, design: .rounded))
-                    .foregroundColor(.white)
-                Text("Sets your scoring benchmarks.")
-                    .font(.system(size: 14, weight: .medium))
+                Text("A few details")
+                    .font(DS.Typography.display(30))
+                    .foregroundColor(.primary)
+                Text("We tailor your scoring to your experience.")
+                    .font(DS.Typography.body(14))
                     .foregroundColor(DS.Colors.secondary)
                     .multilineTextAlignment(.center)
             }
@@ -464,13 +586,13 @@ private struct OnboardingAboutYouPage: View {
                 // Name field
                 VStack(alignment: .leading, spacing: 8) {
                     Text("YOUR NAME")
-                        .font(.system(size: 10, weight: .heavy))
+                        .font(DS.Typography.label(10))
                         .tracking(2)
                         .foregroundColor(nameFocused ? DS.Colors.accent : DS.Colors.secondary)
 
                     TextField("First name (optional)", text: $name)
                         .focused($nameFocused)
-                        .font(.system(size: 17, weight: .medium))
+                        .font(DS.Typography.body(17))
                         .foregroundColor(.white)
                         .autocapitalization(.words)
                         .disableAutocorrection(true)
@@ -490,7 +612,7 @@ private struct OnboardingAboutYouPage: View {
                 // Experience level
                 VStack(alignment: .leading, spacing: 10) {
                     Text("EXPERIENCE LEVEL")
-                        .font(.system(size: 10, weight: .heavy))
+                        .font(DS.Typography.label(10))
                         .tracking(2)
                         .foregroundColor(DS.Colors.secondary)
 
@@ -502,15 +624,17 @@ private struct OnboardingAboutYouPage: View {
                                 }
                             } label: {
                                 VStack(spacing: 8) {
-                                    Image(systemName: type == .learner ? "graduationcap.fill" : "checkmark.shield.fill")
-                                        .font(.system(size: 26))
-                                        .foregroundColor(driverType == type ? DS.Colors.accent : DS.Colors.secondary)
+                                    PhosphorIcon.fill(
+                                        type == .learner ? "graduation-cap" : "shield-check",
+                                        size: 26,
+                                        color: driverType == type ? DS.Colors.accent : DS.Colors.secondary
+                                    )
                                     VStack(spacing: 3) {
                                         Text(type == .learner ? "Learner" : "Full Licence")
-                                            .font(.system(size: 14, weight: .bold))
+                                            .font(DS.Typography.heading(14))
                                             .foregroundColor(driverType == type ? .white : DS.Colors.secondary)
                                         Text(type == .learner ? "More lenient thresholds" : "Standard scoring")
-                                            .font(.system(size: 11, weight: .medium))
+                                            .font(DS.Typography.body(11))
                                             .foregroundColor(DS.Colors.secondary)
                                     }
                                 }
@@ -548,7 +672,7 @@ private struct OnboardingAboutYouPage: View {
     }
 }
 
-// MARK: – Page 4: Ready
+// MARK: – Page 5: Ready
 
 private struct OnboardingReadyPage: View {
     let name: String
@@ -580,12 +704,12 @@ private struct OnboardingReadyPage: View {
                 // Headline + instruction
                 VStack(spacing: DS.Spacing.s) {
                     Text(headline)
-                        .font(.system(size: 34, weight: .black, design: .rounded))
-                        .foregroundColor(.white)
+                        .font(DS.Typography.display(34))
+                        .foregroundColor(.primary)
                         .multilineTextAlignment(.center)
 
-                    Text("Mount your phone on the windshield with the camera facing the road.")
-                        .font(.system(size: 15, weight: .medium))
+                    Text("Mount your phone on the windshield, camera facing the road, and tap record to start your first drive.")
+                        .font(DS.Typography.body(15))
                         .foregroundColor(DS.Colors.secondary)
                         .multilineTextAlignment(.center)
                         .lineSpacing(3)
