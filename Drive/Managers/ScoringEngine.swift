@@ -53,7 +53,23 @@ struct CoachTip: Codable {
     let message: String
     let category: Category
 
-    enum Category: String, Codable { case braking, acceleration, cornering, smoothness, positive, safety }
+    enum Category: String, Codable {
+        case braking, acceleration, cornering, smoothness, speed, positive, safety, notScored
+
+        /// Lower-cased human label for use inside coaching sentences.
+        var displayName: String {
+            switch self {
+            case .braking:      return "braking"
+            case .acceleration: return "acceleration"
+            case .cornering:    return "cornering"
+            case .smoothness:   return "smoothness"
+            case .speed:        return "speed"
+            case .positive:     return "overall"
+            case .safety:       return "safety"
+            case .notScored:    return "this drive"
+            }
+        }
+    }
 }
 
 // MARK: – Sensor Window (ML training data)
@@ -82,6 +98,11 @@ struct DriveEvaluation {
     let coachTips: [CoachTip]
     /// Raw sensor windows around each detected event — for ML training pipeline.
     let sensorWindows: [SensorWindow]
+    /// False when the drive couldn't be scored (no road in view / too little
+    /// usable footage). The caller should surface `notScoredReason` and skip
+    /// saving rather than persist a misleading score.
+    var isScored: Bool = true
+    var notScoredReason: String? = nil
 }
 
 // MARK: – Scoring Engine
@@ -100,7 +121,8 @@ final class ScoringEngine {
     static func evaluate(
         samples: [SensorSample],
         route: [RoutePoint],
-        driverType: DriverType
+        driverType: DriverType,
+        duration: TimeInterval
     ) -> DriveEvaluation {
 
         // Delegate to DriveAIEngine when camera-based model results are available.
@@ -108,7 +130,8 @@ final class ScoringEngine {
             return DriveAIEngine.shared.buildEvaluation(
                 samples: samples,
                 route: route,
-                driverType: driverType
+                driverType: driverType,
+                duration: duration
             )
         }
 
