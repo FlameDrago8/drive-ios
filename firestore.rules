@@ -18,7 +18,18 @@ service cloud.firestore {
     }
 
     function isSchoolFor(schoolCode) {
-      return isSchool() && request.auth.token.get('schoolCode', '') == schoolCode;
+      return isSchool()
+        && request.auth.token.get('schoolCode', '') == schoolCode
+        && schoolActive(schoolCode);
+    }
+
+    // Billing kill-switch. schools/{code}.active is flipped only by the admin
+    // provisioning script (suspend / reactivate) — rules block schools from
+    // editing it themselves. A lapsed school loses dashboard access and new
+    // student joins instantly; see the mirrored-drives note for what keeps
+    // flowing during a suspension.
+    function schoolActive(schoolCode) {
+      return get(/databases/$(database)/documents/schools/$(schoolCode)).data.get('active', false) == true;
     }
 
     // True when the authenticated user's document shows they are linked to this school.
@@ -38,7 +49,8 @@ service cloud.firestore {
       // School instructors can read any linked student's profile
       // (needed to display student names/avatars in the web dashboard).
       allow read: if isSchool()
-        && get(/databases/$(database)/documents/users/$(userId)).data.get('orgId', '') == request.auth.token.get('schoolCode', '');
+        && get(/databases/$(database)/documents/users/$(userId)).data.get('orgId', '') == request.auth.token.get('schoolCode', '')
+        && schoolActive(request.auth.token.get('schoolCode', ''));
 
       // Drives sub-collection
       match /drives/{driveId} {
@@ -64,23 +76,46 @@ service cloud.firestore {
     // ── Schools ────────────────────────────────────────────────────────────────
     match /schools/{schoolCode} {
       // Any authenticated user can read (students need to fetch school name by code).
+      // Because this doc is broadly readable, it holds ONLY non-sensitive
+      // operational fields (name, active flags, ownerUid). Contact email and all
+      // Stripe identifiers live in schools/{code}/private/billing and
+      // stripe_index/{id} — no rule below grants those paths, so the catch-all
+      // deny at the bottom blocks every client; only the Admin SDK (webhook +
+      // provision script), which bypasses rules, can read or write them.
       allow read:  if isAuth();
-      // School accounts can update their own school document (e.g. change name).
-      // Creation is Admin SDK only (via createSchoolAccount Cloud Function).
-      allow update: if isSchoolFor(schoolCode);
+      // School accounts can update their own school document (e.g. change name),
+      // but never the billing/ownership fields — those belong to the admin script.
+      // Creation is Admin SDK only (via the provision-school script).
+      allow update: if isSchoolFor(schoolCode)
+        && !request.resource.data.diff(resource.data).affectedKeys()
+             .hasAny(['active', 'subscriptionActive', 'ownerUid', 'createdAt']);
       allow create, delete: if false;
 
       // ── Student roster ─────────────────────────────────────────────────────
-      // Written by the syncStudentRoster Cloud Function (Admin SDK) when
-      // users/{uid}.orgId changes. The student and school can read; no one writes directly.
+      // Written directly by the student (SchoolManager.confirmJoin / leaveSchool),
+      // replacing the syncStudentRoster Cloud Function so no Blaze plan is needed.
+      // A student may create/update/delete only their OWN entry, and only for a
+      // school that exists AND is active (paid) — knowing the code (= the school
+      // doc ID) is the join credential, and uid == studentId blocks impersonation.
+      // The school reads the roster via its custom claim. Deletes stay allowed
+      // regardless of school status so students can always leave.
       match /students/{uid} {
         allow read:  if isSchoolFor(schoolCode) || isOwner(uid);
-        allow write: if false; // Cloud Function only
+        allow create, update: if isOwner(uid)
+          && schoolActive(schoolCode)
+          && request.resource.data.keys().hasOnly(['displayName', 'linkedAt', 'active'])
+          && request.resource.data.active == true
+          && request.resource.data.displayName is string
+          && request.resource.data.displayName.size() <= 100;
+        allow delete: if isOwner(uid);
 
         // ── Mirrored drives ───────────────────────────────────────────────────
         // The iOS app writes here directly (SchoolManager.mirrorDrive).
         // Allowed only when the student is actually linked to this school.
         // Score validation mirrors the users/{uid}/drives rule.
+        // Deliberately NOT gated on schoolActive(): drives keep mirroring
+        // through a suspension so a school that re-subscribes has a complete
+        // history, and the iOS write path never starts failing for students.
         match /drives/{driveId} {
           allow read:  if isSchoolFor(schoolCode) || isOwner(uid);
           allow create: if isOwner(uid)
@@ -117,6 +152,17 @@ service cloud.firestore {
       allow write: if isAuth()
         && request.resource.data.keys().hasOnly(['uid'])
         && request.resource.data.uid == request.auth.uid;
+    }
+
+
+    // ── Anonymous training data ────────────────────────────────────────────────
+    // Written by DriveStorage.uploadTrainingData when the user opts in to sharing.
+    // Write-once, tagged with the author's uid; consumed only by the ML pipeline
+    // via the Admin SDK (which bypasses these rules), so clients get no read.
+    match /trainingData/{docId} {
+      allow create: if isAuth()
+        && request.resource.data.userID == request.auth.uid;
+      allow read, update, delete: if false;
     }
 
 

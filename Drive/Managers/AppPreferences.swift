@@ -74,7 +74,9 @@ final class AppPreferences: ObservableObject {
         units              = SpeedUnit(rawValue: ud.string(forKey: K.units) ?? "") ?? .mph
         minSessionMinutes  = ud.object(forKey: K.minMin) as? Int ?? 2
         routeTagEnabled    = ud.object(forKey: K.routeTagEnabled) as? Bool ?? true
-        shareAnonymousData = ud.object(forKey: K.shareData) as? Bool ?? true
+        // Opt-IN by default: anonymous sensor sharing stays off until the user
+        // explicitly enables it (App Review + privacy expectation for data collection).
+        shareAnonymousData = ud.object(forKey: K.shareData) as? Bool ?? false
         lightModeEnabled   = ud.object(forKey: K.lightMode) as? Bool ?? false
     }
 }

@@ -2,6 +2,7 @@
 Drive/GoogleService-Info.plist
 
 # Xcode
+*.bak
 *.xcuserstate
 *.xccheckout
 *.moved-aside
@@ -15,6 +16,9 @@ DerivedData/
 # Swift Package Manager
 .build/
 .swiftpm/
+
+# JS tooling (Animations/ Lottie workshop)
+node_modules/
 
 # CocoaPods (if ever added)
 Pods/

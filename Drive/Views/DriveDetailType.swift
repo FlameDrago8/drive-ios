@@ -346,13 +346,8 @@ struct WeeklyTrendDetail: View {
         VStack(spacing: DS.Spacing.xl) {
             Spacer(minLength: 60)
 
-            ZStack {
-                Circle()
-                    .fill(DS.Colors.scoreOkay.opacity(0.10))
-                    .frame(width: 100, height: 100)
-                    .overlay(Circle().stroke(DS.Colors.scoreOkay.opacity(0.22), lineWidth: 1.5))
-                PhosphorIcon.fill("chart-bar", size: 40, color: DS.Colors.scoreOkay)
-            }
+            LottieView(.weeklyEmpty, loop: true)
+                .frame(width: 200, height: 150)
 
             VStack(spacing: DS.Spacing.s) {
                 Text("No Data Yet")
@@ -816,7 +811,7 @@ struct ScoreLineGraph: View {
                             startPoint: .top, endPoint: .bottom
                         ))
                         .opacity(lineAnimated ? 1 : 0)
-                        .animation(.easeIn(duration: 0.5).delay(0.1), value: lineAnimated)
+                        .animation(.easeOut(duration: 0.5).delay(0.1), value: lineAnimated)
 
                     // Line — trims in left to right
                     linePath(pts: pts)

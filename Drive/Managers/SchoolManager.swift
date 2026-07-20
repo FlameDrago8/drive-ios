@@ -19,9 +19,13 @@ final class SchoolManager: ObservableObject {
 
     // MARK: – Published state
 
+    private var authListener: AuthStateDidChangeListenerHandle?
+    /// UID whose school link is currently loaded. Guards against cross-account leakage.
+    private var currentUID: String?
+
     /// The school document ID (used as orgId on all session writes).
     @Published var orgId: String? {
-        didSet { ud.set(orgId, forKey: K.orgId) }
+        didSet { ud.set(orgId, forKey: K.orgIdKey(for: currentUID)) }
     }
     @Published var schoolName: String?
     @Published var logoURL: URL?
@@ -52,16 +56,48 @@ final class SchoolManager: ObservableObject {
     }
 
     private enum K {
-        static let orgId = "sm_orgId"
+        /// Per-user key so a school link doesn't leak across accounts on a device.
+        static func orgIdKey(for uid: String?) -> String { "sm_orgId_\(uid ?? "anon")" }
     }
 
     // MARK: – Init
 
     private init() {
-        orgId = ud.string(forKey: K.orgId)
+        // Remove the legacy shared key (pre per-user storage) to prevent leakage.
+        ud.removeObject(forKey: "sm_orgId")
+
+        let uid = Auth.auth().currentUser?.uid
+        currentUID = uid
+        orgId = ud.string(forKey: K.orgIdKey(for: uid))
         if let id = orgId {
             Task { await fetchSchoolInfo(orgId: id) }
             startGoalsListener()
+        }
+
+        authListener = Auth.auth().addStateDidChangeListener { [weak self] _, user in
+            self?.handleAuthChange(to: user?.uid)
+        }
+    }
+
+    /// React to sign-in / sign-out / account switch: clear the previous account's
+    /// school link and load the new account's (if any).
+    private func handleAuthChange(to uid: String?) {
+        guard uid != currentUID else { return }
+        goalsListener?.remove()
+        goalsListener = nil
+        DispatchQueue.main.async { [weak self] in
+            guard let self else { return }
+            self.currentUID = uid
+            self.schoolName = nil
+            self.logoURL = nil
+            self.instructorGoals = []
+            self.subscriptionActive = true
+            self.pendingSchool = nil
+            self.orgId = uid == nil ? nil : self.ud.string(forKey: K.orgIdKey(for: uid))
+            if let id = self.orgId {
+                Task { await self.fetchSchoolInfo(orgId: id) }
+                self.startGoalsListener()
+            }
         }
     }
 
@@ -100,13 +136,39 @@ final class SchoolManager: ObservableObject {
         guard let pending = pendingSchool,
               let uid = Auth.auth().currentUser?.uid else { return }
 
+        // Any school we're switching away from, so its stale roster entry can be
+        // removed once the new link is written.
+        let previousOrgId = orgId
+
         await MainActor.run { isLoading = true }
 
         do {
+            // 1. Record the link on the student's own user doc. Written first so
+            //    the roster-write rule and drive-mirror gate (studentLinkedTo)
+            //    see a committed orgId.
             try await db.collection("users").document(uid).setData([
                 "orgId": pending.code,
                 "role":  "student"
             ], merge: true)
+
+            // 2. Add the student to the school roster directly — replaces the
+            //    syncStudentRoster Cloud Function (no Blaze plan needed). Field
+            //    names must match what the dashboard reads: displayName / linkedAt / active.
+            try await db.collection("schools").document(pending.code)
+                .collection("students").document(uid)
+                .setData([
+                    "displayName": rosterDisplayName(),
+                    "linkedAt":    FieldValue.serverTimestamp(),
+                    "active":      true
+                ])
+
+            // 3. If switching schools, drop the entry from the old roster.
+            if let previousOrgId, previousOrgId != pending.code {
+                try? await db.collection("schools").document(previousOrgId)
+                    .collection("students").document(uid)
+                    .delete()
+            }
+
             await MainActor.run {
                 orgId              = pending.code
                 schoolName         = pending.name
@@ -131,11 +193,20 @@ final class SchoolManager: ObservableObject {
 
     func leaveSchool() async {
         guard let uid = Auth.auth().currentUser?.uid else { return }
+        let currentOrg = orgId
         do {
             try await db.collection("users").document(uid).updateData([
                 "orgId": FieldValue.delete(),
                 "role":  FieldValue.delete()
             ])
+            // Remove the roster entry directly — replaces syncStudentRoster's
+            // cleanup. Best-effort: the link is already gone from the source of
+            // truth (users/{uid}), so a lingering roster entry is non-fatal.
+            if let currentOrg {
+                try? await db.collection("schools").document(currentOrg)
+                    .collection("students").document(uid)
+                    .delete()
+            }
             goalsListener?.remove()
             goalsListener = nil
             await MainActor.run {
@@ -204,6 +275,20 @@ final class SchoolManager: ObservableObject {
     }
 
     // MARK: – Private
+
+    /// Best display name for the roster entry: the user's chosen profile name,
+    /// falling back to the Auth display name, then a generic label. Mirrors the
+    /// resolution the syncStudentRoster Cloud Function used to do server-side.
+    private func rosterDisplayName() -> String {
+        let profileName = ProfileManager.shared.displayName
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        if !profileName.isEmpty { return profileName }
+        if let authName = Auth.auth().currentUser?.displayName?
+            .trimmingCharacters(in: .whitespacesAndNewlines), !authName.isEmpty {
+            return authName
+        }
+        return "Student"
+    }
 
     private func fetchSchoolInfo(orgId: String) async {
         do {

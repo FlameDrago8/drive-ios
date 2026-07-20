@@ -822,6 +822,19 @@ struct DriverLicenseView: View {
     @State private var cardCinematicScale: CGFloat = 1.0
     @State private var backdropOpacity: Double = 0
 
+    @AppStorage("seenLicenseTier") private var seenLicenseTier = -1
+    @State private var showLicenseIssue = false
+
+    private func tierOrdinal(_ t: CardTier) -> Int {
+        switch t { case .base: return 0; case .bronze: return 1; case .silver: return 2; case .gold: return 3 }
+    }
+    /// Celebrate the first time a real licence tier is reached, and each upgrade.
+    private func checkLicense(_ tier: CardTier) {
+        let o = tierOrdinal(tier)
+        if seenLicenseTier < 0 { seenLicenseTier = o; if o > 0 { showLicenseIssue = true }; return }
+        if o > seenLicenseTier { seenLicenseTier = o; showLicenseIssue = true }
+    }
+
     @ViewBuilder
     private var cardFrontSnapshot: some View {
         let tier = CardTier(from: storage.sessions)
@@ -840,6 +853,17 @@ struct DriverLicenseView: View {
 
         ZStack {
             DS.Colors.bg.ignoresSafeArea()
+                .onAppear { checkLicense(tier) }
+
+            if showLicenseIssue {
+                Color.black.opacity(0.7).ignoresSafeArea()
+                    .onTapGesture { showLicenseIssue = false }
+                    .zIndex(19)
+                LottieView(.license) { showLicenseIssue = false }
+                    .frame(width: 340, height: 260)
+                    .allowsHitTesting(false)
+                    .zIndex(20)
+            }
 
             VStack(spacing: DS.Spacing.xl) {
                 Spacer()

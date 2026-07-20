@@ -179,11 +179,20 @@ struct HomeView: View {
     @AppStorage("seenBadgeIDs") private var seenBadgeIDsRaw: String = ""
     @State private var pendingUnlockBadge: Badge? = nil
     @State private var showBadgeUnlock = false
+    @State private var heroPressed = false
+    @State private var heroTapped = false
 
     /// Parallax offset scaled by `mult`. Returns zero when reduce-motion is on.
     private func tilt(_ mult: CGFloat) -> CGSize {
         guard !reduceMotion else { return .zero }
         return CGSize(width: motion.x * mult, height: motion.y * mult)
+    }
+
+    /// Entry slide distance for the appear choreography. Collapses to zero
+    /// under reduce-motion so only the opacity fade carries the entrance.
+    private func entryY(_ amount: CGFloat) -> CGFloat {
+        guard !reduceMotion else { return 0 }
+        return appeared ? 0 : amount
     }
 
     var averageScore: Double {
@@ -214,7 +223,7 @@ struct HomeView: View {
                             .padding(.horizontal, DS.Spacing.l)
                             .padding(.top, DS.Spacing.s)
                             .opacity(appeared ? 1 : 0)
-                            .offset(y: appeared ? 0 : -52)
+                            .offset(y: entryY(-52))
                             .animation(.spring(response: 0.55, dampingFraction: 0.9), value: appeared)
 
                         // Score gauge — hero, dominates the top
@@ -237,14 +246,14 @@ struct HomeView: View {
                             .padding(.horizontal, 20)
                             .padding(.top, DS.Spacing.xl)
                             .opacity(appeared ? 1 : 0)
-                            .offset(y: appeared ? 0 : 20)
+                            .offset(y: entryY(20))
                             .animation(.spring(response: 0.6, dampingFraction: 0.88).delay(0.18), value: appeared)
 
                         clusterPanel
                             .padding(.horizontal, 20)
                             .padding(.top, 22)
                             .opacity(appeared ? 1 : 0)
-                            .offset(y: appeared ? 0 : 30)
+                            .offset(y: entryY(30))
                             .animation(.spring(response: 0.6, dampingFraction: 0.88).delay(0.26), value: appeared)
 
                         // Instructor goals (shown only when instructor has set goals)
@@ -265,7 +274,9 @@ struct HomeView: View {
                 let streak = currentStreak(sessions: driveStorage.sessions)
                 NotificationManager.shared.scheduleStreakReminder(streak: streak)
                 seedSeenBadges()
-                motion.start()
+                // Skip the parallax motion sensor entirely under Reduce Motion —
+                // the offset is already zeroed, so running the sensor just wastes battery.
+                if !reduceMotion { motion.start() }
                 // Only animate in if splash is already gone (e.g. preview, re-appear)
                 if !splashVisible {
                     withAnimation(.spring(duration: 0.7, bounce: 0.1)) { appeared = true }
@@ -316,17 +327,7 @@ struct HomeView: View {
     }
 
     private var headerRow: some View {
-        HStack(alignment: .firstTextBaseline) {
-            VStack(alignment: .leading, spacing: 1) {
-                Text(Date().formatted(.dateTime.weekday(.abbreviated).month(.abbreviated).day()).uppercased())
-                    .font(DS.Typography.label(11))
-                    .tracking(2)
-                    .foregroundColor(DS.Colors.secondary)
-                Text("DRIVE")
-                    .font(DS.Typography.display(34))
-                    .tracking(1)
-                    .foregroundColor(.primary)
-            }
+        HStack {
             Spacer()
             Button { showingSettings = true } label: {
                 PhosphorIcon(name: "user-circle", size: 28, color: DS.Colors.secondary)
@@ -409,8 +410,18 @@ struct HomeView: View {
             .padding(.vertical, 14)
             .frame(maxWidth: .infinity)
             .contentShape(Rectangle())
+            // Touch-down highlight — matches the nav rows below it.
+            .background(DS.Surface.subtle.opacity(heroPressed ? 1 : 0))
+            .animation(.easeOut(duration: 0.18), value: heroPressed)
         }
         .buttonStyle(.plain)
+        .sensoryFeedback(.impact(flexibility: .soft, intensity: 0.5), trigger: heroTapped)
+        .simultaneousGesture(TapGesture().onEnded { heroTapped.toggle() })
+        .simultaneousGesture(
+            DragGesture(minimumDistance: 0)
+                .onChanged { _ in heroPressed = true }
+                .onEnded   { _ in heroPressed = false }
+        )
     }
 
     private var rowDivider: some View {
@@ -481,6 +492,15 @@ struct BadgeUnlockOverlay: View {
     @State private var badgeScale: CGFloat = 0.6
     @State private var contentOpacity: Double = 0
 
+    /// Streak badges get the flame; a tiered badge reaching Silver/Gold gets the
+    /// tier-up coin; everything else gets the standard badge-unlock burst.
+    private var isStreakBadge: Bool { badge.id.contains("streak") }
+    private var unlockAnimation: DriveAnimation {
+        if isStreakBadge { return .streakFlame }
+        if let tier = badge.currentTier, tier > .bronze { return .tierUp }
+        return .badgeUnlock
+    }
+
     var body: some View {
         ZStack {
             Color.black.opacity(0.82 * backdropOpacity)
@@ -491,11 +511,14 @@ struct BadgeUnlockOverlay: View {
                 Spacer()
 
                 ZStack {
-                    Circle()
-                        .fill(badge.color.opacity(0.16))
-                        .frame(width: 114, height: 114)
-                        .overlay(Circle().stroke(badge.color.opacity(0.45), lineWidth: 1.5))
-                    PhosphorIcon.fill(badge.icon, size: 46, color: badge.color)
+                    LottieView(unlockAnimation)
+                        .frame(width: 220, height: 220)
+                        .allowsHitTesting(false)
+                    // The badge's own symbol sits on the animated coin (skipped for
+                    // the streak flame, which is the visual on its own).
+                    if !isStreakBadge {
+                        PhosphorIcon.fill(badge.icon, size: 44, color: .white)
+                    }
                 }
                 .scaleEffect(badgeScale)
 
@@ -929,10 +952,19 @@ struct PremiumCardLink<Destination: View>: View {
             }
             .frame(maxWidth: .infinity, minHeight: 64)
             .contentShape(Rectangle())
+            // Touch-down highlight — fill, not scale: a scale would open
+            // gaps at the panel's hairline seams. Matches native row feel.
+            .background(DS.Surface.subtle.opacity(isPressed ? 1 : 0))
+            .animation(.easeOut(duration: 0.18), value: isPressed)
         }
         .buttonStyle(.plain)
         .sensoryFeedback(.impact(flexibility: .soft, intensity: 0.5), trigger: tapped)
         .simultaneousGesture(TapGesture().onEnded { tapped.toggle() })
+        .simultaneousGesture(
+            DragGesture(minimumDistance: 0)
+                .onChanged { _ in isPressed = true }
+                .onEnded   { _ in isPressed = false }
+        )
     }
 }
 
@@ -960,7 +992,7 @@ struct StartDriveButton: View {
                     RoundedRectangle(cornerRadius: 14, style: .continuous)
                         .strokeBorder(DS.Colors.accent.opacity(isPressed ? 0 : 0.55), lineWidth: 1)
                 )
-                .scaleEffect(isPressed ? 0.985 : 1.0)
+                .scaleEffect(isPressed ? 0.97 : 1.0)
                 .animation(.spring(response: 0.26, dampingFraction: 0.78), value: isPressed)
         }
         .buttonStyle(.plain)
@@ -1113,6 +1145,23 @@ struct DriveReportView: View {
                         }
 
                         ScoreGauge(score: session.score)
+                            .background(
+                                Group {
+                                    if session.score >= 90 {
+                                        LottieView(.scoreReveal)
+                                            .frame(width: 340, height: 340)
+                                            .allowsHitTesting(false)
+                                    }
+                                }
+                            )
+                            .overlay(alignment: .top) {
+                                if isPersonalBest {
+                                    LottieView(.personalBest)
+                                        .frame(width: 190, height: 190)
+                                        .offset(y: -116)
+                                        .allowsHitTesting(false)
+                                }
+                            }
 
                         // Grade + date + duration row
                         HStack(alignment: .firstTextBaseline, spacing: 16) {
@@ -1396,6 +1445,26 @@ func coachTipStyle(_ category: CoachTip.Category) -> (color: Color, icon: String
     }
 }
 
+/// Jump-to-footage timestamp chip. Quiet neutral housing at rest (so it reads
+/// cleanly on the tinted tip card, no tint-on-tint halo), igniting to the tip's
+/// colour on press — the same "quiet at rest, ignites on press" language as the
+/// Start Drive button and nav rows.
+private struct TimestampChipStyle: ButtonStyle {
+    let tint: Color
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .padding(.horizontal, 9)
+            .padding(.vertical, 4)
+            .background(
+                Capsule().fill(configuration.isPressed ? tint.opacity(0.22) : DS.Surface.weak)
+            )
+            .overlay(
+                Capsule().strokeBorder(tint.opacity(configuration.isPressed ? 0 : 0.22), lineWidth: 1)
+            )
+            .animation(.easeOut(duration: 0.15), value: configuration.isPressed)
+    }
+}
+
 struct CoachTipCard: View {
     let tip: DisplayTip
     var onSeek: (TimeInterval) -> Void = { _ in }
@@ -1438,17 +1507,15 @@ struct CoachTipCard: View {
 
             // When the coach flagged it — tap a moment to jump to it in the footage
             if !tip.times.isEmpty {
-                HStack(spacing: 6) {
-                    PhosphorIcon(name: "clock", size: 11, color: tip.color.opacity(0.8))
+                HStack(spacing: 7) {
+                    PhosphorIcon.fill("clock", size: 11, color: DS.Colors.secondary)
                     ForEach(Array(tip.times.prefix(6).enumerated()), id: \.0) { _, t in
                         Button { onSeek(t) } label: {
                             Text(mmss(t))
                                 .font(DS.Typography.data(11, weight: .bold))
                                 .foregroundColor(tip.color)
-                                .padding(.horizontal, 7).padding(.vertical, 3)
-                                .background(Capsule().fill(tip.color.opacity(0.16)))
                         }
-                        .buttonStyle(.plain)
+                        .buttonStyle(TimestampChipStyle(tint: tip.color))
                     }
                     Spacer(minLength: 0)
                 }

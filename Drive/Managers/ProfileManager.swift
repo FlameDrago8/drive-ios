@@ -30,10 +30,14 @@ class ProfileManager: ObservableObject {
     static let shared = ProfileManager()
     private let db = Firestore.firestore()
     private var authListener: AuthStateDidChangeListenerHandle?
+    /// UID whose profile is currently loaded. Guards against cross-account leakage.
+    private var currentUID: String?
 
-    private var avatarURL: URL {
-        FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
-            .appendingPathComponent("profile_avatar.jpg")
+    /// Per-user avatar path so one account's photo can't show on another.
+    private func avatarURL(for uid: String?) -> URL {
+        let name = uid.map { "profile_avatar_\($0).jpg" } ?? "profile_avatar.jpg"
+        return FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
+            .appendingPathComponent(name)
     }
 
     var carDisplayName: String {
@@ -44,21 +48,49 @@ class ProfileManager: ObservableObject {
     // MARK: – Init
 
     private init() {
-        loadAvatarFromDisk()
+        // Remove the legacy shared avatar file (pre per-user storage) so it can't
+        // bleed into a different account.
+        try? FileManager.default.removeItem(at: FileManager.default
+            .urls(for: .documentDirectory, in: .userDomainMask)[0]
+            .appendingPathComponent("profile_avatar.jpg"))
+
+        let uid = Auth.auth().currentUser?.uid
+        currentUID = uid
         loadLocalPrefs()
+        loadAvatarFromDisk()
+        if let uid { fetchProfile(uid: uid) }
+
         authListener = Auth.auth().addStateDidChangeListener { [weak self] _, user in
-            guard let self else { return }
-            if let user {
-                self.fetchProfile(uid: user.uid)
-            } else {
-                DispatchQueue.main.async {
-                    self.displayName = ""
-                    self.carMake     = ""
-                    self.carModel    = ""
-                    self.carYear     = ""
-                }
-            }
+            self?.handleAuthChange(to: user?.uid)
         }
+    }
+
+    /// React to sign-in / sign-out / account switch.
+    private func handleAuthChange(to uid: String?) {
+        DispatchQueue.main.async { [weak self] in
+            guard let self else { return }
+            if uid == self.currentUID {
+                if let uid { self.fetchProfile(uid: uid) }
+                return
+            }
+            // Account switched (or signed out): wipe the previous account's profile.
+            self.currentUID = uid
+            self.resetLocalState()
+            guard let uid else { return }
+            self.loadAvatarFromDisk()      // this account's avatar (per-uid file)
+            self.fetchProfile(uid: uid)
+        }
+    }
+
+    /// Clears every locally-held profile field back to defaults.
+    private func resetLocalState() {
+        displayName = ""
+        carMake = ""; carModel = ""; carYear = ""
+        avatarImageData = nil
+        driverType = .full
+        goalScore = 85
+        UserDefaults.standard.removeObject(forKey: UDK.driverType)
+        UserDefaults.standard.removeObject(forKey: UDK.goalScore)
     }
 
     private func loadLocalPrefs() {
@@ -120,18 +152,19 @@ class ProfileManager: ObservableObject {
 
     func saveAvatar(_ data: Data) {
         avatarImageData = data
-        try? data.write(to: avatarURL, options: .completeFileProtection)
+        try? data.write(to: avatarURL(for: currentUID), options: .completeFileProtection)
     }
 
     // MARK: – Private
 
     private func loadAvatarFromDisk() {
-        avatarImageData = try? Data(contentsOf: avatarURL)
+        avatarImageData = try? Data(contentsOf: avatarURL(for: currentUID))
     }
 
     private func fetchProfile(uid: String) {
-        db.collection("users").document(uid).getDocument { [weak self] snap, _ in
-            guard let d = snap?.data() else { return }
+        let ref = db.collection("users").document(uid)
+        ref.getDocument { [weak self] snap, _ in
+            let d = snap?.data() ?? [:]
             DispatchQueue.main.async {
                 self?.displayName = d["displayName"] as? String ?? ""
                 self?.carMake     = d["carMake"]     as? String ?? ""
@@ -142,14 +175,19 @@ class ProfileManager: ObservableObject {
                     UserDefaults.standard.set(dt, forKey: UDK.driverType)
                 }
             }
+
+            // Keep licenseStage + photoURL in sync for the instructor dashboard,
+            // but only write fields that actually changed — avoids a needless
+            // Firestore write on every launch/auth change.
+            let stage = UserDefaults.standard.string(forKey: UDK.driverType) ?? "full"
+            var patch: [String: Any] = [:]
+            if d["licenseStage"] as? String != stage { patch["licenseStage"] = stage }
+            if let photoStr = Auth.auth().currentUser?.photoURL?.absoluteString,
+               d["photoURL"] as? String != photoStr {
+                patch["photoURL"] = photoStr
+            }
+            if !patch.isEmpty { ref.setData(patch, merge: true) }
         }
-        // Keep licenseStage + photoURL in sync for the instructor dashboard
-        let stage = UserDefaults.standard.string(forKey: UDK.driverType) ?? "full"
-        var patch: [String: Any] = ["licenseStage": stage]
-        if let photoStr = Auth.auth().currentUser?.photoURL?.absoluteString {
-            patch["photoURL"] = photoStr
-        }
-        db.collection("users").document(uid).setData(patch, merge: true)
     }
 
     private enum UDK {

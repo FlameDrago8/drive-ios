@@ -19,6 +19,16 @@ class UserManager: ObservableObject {
     @Published var user: User? = nil
     static let shared = UserManager()
 
+    /// Deletion is a Firebase "sensitive operation": it's rejected unless the
+    /// user signed in recently. Surfaced as a typed error so the UI can run a
+    /// re-auth flow and retry instead of showing Firebase's raw message.
+    enum AccountDeletionError: LocalizedError {
+        case needsRecentLogin
+        var errorDescription: String? {
+            "For security, deleting your account requires a recent sign-in."
+        }
+    }
+
     private var authHandle: AuthStateDidChangeListenerHandle?
     private static var appleCoordinator: AppleSignInCoordinator?
 
@@ -49,27 +59,73 @@ class UserManager: ObservableObject {
         user.sendEmailVerification(completion: completion)
     }
 
-    func deleteAccount(completion: @escaping (Error?) -> Void) {
+    func deleteAccount(skipFreshnessCheck: Bool = false, completion: @escaping (Error?) -> Void) {
         guard let user = Auth.auth().currentUser else {
             completion(NSError(domain: "UserManager", code: -1, userInfo: [
                 NSLocalizedDescriptionKey: "No signed-in user."
             ]))
             return
         }
+        // Firebase only honors `user.delete()` within ~5 minutes of sign-in.
+        // Check BEFORE the Firestore cleanup below — failing after it would
+        // strand a half-deleted account (data gone, Auth user still alive).
+        // `skipFreshnessCheck` is set on the retry right after a re-auth.
+        if !skipFreshnessCheck,
+           let lastSignIn = user.metadata.lastSignInDate,
+           Date().timeIntervalSince(lastSignIn) > 4 * 60 {
+            completion(AccountDeletionError.needsRecentLogin)
+            return
+        }
         let uid = user.uid
         let db = Firestore.firestore()
-        db.collection("users").document(uid).collection("drives")
-            .getDocuments { snap, _ in
-                snap?.documents.forEach { $0.reference.delete() }
-                db.collection("users").document(uid).delete { _ in
-                    user.delete { error in
-                        DispatchQueue.main.async {
-                            if error == nil { self.user = nil }
-                            completion(error)
-                        }
-                    }
+
+        // Clean up the user's data across collections BEFORE deleting the Auth
+        // account — security rules require the user to still be authenticated.
+        Task {
+            // Drives subcollection (not auto-removed with the parent doc)
+            if let drives = try? await db.collection("users").document(uid)
+                .collection("drives").getDocuments() {
+                for doc in drives.documents { try? await doc.reference.delete() }
+            }
+            // Public leaderboard profile (badges doc lives in a subcollection)
+            try? await db.collection("users").document(uid)
+                .collection("public_profile").document("badges").delete()
+            // School roster entry — otherwise a deleted student lingers in the
+            // instructor dashboard.
+            if let orgId = SchoolManager.shared.orgId {
+                try? await db.collection("schools").document(orgId)
+                    .collection("students").document(uid).delete()
+            }
+            // The user document itself
+            try? await db.collection("users").document(uid).delete()
+
+            // On-device per-user caches
+            Self.removeLocalUserFiles(uid: uid)
+
+            // Finally the Auth account. Can fail with `requiresRecentLogin` if the
+            // session is stale; the error is surfaced so the caller can prompt a
+            // fresh sign-in and retry.
+            do {
+                try await user.delete()
+                await MainActor.run { self.user = nil; completion(nil) }
+            } catch {
+                let nsError = error as NSError
+                let needsReauth = nsError.domain == AuthErrorDomain
+                    && nsError.code == AuthErrorCode.requiresRecentLogin.rawValue
+                await MainActor.run {
+                    completion(needsReauth ? AccountDeletionError.needsRecentLogin : error)
                 }
             }
+        }
+    }
+
+    /// Removes the signed-out user's local drive cache and avatar so nothing
+    /// lingers on disk after account deletion.
+    private static func removeLocalUserFiles(uid: String) {
+        guard let docs = FileManager.default
+            .urls(for: .documentDirectory, in: .userDomainMask).first else { return }
+        try? FileManager.default.removeItem(at: docs.appendingPathComponent("drives-\(uid).json"))
+        try? FileManager.default.removeItem(at: docs.appendingPathComponent("profile_avatar_\(uid).jpg"))
     }
 
     func reloadUser(completion: @escaping () -> Void) {
@@ -99,25 +155,48 @@ class UserManager: ObservableObject {
     // MARK: – Apple Sign-In
 
     func signInWithApple(completion: @escaping (Error?) -> Void) {
+        appleCredential { result in
+            switch result {
+            case .failure(let error):
+                completion(error)
+            case .success(let credential):
+                Auth.auth().signIn(with: credential) { _, error in completion(error) }
+            }
+        }
+    }
+
+    /// Runs the Apple sign-in sheet and returns a Firebase credential, usable
+    /// for both first sign-in and re-authentication.
+    private func appleCredential(completion: @escaping (Result<AuthCredential, Error>) -> Void) {
         let coordinator = AppleSignInCoordinator()
         UserManager.appleCoordinator = coordinator
         coordinator.start { result in
             UserManager.appleCoordinator = nil
-            switch result {
-            case .success:        completion(nil)
-            case .failure(let e): completion(e)
-            }
+            completion(result)
         }
     }
 
     // MARK: – Google Sign-In
 
     func signInWithGoogle(completion: @escaping (Error?) -> Void) {
+        googleCredential { result in
+            switch result {
+            case .failure(let error):
+                completion(error)
+            case .success(let credential):
+                Auth.auth().signIn(with: credential) { _, error in completion(error) }
+            }
+        }
+    }
+
+    /// Runs the Google sign-in sheet and returns a Firebase credential, usable
+    /// for both first sign-in and re-authentication.
+    private func googleCredential(completion: @escaping (Result<AuthCredential, Error>) -> Void) {
 #if canImport(GoogleSignIn)
         guard let clientID = FirebaseApp.app()?.options.clientID else {
-            completion(NSError(domain: "GoogleSignIn", code: -1, userInfo: [
+            completion(.failure(NSError(domain: "GoogleSignIn", code: -1, userInfo: [
                 NSLocalizedDescriptionKey: "Sign-in configuration error. Please try again."
-            ]))
+            ])))
             return
         }
 
@@ -126,32 +205,96 @@ class UserManager: ObservableObject {
         guard let rootVC = UIApplication.shared.connectedScenes
             .compactMap({ $0 as? UIWindowScene })
             .first?.windows.first?.rootViewController else {
-            completion(NSError(domain: "GoogleSignIn", code: -2, userInfo: [
+            completion(.failure(NSError(domain: "GoogleSignIn", code: -2, userInfo: [
                 NSLocalizedDescriptionKey: "Sign-in could not be presented. Please try again."
-            ]))
+            ])))
             return
         }
 
         GIDSignIn.sharedInstance.signIn(withPresenting: rootVC) { result, error in
-            if let error { completion(error); return }
+            if let error { completion(.failure(error)); return }
             guard let user = result?.user,
                   let idToken = user.idToken?.tokenString else {
-                completion(NSError(domain: "GoogleSignIn", code: -3, userInfo: [
+                completion(.failure(NSError(domain: "GoogleSignIn", code: -3, userInfo: [
                     NSLocalizedDescriptionKey: "Could not retrieve Google ID token."
-                ]))
+                ])))
                 return
             }
-            let credential = GoogleAuthProvider.credential(
+            completion(.success(GoogleAuthProvider.credential(
                 withIDToken: idToken,
                 accessToken: user.accessToken.tokenString
-            )
-            Auth.auth().signIn(with: credential) { _, error in completion(error) }
+            )))
         }
 #else
-        completion(NSError(domain: "GoogleSignIn", code: -99, userInfo: [
+        completion(.failure(NSError(domain: "GoogleSignIn", code: -99, userInfo: [
             NSLocalizedDescriptionKey: "GoogleSignIn SDK not linked. Add the package in Xcode."
-        ]))
+        ])))
 #endif
+    }
+
+    // MARK: – Re-authentication (needed before sensitive ops like deletion)
+
+    /// Provider to re-auth with, favoring one-tap OAuth over a password prompt
+    /// when the account has several linked.
+    var reauthProviderID: String? {
+        let providers = Auth.auth().currentUser?.providerData.map(\.providerID) ?? []
+        for preferred in ["google.com", "apple.com", "password"] where providers.contains(preferred) {
+            return preferred
+        }
+        return providers.first
+    }
+
+    func reauthenticate(password: String, completion: @escaping (Error?) -> Void) {
+        guard let user = Auth.auth().currentUser, let email = user.email else {
+            completion(NSError(domain: "UserManager", code: -1, userInfo: [
+                NSLocalizedDescriptionKey: "No signed-in user."
+            ]))
+            return
+        }
+        let credential = EmailAuthProvider.credential(withEmail: email, password: password)
+        user.reauthenticate(with: credential) { _, error in
+            DispatchQueue.main.async { completion(error) }
+        }
+    }
+
+    func reauthenticateWithGoogle(completion: @escaping (Error?) -> Void) {
+        reauthenticate(acquire: googleCredential, completion: completion)
+    }
+
+    func reauthenticateWithApple(completion: @escaping (Error?) -> Void) {
+        reauthenticate(acquire: appleCredential, completion: completion)
+    }
+
+    private func reauthenticate(
+        acquire: (@escaping (Result<AuthCredential, Error>) -> Void) -> Void,
+        completion: @escaping (Error?) -> Void
+    ) {
+        guard let user = Auth.auth().currentUser else {
+            completion(NSError(domain: "UserManager", code: -1, userInfo: [
+                NSLocalizedDescriptionKey: "No signed-in user."
+            ]))
+            return
+        }
+        acquire { result in
+            switch result {
+            case .failure(let error):
+                completion(error)
+            case .success(let credential):
+                user.reauthenticate(with: credential) { _, error in
+                    DispatchQueue.main.async { completion(error) }
+                }
+            }
+        }
+    }
+
+    /// True when the user backed out of a sign-in sheet — not an error worth
+    /// showing an alert for.
+    static func isUserCancellation(_ error: Error) -> Bool {
+        if let asError = error as? ASAuthorizationError, asError.code == .canceled { return true }
+#if canImport(GoogleSignIn)
+        if let gidError = error as? GIDSignInError, gidError.code == .canceled { return true }
+#endif
+        return false
     }
 }
 
@@ -161,10 +304,10 @@ private class AppleSignInCoordinator: NSObject,
     ASAuthorizationControllerDelegate,
     ASAuthorizationControllerPresentationContextProviding
 {
-    var completion: ((Result<Void, Error>) -> Void)?
+    var completion: ((Result<AuthCredential, Error>) -> Void)?
     private var currentNonce: String?
 
-    func start(completion: @escaping (Result<Void, Error>) -> Void) {
+    func start(completion: @escaping (Result<AuthCredential, Error>) -> Void) {
         self.completion = completion
         let nonce = randomNonceString()
         currentNonce = nonce
@@ -192,15 +335,11 @@ private class AppleSignInCoordinator: NSObject,
             ])))
             return
         }
-        let credential = OAuthProvider.appleCredential(
+        completion?(.success(OAuthProvider.appleCredential(
             withIDToken: idToken,
             rawNonce: nonce,
             fullName: appleCredential.fullName
-        )
-        Auth.auth().signIn(with: credential) { [weak self] _, error in
-            if let error { self?.completion?(.failure(error)) }
-            else         { self?.completion?(.success(())) }
-        }
+        )))
     }
 
     func authorizationController(controller: ASAuthorizationController,

@@ -71,28 +71,40 @@ final class GameCenterManager: ObservableObject {
             for: .friendsOnly, timeScope: timeScope, range: NSRange(location: 1, length: 20)
         ) else { return }
 
-        var result: [LeaderboardEntry] = []
-        for entry in friendEntries {
-            var row = LeaderboardEntry(
-                id: entry.player.gamePlayerID,
-                rank: entry.rank,
-                displayName: entry.player.displayName,
-                score: Double(entry.score) / 100.0,
-                photo: nil,
-                earnedBadgeIDs: []
-            )
-            row.photo = try? await entry.player.loadPhoto(for: GKPlayer.PhotoSize.small)
-            if let uid = await fetchFirebaseUID(for: entry.player.gamePlayerID) {
-                let doc: DocumentSnapshot? = try? await db.collection("users").document(uid)
-                    .collection("public_profile").document("badges").getDocument()
-                row.earnedBadgeIDs = doc?.data()?["badgeIDs"] as? [String] ?? []
+        // Resolve each friend's photo + badges concurrently rather than serially —
+        // for a full friends list this is the difference between ~1 and ~20 sets
+        // of network round trips.
+        let db = self.db
+        let rows = await withTaskGroup(of: LeaderboardEntry.self) { group in
+            for entry in friendEntries {
+                group.addTask {
+                    var row = LeaderboardEntry(
+                        id: entry.player.gamePlayerID,
+                        rank: entry.rank,
+                        displayName: entry.player.displayName,
+                        score: Double(entry.score) / 100.0,
+                        photo: nil,
+                        earnedBadgeIDs: []
+                    )
+                    row.photo = try? await entry.player.loadPhoto(for: GKPlayer.PhotoSize.small)
+                    if let uid = (try? await db.collection("gc_users")
+                        .document(entry.player.gamePlayerID).getDocument())?
+                        .data()?["uid"] as? String {
+                        let doc = try? await db.collection("users").document(uid)
+                            .collection("public_profile").document("badges").getDocument()
+                        row.earnedBadgeIDs = doc?.data()?["badgeIDs"] as? [String] ?? []
+                    }
+                    return row
+                }
             }
-            result.append(row)
+            var collected: [LeaderboardEntry] = []
+            for await row in group { collected.append(row) }
+            return collected
         }
 
-        entries = result.sorted { $0.rank < $1.rank }
+        entries = rows.sorted { $0.rank < $1.rank }
 
-        if let myEntry = result.first(where: { $0.id == GKLocalPlayer.local.gamePlayerID }) {
+        if let myEntry = rows.first(where: { $0.id == GKLocalPlayer.local.gamePlayerID }) {
             localRankText = "#\(myEntry.rank)"
         }
     }
@@ -104,9 +116,5 @@ final class GameCenterManager: ObservableObject {
         let badgeIDs = AchievementEngine.earnedBadgeIDs(from: DriveStorage.shared.sessions)
         try? await db.collection("users").document(uid)
             .collection("public_profile").document("badges").setData(["badgeIDs": badgeIDs])
-    }
-
-    private func fetchFirebaseUID(for gcID: String) async -> String? {
-        (try? await db.collection("gc_users").document(gcID).getDocument())?.data()?["uid"] as? String
     }
 }

@@ -54,6 +54,20 @@
             </array>
         </dict>
 
+        <!-- Email — collected at sign-up (email/password) or via Apple/Google sign-in, used for authentication -->
+        <dict>
+            <key>NSPrivacyCollectedDataType</key>
+            <string>NSPrivacyCollectedDataTypeEmailAddress</string>
+            <key>NSPrivacyCollectedDataTypeLinked</key>
+            <true/>
+            <key>NSPrivacyCollectedDataTypeTracking</key>
+            <false/>
+            <key>NSPrivacyCollectedDataTypePurposes</key>
+            <array>
+                <string>NSPrivacyCollectedDataTypePurposeAppFunctionality</string>
+            </array>
+        </dict>
+
         <!-- Name — display name the user enters in their profile -->
         <dict>
             <key>NSPrivacyCollectedDataType</key>

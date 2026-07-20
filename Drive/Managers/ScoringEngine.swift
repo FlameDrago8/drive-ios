@@ -192,7 +192,7 @@ final class ScoringEngine {
                 accelPenalty += min((longG - accelThreshold) * 70, 20)
                 eventOnsets.append((.hardAccel, i))
             }
-            if latG > cornerThreshold && accelCool == 0 {
+            if latG > cornerThreshold && cornerCool == 0 {
                 hardCorners += 1; cornerCool = cooldownSamples
                 cornerPenalty += min((latG - cornerThreshold) * 75, 20)
                 eventOnsets.append((.hardCorner, i))

@@ -10,6 +10,8 @@
 	<string>Drive may capture audio as part of the dashcam recording during your drive.</string>
 	<key>NSMotionUsageDescription</key>
 	<string>Drive uses motion sensors to measure braking, acceleration, and cornering so it can score your driving.</string>
+	<key>ITSAppUsesNonExemptEncryption</key>
+	<false/>
 	<key>UILaunchScreen</key>
 	<dict>
 		<key>UIColorName</key>
@@ -30,7 +32,7 @@
 			<string>Editor</string>
 			<key>CFBundleURLSchemes</key>
 			<array>
-				<string>com.googleusercontent.apps.744929252412-jbdhgpbu4ephr16c93vmskops9fqc54k</string>
+				<string>com.googleusercontent.apps.744929252412-bjj6pgcf5o9hp4ubdgsd87sfjnn6rphq</string>
 			</array>
 		</dict>
 	</array>

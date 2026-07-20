@@ -206,19 +206,50 @@ class DriveStorage: ObservableObject {
 
     static let shared = DriveStorage()
 
-    private let saveURL: URL
+    private let folder: URL
     private let db = Firestore.firestore()
     private var authListener: AuthStateDidChangeListenerHandle?
+    /// UID whose drives are currently loaded. Guards against cross-account leakage.
+    private var currentUID: String?
 
     private init() {
         guard let folder = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first else {
             fatalError("DriveStorage: document directory unavailable — cannot initialise storage.")
         }
-        self.saveURL = folder.appendingPathComponent("drives.json")
-        load()
+        self.folder = folder
+        // Remove the legacy shared file (pre per-user storage). It was the source
+        // of one account's drives leaking into another; per-user files replace it.
+        try? FileManager.default.removeItem(at: folder.appendingPathComponent("drives.json"))
+
+        let uid = Auth.auth().currentUser?.uid
+        self.currentUID = uid
+        loadLocal(for: uid)
+
         authListener = Auth.auth().addStateDidChangeListener { [weak self] _, user in
-            guard let self, user != nil else { return }
-            self.fetchSessionsFromFirestore()
+            self?.handleAuthChange(to: user?.uid)
+        }
+    }
+
+    /// Per-user local cache path — keeps each account's drives fully separate.
+    private func saveURL(for uid: String?) -> URL {
+        folder.appendingPathComponent(uid.map { "drives-\($0).json" } ?? "drives-anon.json")
+    }
+
+    /// React to sign-in / sign-out / account switch.
+    private func handleAuthChange(to uid: String?) {
+        DispatchQueue.main.async { [weak self] in
+            guard let self else { return }
+            if uid == self.currentUID {
+                if uid != nil { self.fetchSessionsFromFirestore() }   // same user → refresh
+                return
+            }
+            // Account switched (or signed out): drop the previous user's data first.
+            self.currentUID = uid
+            self.sessions = []
+            WidgetDataStore.shared.update(sessions: [])
+            guard uid != nil else { return }        // signed out → stay empty
+            self.loadLocal(for: uid)                // this account's cached drives
+            self.fetchSessionsFromFirestore()       // then merge cloud
         }
     }
 
@@ -247,7 +278,7 @@ class DriveStorage: ObservableObject {
             guard let self else { return }
             sessions = []
             WidgetDataStore.shared.update(sessions: [])
-            try? FileManager.default.removeItem(at: saveURL)
+            try? FileManager.default.removeItem(at: saveURL(for: currentUID))
             guard let userID = Auth.auth().currentUser?.uid else { return }
             db.collection("users").document(userID).collection("drives")
                 .getDocuments { snap, _ in
@@ -255,6 +286,26 @@ class DriveStorage: ObservableObject {
                 }
         }
     }
+
+    #if DEBUG
+    /// Replaces all sessions with a curated demo set for App Store screenshots.
+    /// Writes locally + to the widget so every screen renders fully. Set
+    /// `pushToCloud` to also mirror to Firestore / Game Center (leaderboard) —
+    /// off by default so it doesn't pollute your real account.
+    func seedForScreenshots(_ demo: [DriveSession], pushToCloud: Bool = false) {
+        DispatchQueue.main.async { [weak self] in
+            guard let self else { return }
+            self.sessions = demo.filter { $0.isValid }.sorted { $0.date > $1.date }
+            self.saveLocal()
+            WidgetDataStore.shared.update(sessions: self.sessions)
+            guard pushToCloud else { return }
+            self.sessions.forEach { self.saveToFirestore($0) }
+            let avg = self.sessions.map(\.score).reduce(0, +) / Double(max(self.sessions.count, 1))
+            GameCenterManager.shared.submitScore(avg)
+            Task { await GameCenterManager.shared.syncBadges() }
+        }
+    }
+    #endif
 
     func updateRouteTag(id: UUID, tag: String) {
         DispatchQueue.main.async { [weak self] in
@@ -276,7 +327,7 @@ class DriveStorage: ObservableObject {
     private func saveLocal() {
         do {
             let data = try JSONEncoder().encode(sessions)
-            try data.write(to: saveURL, options: .completeFileProtection)
+            try data.write(to: saveURL(for: currentUID), options: .completeFileProtection)
         } catch {
             #if DEBUG
             print("Drive sessions local save error: \(error)")
@@ -284,8 +335,8 @@ class DriveStorage: ObservableObject {
         }
     }
 
-    private func load() {
-        guard let data = try? Data(contentsOf: saveURL),
+    private func loadLocal(for uid: String?) {
+        guard let data = try? Data(contentsOf: saveURL(for: uid)),
               let decoded = try? JSONDecoder().decode([DriveSession].self, from: data) else {
             sessions = []; return
         }
@@ -487,6 +538,9 @@ class DriveStorage: ObservableObject {
                 } ?? []
 
                 DispatchQueue.main.async {
+                    // If the account switched while this fetch was in flight, discard —
+                    // otherwise one account's cloud data lands on another's screen.
+                    guard self.currentUID == userID else { return }
                     let remoteIDs = Set(remote.map(\.id))
                     let localOnly = self.sessions.filter { !remoteIDs.contains($0.id) }
                     self.sessions = (remote + localOnly).sorted { $0.date > $1.date }

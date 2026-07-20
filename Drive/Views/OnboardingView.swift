@@ -16,7 +16,7 @@ private class _LoopingPlayerUIView: UIView {
     private(set) var player: AVQueuePlayer
     private var looper: AVPlayerLooper
 
-    init(url: URL) {
+    init(url: URL, transparentBlack: Bool) {
         player = AVQueuePlayer()
         let item = AVPlayerItem(url: url)
         looper = AVPlayerLooper(player: player, templateItem: item)
@@ -24,6 +24,14 @@ private class _LoopingPlayerUIView: UIView {
         backgroundColor = .clear
         playerLayer.videoGravity = .resizeAspect
         playerLayer.player = player
+        // The source clips are HEVC/MP4 with NO alpha channel — their background is
+        // baked-in black. Screen-blending the layer against the dark app background
+        // makes those black pixels read as transparent, so the video sits flush with
+        // the screen instead of showing a hard black rectangle. (For true alpha the
+        // clips would need re-exporting as HEVC-with-alpha .mov, or as Lottie.)
+        if transparentBlack {
+            playerLayer.compositingFilter = "screenBlendMode"
+        }
         layer.addSublayer(playerLayer)
         player.isMuted = true
         player.play()
@@ -39,14 +47,67 @@ private class _LoopingPlayerUIView: UIView {
 
 private struct LoopingVideoPlayer: UIViewRepresentable {
     let resourceName: String   // e.g. "OnboardingAnimation1"
+    var transparentBlack: Bool = true
 
     func makeUIView(context: Context) -> _LoopingPlayerUIView {
         let url = Bundle.main.url(forResource: resourceName, withExtension: "mp4")
             ?? URL(fileURLWithPath: "")
-        return _LoopingPlayerUIView(url: url)
+        return _LoopingPlayerUIView(url: url, transparentBlack: transparentBlack)
     }
 
     func updateUIView(_ uiView: _LoopingPlayerUIView, context: Context) {}
+}
+
+// MARK: – Shared styling helpers (keep onboarding on the app's design language)
+
+private extension View {
+    /// Solid physical card matching the rest of the app (bgCard fill + hairline stroke),
+    /// replacing the old translucent white panels.
+    func onboardingCard(cornerRadius: CGFloat = DS.Radius.m,
+                        stroke: Color = DS.Colors.cardStroke,
+                        lineWidth: CGFloat = 1) -> some View {
+        background(
+            RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+                .fill(DS.Colors.bgCard)
+                .overlay(
+                    RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+                        .stroke(stroke, lineWidth: lineWidth)
+                )
+        )
+    }
+}
+
+/// Centers content when it fits, scrolls when it doesn't — so text never clips on
+/// smaller screens. Preserves the Spacer-based vertical centering the pages use.
+private struct CenteringScroll<Content: View>: View {
+    @ViewBuilder var content: Content
+    var body: some View {
+        GeometryReader { proxy in
+            ScrollView(showsIndicators: false) {
+                content
+                    .frame(maxWidth: .infinity)
+                    .frame(minHeight: proxy.size.height)
+            }
+        }
+    }
+}
+
+/// Primary CTA — "quiet at rest, ignites on press": solid accent fill, no perpetual
+/// glow, presses to 0.97 like the app's Start Drive button.
+private struct CTAButtonStyle: ButtonStyle {
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .font(DS.Typography.heading(17))
+            .foregroundColor(.white)
+            .frame(maxWidth: .infinity)
+            .padding(.vertical, 18)
+            .background(
+                RoundedRectangle(cornerRadius: DS.Radius.l, style: .continuous)
+                    .fill(DS.Colors.accent)
+            )
+            .scaleEffect(configuration.isPressed ? 0.97 : 1)
+            .animation(.spring(response: 0.25, dampingFraction: 0.7), value: configuration.isPressed)
+    }
 }
 
 // MARK: – Permission state
@@ -149,24 +210,10 @@ struct OnboardingView: View {
 
     var body: some View {
         ZStack {
-            // Background
-            LinearGradient(colors: [DS.Colors.bg, DS.Colors.bgDeep],
-                           startPoint: .top, endPoint: .bottom)
-                .ignoresSafeArea()
-
-            // Ambient glows
-            Circle()
-                .fill(DS.Colors.accent.opacity(0.09))
-                .frame(width: 600, height: 600)
-                .blur(radius: 140)
-                .offset(x: 80, y: -300)
-                .allowsHitTesting(false)
-            Circle()
-                .fill(DS.Colors.scoreOkay.opacity(0.05))
-                .frame(width: 380, height: 380)
-                .blur(radius: 100)
-                .offset(x: -130, y: 350)
-                .allowsHitTesting(false)
+            // Flat app background + film grain — matches the home screen, drops the
+            // off-brand ambient glow blobs the old onboarding used.
+            DS.Colors.bg.ignoresSafeArea()
+            GrainOverlay()
 
             VStack(spacing: 0) {
                 // Progress dots
@@ -195,19 +242,8 @@ struct OnboardingView: View {
                 VStack(spacing: DS.Spacing.s) {
                     Button(action: advance) {
                         Text(ctaLabel)
-                            .font(DS.Typography.heading(17))
-                            .foregroundColor(.white)
-                            .frame(maxWidth: .infinity)
-                            .padding(.vertical, 18)
-                            .background(
-                                LinearGradient(
-                                    colors: [DS.Colors.accent, DS.Colors.accent.opacity(0.78)],
-                                    startPoint: .topLeading, endPoint: .bottomTrailing
-                                )
-                            )
-                            .clipShape(RoundedRectangle(cornerRadius: DS.Radius.l, style: .continuous))
-                            .shadow(color: DS.Colors.accent.opacity(0.38), radius: 18, y: 6)
                     }
+                    .buttonStyle(CTAButtonStyle())
 
                     if page < totalPages - 1 {
                         Button("Skip for now") {
@@ -256,39 +292,35 @@ private struct OnboardingWelcomePage: View {
 
     var body: some View {
         ScrollView(showsIndicators: false) {
-            VStack(spacing: 0) {
-                Spacer().frame(height: DS.Spacing.l)
+            VStack(spacing: DS.Spacing.xl) {
+                Spacer().frame(height: DS.Spacing.s)
 
                 // Hero video
                 LoopingVideoPlayer(resourceName: "OnboardingAnimation1")
-                    .frame(height: 260)
-                    .clipShape(RoundedRectangle(cornerRadius: DS.Radius.l, style: .continuous))
+                    .frame(height: 240)
                     .padding(.horizontal, DS.Spacing.xl)
                     .opacity(appeared ? 1 : 0)
                     .scaleEffect(appeared ? 1 : 0.92)
                     .animation(.spring(duration: 0.75, bounce: 0.15), value: appeared)
 
-                Spacer().frame(height: DS.Spacing.xl)
-
                 // Headline + body
                 VStack(spacing: DS.Spacing.s) {
                     Text("Score every drive.")
-                        .font(DS.Typography.display(34))
+                        .font(DS.Typography.display(32))
                         .foregroundColor(.primary)
                         .multilineTextAlignment(.center)
+                        .minimumScaleFactor(0.7)
 
                     Text("Your camera and motion sensors grade every trip in real time — then show you exactly how to improve.")
                         .font(DS.Typography.body(15))
                         .foregroundColor(DS.Colors.secondary)
                         .multilineTextAlignment(.center)
                         .lineSpacing(3)
-                        .padding(.horizontal, DS.Spacing.xl)
                 }
+                .padding(.horizontal, DS.Spacing.xl)
                 .opacity(appeared ? 1 : 0)
                 .offset(y: appeared ? 0 : 16)
                 .animation(.spring(duration: 0.6, bounce: 0.1).delay(0.2), value: appeared)
-
-                Spacer().frame(height: DS.Spacing.xl)
 
                 // Feature chips
                 VStack(spacing: DS.Spacing.s) {
@@ -301,7 +333,7 @@ private struct OnboardingWelcomePage: View {
                 .offset(y: appeared ? 0 : 22)
                 .animation(.spring(duration: 0.6, bounce: 0.1).delay(0.36), value: appeared)
 
-                Spacer().frame(height: DS.Spacing.xl)
+                Spacer().frame(height: DS.Spacing.l)
             }
         }
         .onAppear { appeared = true }
@@ -315,18 +347,13 @@ private struct OnboardingWelcomePage: View {
                 .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
             Text(label)
                 .font(DS.Typography.heading(15))
-                .foregroundColor(.white)
+                .foregroundColor(.primary)
             Spacer()
             PhosphorIcon(name: "check", size: 13, color: DS.Colors.scoreGreat, weight: .bold)
         }
         .padding(.horizontal, DS.Spacing.m)
         .padding(.vertical, DS.Spacing.s)
-        .background(
-            RoundedRectangle(cornerRadius: DS.Radius.m, style: .continuous)
-                .fill(Color.white.opacity(0.05))
-                .overlay(RoundedRectangle(cornerRadius: DS.Radius.m, style: .continuous)
-                    .stroke(DS.Colors.cardStroke))
-        )
+        .onboardingCard()
     }
 }
 
@@ -336,40 +363,43 @@ private struct OnboardingHowItWorksPage: View {
     @State private var appeared = false
 
     var body: some View {
-        VStack(spacing: 0) {
-            Spacer()
+        CenteringScroll {
+            VStack(spacing: 0) {
+                Spacer(minLength: DS.Spacing.l)
 
-            VStack(spacing: 6) {
-                Text("How it works")
-                    .font(DS.Typography.display(30))
-                    .foregroundColor(.primary)
-                Text("Three steps, every drive.")
-                    .font(DS.Typography.body(14))
-                    .foregroundColor(DS.Colors.secondary)
+                VStack(spacing: 6) {
+                    Text("How it works")
+                        .font(DS.Typography.display(30))
+                        .foregroundColor(.primary)
+                        .minimumScaleFactor(0.7)
+                    Text("Three steps, every drive.")
+                        .font(DS.Typography.body(14))
+                        .foregroundColor(DS.Colors.secondary)
+                }
+                .opacity(appeared ? 1 : 0)
+                .offset(y: appeared ? 0 : 10)
+                .animation(.spring(duration: 0.5, bounce: 0.1).delay(0.05), value: appeared)
+
+                Spacer().frame(height: DS.Spacing.xl)
+
+                VStack(spacing: DS.Spacing.m) {
+                    stepRow(n: 1, icon: "car", color: DS.Colors.accent,
+                            title: "Mount your phone",
+                            desc: "Clip it to the windshield with the camera facing the road.",
+                            delay: 0.15)
+                    stepRow(n: 2, icon: "lightning", color: DS.Colors.scoreGreat,
+                            title: "Start a drive",
+                            desc: "AI vision and motion sensors watch the road and your inputs as you go.",
+                            delay: 0.25)
+                    stepRow(n: 3, icon: "chart-line-up", color: DS.Colors.scoreOkay,
+                            title: "Get your score",
+                            desc: "A grade, a braking and cornering breakdown, and tips after every trip.",
+                            delay: 0.35)
+                }
+                .padding(.horizontal, DS.Spacing.xl)
+
+                Spacer(minLength: DS.Spacing.l)
             }
-            .opacity(appeared ? 1 : 0)
-            .offset(y: appeared ? 0 : 10)
-            .animation(.spring(duration: 0.5, bounce: 0.1).delay(0.05), value: appeared)
-
-            Spacer().frame(height: DS.Spacing.xl)
-
-            VStack(spacing: DS.Spacing.m) {
-                stepRow(n: 1, icon: "car", color: DS.Colors.accent,
-                        title: "Mount your phone",
-                        desc: "Clip it to the windshield with the camera facing the road.",
-                        delay: 0.15)
-                stepRow(n: 2, icon: "lightning", color: DS.Colors.scoreGreat,
-                        title: "Start a drive",
-                        desc: "AI vision and motion sensors watch the road and your inputs as you go.",
-                        delay: 0.25)
-                stepRow(n: 3, icon: "chart-line-up", color: DS.Colors.scoreOkay,
-                        title: "Get your score",
-                        desc: "A grade, a braking and cornering breakdown, and tips after every trip.",
-                        delay: 0.35)
-            }
-            .padding(.horizontal, DS.Spacing.xl)
-
-            Spacer()
         }
         .onAppear { appeared = true }
     }
@@ -394,7 +424,7 @@ private struct OnboardingHowItWorksPage: View {
             VStack(alignment: .leading, spacing: 3) {
                 Text(title)
                     .font(DS.Typography.heading(16))
-                    .foregroundColor(.white)
+                    .foregroundColor(.primary)
                 Text(desc)
                     .font(DS.Typography.body(13))
                     .foregroundColor(DS.Colors.secondary)
@@ -403,12 +433,7 @@ private struct OnboardingHowItWorksPage: View {
             Spacer(minLength: 0)
         }
         .padding(DS.Spacing.m)
-        .background(
-            RoundedRectangle(cornerRadius: DS.Radius.m, style: .continuous)
-                .fill(Color.white.opacity(0.05))
-                .overlay(RoundedRectangle(cornerRadius: DS.Radius.m, style: .continuous)
-                    .stroke(DS.Colors.cardStroke))
-        )
+        .onboardingCard()
         .opacity(appeared ? 1 : 0)
         .offset(y: appeared ? 0 : 20)
         .animation(.spring(duration: 0.55, bounce: 0.1).delay(delay), value: appeared)
@@ -422,59 +447,62 @@ private struct OnboardingPermissionsPage: View {
     @State private var appeared = false
 
     var body: some View {
-        VStack(spacing: 0) {
-            Spacer()
+        CenteringScroll {
+            VStack(spacing: 0) {
+                Spacer(minLength: DS.Spacing.l)
 
-            // Hero icon
-            ZStack {
-                Circle()
-                    .fill(DS.Colors.accent.opacity(0.12))
-                    .frame(width: 80, height: 80)
-                PhosphorIcon.fill("shield-check", size: 34, color: DS.Colors.accent)
+                // Hero icon
+                ZStack {
+                    Circle()
+                        .fill(DS.Colors.accent.opacity(0.12))
+                        .frame(width: 80, height: 80)
+                    PhosphorIcon.fill("shield-check", size: 34, color: DS.Colors.accent)
+                }
+                .opacity(appeared ? 1 : 0)
+                .scaleEffect(appeared ? 1 : 0.6)
+                .animation(.spring(duration: 0.55, bounce: 0.35), value: appeared)
+
+                Spacer().frame(height: DS.Spacing.m)
+
+                VStack(spacing: 6) {
+                    Text("Three quick permissions")
+                        .font(DS.Typography.display(26))
+                        .foregroundColor(.primary)
+                        .multilineTextAlignment(.center)
+                        .minimumScaleFactor(0.7)
+                    Text("Drive only uses these while you're driving.\nNothing runs in the background.")
+                        .font(DS.Typography.body(14))
+                        .foregroundColor(DS.Colors.secondary)
+                        .multilineTextAlignment(.center)
+                        .lineSpacing(2)
+                }
+                .opacity(appeared ? 1 : 0)
+                .offset(y: appeared ? 0 : 10)
+                .animation(.spring(duration: 0.5, bounce: 0.1).delay(0.1), value: appeared)
+
+                Spacer().frame(height: DS.Spacing.xl)
+
+                VStack(spacing: DS.Spacing.m) {
+                    permCard(icon: "map-pin", color: .green,
+                             title: "Location",
+                             desc: "Maps your route and captures GPS speed.",
+                             state: perms.location, delay: 0.18,
+                             action: perms.requestLocation)
+                    permCard(icon: "camera", color: DS.Colors.accent,
+                             title: "Camera",
+                             desc: "Powers the AI vision model that scores your driving.",
+                             state: perms.camera, delay: 0.28,
+                             action: perms.requestCamera)
+                    permCard(icon: "bell", color: DS.Colors.scoreOkay,
+                             title: "Notifications",
+                             desc: "Streak reminders and badge-unlock alerts.",
+                             state: perms.notifications, delay: 0.38,
+                             action: perms.requestNotifications)
+                }
+                .padding(.horizontal, DS.Spacing.xl)
+
+                Spacer(minLength: DS.Spacing.l)
             }
-            .opacity(appeared ? 1 : 0)
-            .scaleEffect(appeared ? 1 : 0.6)
-            .animation(.spring(duration: 0.55, bounce: 0.35), value: appeared)
-
-            Spacer().frame(height: DS.Spacing.m)
-
-            VStack(spacing: 6) {
-                Text("Three quick permissions")
-                    .font(DS.Typography.display(28))
-                    .foregroundColor(.primary)
-                    .multilineTextAlignment(.center)
-                Text("Drive only uses these while you're driving.\nNothing runs in the background.")
-                    .font(DS.Typography.body(14))
-                    .foregroundColor(DS.Colors.secondary)
-                    .multilineTextAlignment(.center)
-                    .lineSpacing(2)
-            }
-            .opacity(appeared ? 1 : 0)
-            .offset(y: appeared ? 0 : 10)
-            .animation(.spring(duration: 0.5, bounce: 0.1).delay(0.1), value: appeared)
-
-            Spacer()
-
-            VStack(spacing: DS.Spacing.m) {
-                permCard(icon: "map-pin", color: .green,
-                         title: "Location",
-                         desc: "Maps your route and captures GPS speed.",
-                         state: perms.location, delay: 0.18,
-                         action: perms.requestLocation)
-                permCard(icon: "camera", color: DS.Colors.accent,
-                         title: "Camera",
-                         desc: "Powers the AI vision model that scores your driving.",
-                         state: perms.camera, delay: 0.28,
-                         action: perms.requestCamera)
-                permCard(icon: "bell", color: DS.Colors.scoreOkay,
-                         title: "Notifications",
-                         desc: "Streak reminders and badge-unlock alerts.",
-                         state: perms.notifications, delay: 0.38,
-                         action: perms.requestNotifications)
-            }
-            .padding(.horizontal, DS.Spacing.xl)
-
-            Spacer()
         }
         .onAppear { appeared = true }
     }
@@ -498,7 +526,7 @@ private struct OnboardingPermissionsPage: View {
             VStack(alignment: .leading, spacing: 3) {
                 Text(title)
                     .font(DS.Typography.heading(15))
-                    .foregroundColor(.white)
+                    .foregroundColor(.primary)
                 Text(desc)
                     .font(DS.Typography.body(12))
                     .foregroundColor(DS.Colors.secondary)
@@ -527,14 +555,7 @@ private struct OnboardingPermissionsPage: View {
             }
         }
         .padding(DS.Spacing.m)
-        .background(
-            RoundedRectangle(cornerRadius: DS.Radius.m, style: .continuous)
-                .fill(Color.white.opacity(0.05))
-                .overlay(
-                    RoundedRectangle(cornerRadius: DS.Radius.m, style: .continuous)
-                        .stroke(granted ? Color.green.opacity(0.28) : DS.Colors.cardStroke)
-                )
-        )
+        .onboardingCard(stroke: granted ? Color.green.opacity(0.28) : DS.Colors.cardStroke)
         .animation(.spring(duration: 0.3), value: state)
         .opacity(appeared ? 1 : 0)
         .offset(y: appeared ? 0 : 20)
@@ -551,122 +572,121 @@ private struct OnboardingAboutYouPage: View {
     @State private var appeared = false
 
     var body: some View {
-        VStack(spacing: 0) {
-            Spacer()
+        CenteringScroll {
+            VStack(spacing: 0) {
+                Spacer(minLength: DS.Spacing.l)
 
-            // Hero icon
-            ZStack {
-                Circle()
-                    .fill(DS.Colors.scoreOkay.opacity(0.12))
-                    .frame(width: 80, height: 80)
-                PhosphorIcon.fill("person", size: 32, color: DS.Colors.scoreOkay)
-            }
-            .opacity(appeared ? 1 : 0)
-            .scaleEffect(appeared ? 1 : 0.6)
-            .animation(.spring(duration: 0.55, bounce: 0.35), value: appeared)
-
-            Spacer().frame(height: DS.Spacing.m)
-
-            VStack(spacing: 6) {
-                Text("A few details")
-                    .font(DS.Typography.display(30))
-                    .foregroundColor(.primary)
-                Text("We tailor your scoring to your experience.")
-                    .font(DS.Typography.body(14))
-                    .foregroundColor(DS.Colors.secondary)
-                    .multilineTextAlignment(.center)
-            }
-            .opacity(appeared ? 1 : 0)
-            .offset(y: appeared ? 0 : 10)
-            .animation(.spring(duration: 0.5, bounce: 0.1).delay(0.1), value: appeared)
-
-            Spacer()
-
-            VStack(spacing: DS.Spacing.l) {
-                // Name field
-                VStack(alignment: .leading, spacing: 8) {
-                    Text("YOUR NAME")
-                        .font(DS.Typography.label(10))
-                        .tracking(2)
-                        .foregroundColor(nameFocused ? DS.Colors.accent : DS.Colors.secondary)
-
-                    TextField("First name (optional)", text: $name)
-                        .focused($nameFocused)
-                        .font(DS.Typography.body(17))
-                        .foregroundColor(.white)
-                        .autocapitalization(.words)
-                        .disableAutocorrection(true)
-                        .padding(.vertical, 16)
-                        .padding(.horizontal, 16)
-                        .background(Color.white.opacity(nameFocused ? 0.09 : 0.06))
-                        .clipShape(RoundedRectangle(cornerRadius: DS.Radius.m, style: .continuous))
-                        .overlay(
-                            RoundedRectangle(cornerRadius: DS.Radius.m, style: .continuous)
-                                .stroke(
-                                    nameFocused ? DS.Colors.accent.opacity(0.7) : Color.white.opacity(0.10),
-                                    lineWidth: nameFocused ? 1.5 : 1
-                                )
-                        )
+                // Hero icon
+                ZStack {
+                    Circle()
+                        .fill(DS.Colors.scoreOkay.opacity(0.12))
+                        .frame(width: 80, height: 80)
+                    PhosphorIcon.fill("person", size: 32, color: DS.Colors.scoreOkay)
                 }
+                .opacity(appeared ? 1 : 0)
+                .scaleEffect(appeared ? 1 : 0.6)
+                .animation(.spring(duration: 0.55, bounce: 0.35), value: appeared)
 
-                // Experience level
-                VStack(alignment: .leading, spacing: 10) {
-                    Text("EXPERIENCE LEVEL")
-                        .font(DS.Typography.label(10))
-                        .tracking(2)
+                Spacer().frame(height: DS.Spacing.m)
+
+                VStack(spacing: 6) {
+                    Text("A few details")
+                        .font(DS.Typography.display(30))
+                        .foregroundColor(.primary)
+                        .minimumScaleFactor(0.7)
+                    Text("We tailor your scoring to your experience.")
+                        .font(DS.Typography.body(14))
                         .foregroundColor(DS.Colors.secondary)
+                        .multilineTextAlignment(.center)
+                }
+                .opacity(appeared ? 1 : 0)
+                .offset(y: appeared ? 0 : 10)
+                .animation(.spring(duration: 0.5, bounce: 0.1).delay(0.1), value: appeared)
 
-                    HStack(spacing: DS.Spacing.s) {
-                        ForEach(DriverType.allCases, id: \.self) { type in
-                            Button {
-                                withAnimation(.spring(response: 0.3, dampingFraction: 0.8)) {
-                                    driverType = type
-                                }
-                            } label: {
-                                VStack(spacing: 8) {
-                                    PhosphorIcon.fill(
-                                        type == .learner ? "graduation-cap" : "shield-check",
-                                        size: 26,
-                                        color: driverType == type ? DS.Colors.accent : DS.Colors.secondary
-                                    )
-                                    VStack(spacing: 3) {
-                                        Text(type == .learner ? "Learner" : "Full Licence")
-                                            .font(DS.Typography.heading(14))
-                                            .foregroundColor(driverType == type ? .white : DS.Colors.secondary)
-                                        Text(type == .learner ? "More lenient thresholds" : "Standard scoring")
-                                            .font(DS.Typography.body(11))
-                                            .foregroundColor(DS.Colors.secondary)
+                Spacer().frame(height: DS.Spacing.xl)
+
+                VStack(spacing: DS.Spacing.l) {
+                    // Name field
+                    VStack(alignment: .leading, spacing: 8) {
+                        Text("YOUR NAME")
+                            .font(DS.Typography.label(10))
+                            .tracking(2)
+                            .foregroundColor(nameFocused ? DS.Colors.accent : DS.Colors.secondary)
+
+                        TextField("First name (optional)", text: $name)
+                            .focused($nameFocused)
+                            .font(DS.Typography.body(17))
+                            .foregroundColor(.primary)
+                            .autocapitalization(.words)
+                            .disableAutocorrection(true)
+                            .padding(.vertical, 16)
+                            .padding(.horizontal, 16)
+                            .onboardingCard(
+                                stroke: nameFocused ? DS.Colors.accent.opacity(0.7) : DS.Colors.cardStroke,
+                                lineWidth: nameFocused ? 1.5 : 1
+                            )
+                    }
+
+                    // Experience level
+                    VStack(alignment: .leading, spacing: 10) {
+                        Text("EXPERIENCE LEVEL")
+                            .font(DS.Typography.label(10))
+                            .tracking(2)
+                            .foregroundColor(DS.Colors.secondary)
+
+                        HStack(spacing: DS.Spacing.s) {
+                            ForEach(DriverType.allCases, id: \.self) { type in
+                                Button {
+                                    withAnimation(.spring(response: 0.3, dampingFraction: 0.8)) {
+                                        driverType = type
                                     }
-                                }
-                                .frame(maxWidth: .infinity)
-                                .padding(.vertical, 22)
-                                .background(
-                                    RoundedRectangle(cornerRadius: DS.Radius.m, style: .continuous)
-                                        .fill(driverType == type
-                                              ? DS.Colors.accent.opacity(0.12)
-                                              : Color.white.opacity(0.05))
-                                        .overlay(
-                                            RoundedRectangle(cornerRadius: DS.Radius.m, style: .continuous)
-                                                .stroke(
-                                                    driverType == type
-                                                    ? DS.Colors.accent.opacity(0.5)
-                                                    : DS.Colors.cardStroke,
-                                                    lineWidth: driverType == type ? 1.5 : 1
-                                                )
+                                } label: {
+                                    VStack(spacing: 8) {
+                                        PhosphorIcon.fill(
+                                            type == .learner ? "graduation-cap" : "shield-check",
+                                            size: 26,
+                                            color: driverType == type ? DS.Colors.accent : DS.Colors.secondary
                                         )
-                                )
+                                        VStack(spacing: 3) {
+                                            Text(type == .learner ? "Learner" : "Full Licence")
+                                                .font(DS.Typography.heading(14))
+                                                .foregroundColor(driverType == type ? .primary : DS.Colors.secondary)
+                                            Text(type == .learner ? "More lenient thresholds" : "Standard scoring")
+                                                .font(DS.Typography.body(11))
+                                                .foregroundColor(DS.Colors.secondary)
+                                                .multilineTextAlignment(.center)
+                                        }
+                                    }
+                                    .frame(maxWidth: .infinity)
+                                    .padding(.vertical, 22)
+                                    .background(
+                                        RoundedRectangle(cornerRadius: DS.Radius.m, style: .continuous)
+                                            .fill(driverType == type
+                                                  ? DS.Colors.accent.opacity(0.12)
+                                                  : DS.Colors.bgCard)
+                                            .overlay(
+                                                RoundedRectangle(cornerRadius: DS.Radius.m, style: .continuous)
+                                                    .stroke(
+                                                        driverType == type
+                                                        ? DS.Colors.accent.opacity(0.5)
+                                                        : DS.Colors.cardStroke,
+                                                        lineWidth: driverType == type ? 1.5 : 1
+                                                    )
+                                            )
+                                    )
+                                }
+                                .buttonStyle(.plain)
                             }
-                            .buttonStyle(.plain)
                         }
                     }
                 }
-            }
-            .padding(.horizontal, DS.Spacing.xl)
-            .opacity(appeared ? 1 : 0)
-            .offset(y: appeared ? 0 : 18)
-            .animation(.spring(duration: 0.55, bounce: 0.1).delay(0.2), value: appeared)
+                .padding(.horizontal, DS.Spacing.xl)
+                .opacity(appeared ? 1 : 0)
+                .offset(y: appeared ? 0 : 18)
+                .animation(.spring(duration: 0.55, bounce: 0.1).delay(0.2), value: appeared)
 
-            Spacer()
+                Spacer(minLength: DS.Spacing.l)
+            }
         }
         .onAppear { appeared = true }
     }
@@ -687,39 +707,37 @@ private struct OnboardingReadyPage: View {
 
     var body: some View {
         ScrollView(showsIndicators: false) {
-            VStack(spacing: 0) {
-                Spacer().frame(height: DS.Spacing.l)
+            VStack(spacing: DS.Spacing.xl) {
+                Spacer().frame(height: DS.Spacing.s)
 
                 // Hero video — phone on dashboard
                 LoopingVideoPlayer(resourceName: "OnboardingAnimation2")
-                    .frame(height: 260)
-                    .clipShape(RoundedRectangle(cornerRadius: DS.Radius.l, style: .continuous))
+                    .frame(height: 240)
                     .padding(.horizontal, DS.Spacing.xl)
                     .opacity(appeared ? 1 : 0)
                     .scaleEffect(appeared ? 1 : 0.92)
                     .animation(.spring(duration: 0.75, bounce: 0.15), value: appeared)
 
-                Spacer().frame(height: DS.Spacing.xl)
-
                 // Headline + instruction
                 VStack(spacing: DS.Spacing.s) {
                     Text(headline)
-                        .font(DS.Typography.display(34))
+                        .font(DS.Typography.display(32))
                         .foregroundColor(.primary)
                         .multilineTextAlignment(.center)
+                        .minimumScaleFactor(0.7)
 
                     Text("Mount your phone on the windshield, camera facing the road, and tap record to start your first drive.")
                         .font(DS.Typography.body(15))
                         .foregroundColor(DS.Colors.secondary)
                         .multilineTextAlignment(.center)
                         .lineSpacing(3)
-                        .padding(.horizontal, DS.Spacing.xl)
                 }
+                .padding(.horizontal, DS.Spacing.xl)
                 .opacity(appeared ? 1 : 0)
                 .offset(y: appeared ? 0 : 16)
                 .animation(.spring(duration: 0.6, bounce: 0.1).delay(0.22), value: appeared)
 
-                Spacer().frame(height: DS.Spacing.xl)
+                Spacer().frame(height: DS.Spacing.l)
             }
         }
         .onAppear { appeared = true }

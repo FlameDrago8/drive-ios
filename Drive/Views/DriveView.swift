@@ -31,6 +31,7 @@ struct DriveView: View {
     // Cinematic HUD state
     @State private var hudAppeared = false
     @State private var uploadStatus: UploadStatus = .idle
+    @State private var showIgnition = false
 
     // Route tagging
     @State private var lastSavedSessionID: UUID? = nil
@@ -78,6 +79,10 @@ struct DriveView: View {
                     }
                     return
                 }
+
+                // Show the "analyzing" radar while the evaluation runs on this
+                // background thread (real processing, not a fabricated delay).
+                DispatchQueue.main.async { withAnimation { uploadStatus = .uploading } }
 
                 let evaluation = aiEngine.buildEvaluation(
                     samples: samples,
@@ -238,14 +243,6 @@ struct DriveView: View {
 
                 Spacer()
 
-                // Upload status pill — floats above the dock after a drive ends
-                if uploadStatus != .idle {
-                    uploadStatusPill
-                        .rotationEffect(.degrees(90))
-                        .padding(.bottom, DS.Spacing.s)
-                        .transition(.opacity.combined(with: .scale(scale: 0.9)))
-                }
-
                 // ── Bottom control dock
                 HStack(alignment: .center, spacing: DS.Spacing.xl) {
 
@@ -327,6 +324,35 @@ struct DriveView: View {
                 .offset(y: hudAppeared ? 0 : 30)
             }
         }
+        // Ignition flourish when a drive starts (transparent, over the camera).
+        .overlay {
+            if showIgnition {
+                LottieView(.driveStart) { showIgnition = false }
+                    .frame(width: 300, height: 300)
+                    .rotationEffect(.degrees(90))
+                    .allowsHitTesting(false)
+            }
+        }
+        // Analyzing radar while the drive is being scored.
+        .overlay {
+            if uploadStatus == .uploading {
+                LottieView(.analyzing, loop: true)
+                    .frame(width: 240, height: 240)
+                    .rotationEffect(.degrees(90))
+                    .allowsHitTesting(false)
+            }
+        }
+        // Upload status pill — centered on screen after a drive ends, matching
+        // the analyzing gauge it replaces (was previously floating above the dock).
+        .overlay {
+            if uploadStatus != .idle && uploadStatus != .uploading {
+                uploadStatusPill
+                    .rotationEffect(.degrees(90))
+                    .transition(.opacity.combined(with: .scale(scale: 0.9)))
+                    .allowsHitTesting(false)
+            }
+        }
+        .onChange(of: isRecording) { _, rec in if rec { showIgnition = true } }
         .sheet(isPresented: $showRouteTagSheet) {
             RouteTagSheet(existingRoutes: existingRouteNames) { tag in
                 if let id = lastSavedSessionID, !tag.isEmpty {

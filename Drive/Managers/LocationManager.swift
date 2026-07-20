@@ -11,7 +11,15 @@ final class LocationManager: NSObject, ObservableObject, CLLocationManagerDelega
     // MARK: – Location
     private let clManager = CLLocationManager()
     private var route: [RoutePoint] = []
-    private var lastLocation: CLLocation?
+
+    // Written on the main thread (CL delegate) but read from the motion
+    // OperationQueue, so guard it with a lock to avoid a data race.
+    private let locationLock = NSLock()
+    private var _lastLocation: CLLocation?
+    private var lastLocation: CLLocation? {
+        get { locationLock.lock(); defer { locationLock.unlock() }; return _lastLocation }
+        set { locationLock.lock(); defer { locationLock.unlock() }; _lastLocation = newValue }
+    }
 
     // MARK: – Motion (CMDeviceMotion at 20 Hz)
     private let motionManager = CMMotionManager()

@@ -22,6 +22,10 @@ struct SettingsView: View {
     @State private var showDeleteAccountAlert = false
     @State private var isDeletingAccount = false
     @State private var deleteAccountError: String? = nil
+    // Deletion re-auth (Firebase rejects stale sessions for sensitive ops)
+    @State private var showReauthConfirm        = false
+    @State private var showReauthPasswordPrompt = false
+    @State private var reauthPassword           = ""
 
     // Avatar crop flow
     @State private var selectedPhotoItem: PhotosPickerItem? = nil
@@ -245,6 +249,26 @@ struct SettingsView: View {
                         .sensoryFeedback(.impact(weight: .medium), trigger: userManager.user == nil)
 
                         // Danger Zone — grouped destructive actions
+                        #if DEBUG
+                        settingSection("Screenshot Tools") {
+                            Button {
+                                UIImpactFeedbackGenerator(style: .medium).impactOccurred()
+                                DemoSeeder.seed()
+                            } label: {
+                                HStack {
+                                    Text("Seed Screenshot Data")
+                                        .font(.system(size: 15, weight: .medium))
+                                        .foregroundColor(DS.Colors.accent)
+                                    Spacer()
+                                    Image(systemName: "wand.and.stars")
+                                        .foregroundColor(DS.Colors.accent)
+                                }
+                                .padding(.vertical, DS.Spacing.s)
+                            }
+                            .buttonStyle(.plain)
+                        }
+                        #endif
+
                         settingSection("Danger Zone") {
                             Button { showClearAlert = true } label: {
                                 HStack {
@@ -403,17 +427,29 @@ struct SettingsView: View {
         ) {
             Button("Delete Account", role: .destructive) {
                 isDeletingAccount = true
-                driveStorage.clearAll()
                 userManager.deleteAccount { error in
                     isDeletingAccount = false
-                    if let error {
-                        deleteAccountError = error.localizedDescription
-                    }
+                    handleAccountDeletion(error)
                 }
             }
             Button("Cancel", role: .cancel) {}
         } message: {
             Text("This permanently deletes your account, all drives, and all data. This cannot be undone.")
+        }
+        // Stale session: confirm identity via the OAuth provider, then finish deleting
+        .alert("Confirm It's You", isPresented: $showReauthConfirm) {
+            Button("Continue") { reauthenticateAndDelete() }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("Deleting your account requires a recent sign-in. You'll be asked to sign in once more, then deletion will finish.")
+        }
+        // Stale session: confirm identity via password, then finish deleting
+        .alert("Confirm It's You", isPresented: $showReauthPasswordPrompt) {
+            SecureField("Password", text: $reauthPassword)
+            Button("Delete Account", role: .destructive) { reauthenticateAndDelete() }
+            Button("Cancel", role: .cancel) { reauthPassword = "" }
+        } message: {
+            Text("Deleting your account requires a recent sign-in. Enter your password to finish.")
         }
         // Delete account error
         .alert("Could Not Delete Account", isPresented: Binding(
@@ -423,6 +459,51 @@ struct SettingsView: View {
             Button("OK", role: .cancel) { deleteAccountError = nil }
         } message: {
             Text(deleteAccountError ?? "")
+        }
+    }
+
+    // MARK: – Account deletion
+
+    private func handleAccountDeletion(_ error: Error?) {
+        guard let error else {
+            // Account + cloud data are gone; clear the in-memory/local caches
+            // so a future sign-up on this device starts clean.
+            driveStorage.clearAll()
+            return
+        }
+        if error is UserManager.AccountDeletionError {
+            if userManager.reauthProviderID == "password" {
+                showReauthPasswordPrompt = true
+            } else {
+                showReauthConfirm = true
+            }
+        } else {
+            deleteAccountError = error.localizedDescription
+        }
+    }
+
+    private func reauthenticateAndDelete() {
+        isDeletingAccount = true
+        let finishReauth: (Error?) -> Void = { error in
+            if let error {
+                isDeletingAccount = false
+                if !UserManager.isUserCancellation(error) {
+                    deleteAccountError = error.localizedDescription
+                }
+                return
+            }
+            userManager.deleteAccount(skipFreshnessCheck: true) { error in
+                isDeletingAccount = false
+                handleAccountDeletion(error)
+            }
+        }
+        switch userManager.reauthProviderID {
+        case "google.com": userManager.reauthenticateWithGoogle(completion: finishReauth)
+        case "apple.com":  userManager.reauthenticateWithApple(completion: finishReauth)
+        default:
+            let password = reauthPassword
+            reauthPassword = ""
+            userManager.reauthenticate(password: password, completion: finishReauth)
         }
     }
 

@@ -109,9 +109,29 @@ struct LeaderboardView: View {
 
     private var myRank: Int? { mergedEntries.first(where: \.isMe)?.rank }
 
+    @AppStorage("lbBestRank") private var bestRank = 0
+    @State private var showRankUp = false
+
+    /// Celebrate only a genuine climb past your previous best position (never
+    /// the first time we ever see a rank).
+    private func checkRankUp() {
+        guard let r = myRank, r > 0 else { return }
+        if bestRank == 0 { bestRank = r; return }
+        if r < bestRank { bestRank = r; showRankUp = true }
+    }
+
     var body: some View {
         ZStack {
             DS.Colors.bg.ignoresSafeArea()
+                .onAppear { checkRankUp() }
+                .onChange(of: myRank) { _, _ in checkRankUp() }
+
+            if showRankUp {
+                LottieView(.rankUp) { showRankUp = false }
+                    .frame(width: 300, height: 300)
+                    .allowsHitTesting(false)
+                    .zIndex(10)
+            }
 
             ScrollView(showsIndicators: false) {
                 VStack(spacing: DS.Spacing.l) {
@@ -166,7 +186,7 @@ struct LeaderboardView: View {
                     // ── GC content OR prompt
                     if gc.isAuthenticated {
                         if gc.isLoading {
-                            ProgressView().tint(gold).padding(.top, DS.Spacing.xl)
+                            leaderboardSkeleton
                         } else if mergedEntries.count > 1 {
                             // Podium (top 3)
                             if mergedEntries.count >= 2 {
@@ -245,6 +265,38 @@ struct LeaderboardView: View {
                 withAnimation(.spring(duration: 0.5, bounce: 0.1)) { rowsAppeared = true }
             }
         }
+    }
+
+    // MARK: – Loading skeleton
+
+    /// Placeholder scaffold shown while Game Center + Firestore load, so the
+    /// screen shows structure instead of a bare spinner. Deliberately static
+    /// (no shimmer) to respect the design language's "quiet at rest" rule.
+    private var leaderboardSkeleton: some View {
+        VStack(spacing: 0) {
+            HStack {
+                Text("Rankings")
+                    .font(DS.Typography.label(12))
+                    .foregroundColor(DS.Colors.secondary)
+                Spacer()
+            }
+            .padding(.horizontal, DS.Spacing.l)
+            .padding(.bottom, DS.Spacing.s)
+
+            VStack(spacing: 0) {
+                ForEach(0..<5, id: \.self) { i in
+                    RankedRowSkeleton()
+                    if i < 4 {
+                        Rectangle()
+                            .fill(DS.Colors.cardStroke)
+                            .frame(height: 0.5)
+                            .padding(.horizontal, 20)
+                    }
+                }
+            }
+        }
+        .redacted(reason: .placeholder)
+        .accessibilityLabel("Loading leaderboard")
     }
 
     // MARK: – Your Stats Hero Card
@@ -647,6 +699,43 @@ private struct RankedRow: View {
                     .font(DS.Typography.label(10))
                     .foregroundColor(scoreColor(for: entry.score).opacity(0.65))
             }
+        }
+        .padding(.horizontal, 20)
+        .frame(minHeight: 64)
+    }
+}
+
+// MARK: – Ranked Row Skeleton
+
+/// Neutral placeholder that mirrors `RankedRow`'s geometry (rank chip, 40 pt
+/// avatar, name + badge line, trailing score) so the loading state matches the
+/// loaded layout exactly. Flat fills only — no gradients or shimmer.
+private struct RankedRowSkeleton: View {
+    var body: some View {
+        HStack(spacing: DS.Spacing.m) {
+            RoundedRectangle(cornerRadius: 4)
+                .fill(DS.Surface.weak)
+                .frame(width: 16, height: 12)
+                .frame(width: 28, alignment: .center)
+
+            Circle()
+                .fill(DS.Surface.weak)
+                .frame(width: 40, height: 40)
+
+            VStack(alignment: .leading, spacing: 6) {
+                RoundedRectangle(cornerRadius: 4)
+                    .fill(DS.Surface.weak)
+                    .frame(width: 110, height: 12)
+                RoundedRectangle(cornerRadius: 4)
+                    .fill(DS.Surface.subtle)
+                    .frame(width: 64, height: 9)
+            }
+
+            Spacer()
+
+            RoundedRectangle(cornerRadius: 4)
+                .fill(DS.Surface.weak)
+                .frame(width: 26, height: 16)
         }
         .padding(.horizontal, 20)
         .frame(minHeight: 64)
