@@ -142,25 +142,31 @@ struct ScoreInstrument: View {
 
     /// Calibration. Minor mark every 5, major every 25 — enough to read the
     /// dial as measured without turning the rim into a comb.
+    /// Every intermediate is explicitly typed. CGFloat and Double convert
+    /// implicitly on Apple platforms, so a mixed expression like
+    /// `c.x + cos(a) * (outer - 3)` makes the solver consider both types at
+    /// every operator — which is what made this fail to type-check at all.
     private var ticks: some View {
         Canvas { context, canvasSize in
-            let c = CGPoint(x: canvasSize.width / 2, y: canvasSize.height / 2)
-            let outer = min(canvasSize.width, canvasSize.height) / 2 - 10
+            let cx: CGFloat = canvasSize.width / 2
+            let cy: CGFloat = canvasSize.height / 2
+            let outer: CGFloat = min(canvasSize.width, canvasSize.height) / 2 - 10
 
             for step in stride(from: 0.0, through: 100.0, by: 5.0) {
-                let isMajor = step.truncatingRemainder(dividingBy: 25) == 0
+                let isMajor: Bool = step.truncatingRemainder(dividingBy: 25) == 0
                 let length: CGFloat = isMajor ? 9 : 4
-                let a = angle(for: step) * .pi / 180
-                let p1 = CGPoint(x: c.x + cos(a) * (outer - 3),
-                                 y: c.y + sin(a) * (outer - 3))
-                let p2 = CGPoint(x: c.x + cos(a) * (outer - 3 - length),
-                                 y: c.y + sin(a) * (outer - 3 - length))
+                let radians: Double = angle(for: step) * Double.pi / 180
+                let ca: CGFloat = CGFloat(cos(radians))
+                let sa: CGFloat = CGFloat(sin(radians))
+                let r1: CGFloat = outer - 3
+                let r2: CGFloat = r1 - length
+                let lineWidth: CGFloat = isMajor ? 1.2 : 1
+                let shade: Color = isMajor ? DS.Colors.secondary : DS.Colors.tertiary
+
                 var path = Path()
-                path.move(to: p1)
-                path.addLine(to: p2)
-                context.stroke(path,
-                               with: .color(isMajor ? DS.Colors.secondary : DS.Colors.tertiary),
-                               lineWidth: isMajor ? 1.2 : 1)
+                path.move(to: CGPoint(x: cx + ca * r1, y: cy + sa * r1))
+                path.addLine(to: CGPoint(x: cx + ca * r2, y: cy + sa * r2))
+                context.stroke(path, with: .color(shade), lineWidth: lineWidth)
             }
         }
         .padding(1)
@@ -179,15 +185,23 @@ struct ScoreInstrument: View {
     /// the one place amber is allowed to be at full brightness.
     private var indicator: some View {
         GeometryReader { geo in
-            let s = min(geo.size.width, geo.size.height)
-            let c = CGPoint(x: geo.size.width / 2, y: geo.size.height / 2)
-            let outer = s / 2 - 10
+            let s: CGFloat = min(geo.size.width, geo.size.height)
+            let cx: CGFloat = geo.size.width / 2
+            let cy: CGFloat = geo.size.height / 2
+            let outer: CGFloat = s / 2 - 10
+            let reach: CGFloat = outer - 8.5
+            let degrees: Double = angle(for: settled ? clamped : 0) + 90
+
+            // Offset then rotate: `.offset` doesn't change the layout frame, so
+            // the rotation still pivots on the view's original centre, which
+            // `.position` has placed at the dial centre. The mark therefore
+            // orbits the dial rather than spinning in place.
             Rectangle()
                 .fill(tint)
                 .frame(width: 2, height: 17)
-                .offset(y: -(outer - 8.5))
-                .rotationEffect(.degrees(angle(for: settled ? clamped : 0) + 90))
-                .position(c)
+                .offset(y: -reach)
+                .rotationEffect(.degrees(degrees))
+                .position(x: cx, y: cy)
         }
     }
 
@@ -318,12 +332,14 @@ struct PerformanceTrace: View {
     }
 
     private func point(_ i: Int, in size: CGSize) -> CGPoint {
-        let (lo, hi) = bounds
-        let x = values.count > 1
-            ? size.width * CGFloat(i) / CGFloat(values.count - 1)
+        let (lo, hi): (Double, Double) = bounds
+        let span: CGFloat = CGFloat(max(values.count - 1, 1))
+        let x: CGFloat = values.count > 1
+            ? size.width * CGFloat(i) / span
             : size.width / 2
-        let norm = (values[i] - lo) / max(hi - lo, 1)
-        return CGPoint(x: x, y: size.height - CGFloat(norm) * size.height)
+        let norm: Double = (values[i] - lo) / max(hi - lo, 1)
+        let y: CGFloat = size.height - CGFloat(norm) * size.height
+        return CGPoint(x: x, y: y)
     }
 
     var body: some View {
