@@ -8,145 +8,9 @@ import SwiftUI
 import MapKit
 import CoreMotion
 
-// MARK: – Design System
-enum DS {
-    enum Spacing {
-        static let xs:  CGFloat =  4
-        static let s:   CGFloat =  8
-        static let m:   CGFloat = 12
-        static let l:   CGFloat = 16
-        static let xl:  CGFloat = 22
-        static let xxl: CGFloat = 34
-    }
-    enum Radius {
-        static let s:  CGFloat = 10
-        static let m:  CGFloat = 18
-        static let l:  CGFloat = 24
-        static let xl: CGFloat = 32
-    }
-    enum Tracking {
-        static let label:    CGFloat = 1.5
-        static let display:  CGFloat = 2.5
-    }
-    enum Surface {
-        // Adaptive faint surfaces — visible on both dark and light backgrounds
-        static let subtle = Color(UIColor { $0.userInterfaceStyle == .dark ? UIColor.white.withAlphaComponent(0.05) : UIColor.black.withAlphaComponent(0.06) })
-        static let weak   = Color(UIColor { $0.userInterfaceStyle == .dark ? UIColor.white.withAlphaComponent(0.08) : UIColor.black.withAlphaComponent(0.08) })
-        static let medium = Color(UIColor { $0.userInterfaceStyle == .dark ? UIColor.white.withAlphaComponent(0.12) : UIColor.black.withAlphaComponent(0.12) })
-    }
-    enum Colors {
-        // ── Backgrounds — adaptive dark/light
-        static let bg = Color(UIColor { t in
-            t.userInterfaceStyle == .dark
-                ? UIColor(red: 0.039, green: 0.039, blue: 0.059, alpha: 1) // #0A0A0F
-                : UIColor(red: 0.949, green: 0.949, blue: 0.969, alpha: 1) // #F2F2F7
-        })
-        static let bgDeep = Color(UIColor { t in
-            t.userInterfaceStyle == .dark
-                ? UIColor(red: 0.039, green: 0.039, blue: 0.059, alpha: 1)
-                : UIColor(red: 0.898, green: 0.898, blue: 0.918, alpha: 1) // #E5E5EA
-        })
-        static let bgCard = Color(UIColor { t in
-            t.userInterfaceStyle == .dark
-                ? UIColor(red: 0.102, green: 0.102, blue: 0.122, alpha: 1) // #1A1A1F
-                : UIColor(red: 1.0,   green: 1.0,   blue: 1.0,   alpha: 1)
-        })
-        static let bgGrouped = Color(UIColor { t in
-            t.userInterfaceStyle == .dark
-                ? UIColor(red: 0.102, green: 0.102, blue: 0.122, alpha: 1)
-                : UIColor(red: 1.0,   green: 1.0,   blue: 1.0,   alpha: 1)
-        })
+// The `DS` design system and the score/grade helpers moved to
+// DesignSystem.swift. Same module, so nothing here needs an import.
 
-        // ── Accent + performance palette
-        static let accentPrimary   = Color(UIColor { t in
-            t.userInterfaceStyle == .dark
-                ? UIColor(red: 0.118, green: 0.588, blue: 1.0,   alpha: 1)  // #1E96FF — electric, glows on black
-                : UIColor(red: 0.039, green: 0.451, blue: 0.898, alpha: 1)  // #0A73E5 — deeper for light-mode contrast
-        })
-        static let accentSecondary = Color(red: 0.357, green: 0.820, blue: 0.878)  // #5BD1E0 cyan — Start Drive "ready" light only
-        static let warning         = Color(red: 0.925, green: 0.325, blue: 0.235)  // #EC5338 danger
-
-        // Primary app accent
-        static let accent = accentPrimary
-
-        // ── Performance tokens (score-reactive gauge colors)
-        static let scoreGreat = Color(red: 0.18,  green: 0.82,  blue: 0.50)        // green — strong score
-        static let scoreOkay  = Color(red: 1.000, green: 0.690, blue: 0.125)       // #FFB020 sharp amber — nominal
-        static let scorePoor  = Color(red: 0.960, green: 0.400, blue: 0.360)       // #F5665C sharp coral (reconstructed — exact original not in git)
-
-        // ── Hairline dividers — near-black, subtle not absent
-        static let hairline = Color(red: 0.086, green: 0.086, blue: 0.086)         // #161616
-
-        // ── Surfaces & text — adaptive
-        static let cardStroke = Color(UIColor { t in
-            t.userInterfaceStyle == .dark
-                ? UIColor.white.withAlphaComponent(0.12)
-                : UIColor.black.withAlphaComponent(0.08)
-        })
-        static let secondary = Color(UIColor { t in
-            t.userInterfaceStyle == .dark
-                ? UIColor(red: 0.557, green: 0.557, blue: 0.604, alpha: 1) // #8E8E9A
-                : UIColor(red: 0.42,  green: 0.42,  blue: 0.45,  alpha: 1)
-        })
-
-        // ── Legacy aliases
-        static let bgTop      = bg
-        static let bgBottom   = bgDeep
-        static let card       = bgCard
-    }
-    enum Typography {
-        /// Wordmark / hero display — Space Grotesk Bold (bundled)
-        static func display(_ size: CGFloat) -> Font {
-            .custom("SpaceGroteskLight-Bold", size: size)
-        }
-        /// Section / card headings — Space Grotesk Medium
-        static func heading(_ size: CGFloat) -> Font {
-            .custom("SpaceGroteskLight-Medium", size: size)
-        }
-        /// Scores and numeric data — SF Mono, telemetry readout presence
-        static func data(_ size: CGFloat, weight: Font.Weight = .black) -> Font {
-            .system(size: size, weight: weight, design: .monospaced)
-        }
-        /// ALL-CAPS metadata labels — Space Grotesk Medium
-        static func label(_ size: CGFloat) -> Font {
-            .custom("SpaceGroteskLight-Medium", size: size)
-        }
-        /// Body copy
-        static func body(_ size: CGFloat, weight: Font.Weight = .medium) -> Font {
-            .system(size: size, weight: weight)
-        }
-    }
-}
-
-// MARK: – Score helpers (shared across views)
-func scoreColor(for score: Double) -> Color {
-    switch score {
-    case 85...: return DS.Colors.scoreGreat
-    case 70..<85: return DS.Colors.scoreOkay
-    default: return DS.Colors.scorePoor
-    }
-}
-
-/// `m:ss` elapsed-time label for drive footage offsets. Single source of truth —
-/// this was duplicated three times (twice in VideoPlayerView, once in the coach
-/// tip card) and the copies disagreed on whether to clamp negatives.
-func driveTimeLabel(_ seconds: TimeInterval) -> String {
-    let s = max(0, Int(seconds))
-    return String(format: "%d:%02d", s / 60, s % 60)
-}
-
-func grade(for score: Double) -> String {
-    switch score {
-    case 95...: return "A+"
-    case 90..<95: return "A"
-    case 85..<90: return "A−"
-    case 80..<85: return "B+"
-    case 75..<80: return "B"
-    case 70..<75: return "B−"
-    case 65..<70: return "C+"
-    default: return "C"
-    }
-}
 
 // MARK: – Motion Manager (parallax depth)
 private final class MotionManager: ObservableObject {
@@ -211,6 +75,62 @@ struct HomeView: View {
 
     var latestDrive: DriveSession? { driveStorage.sessions.first }
 
+    // MARK: – Derived readouts
+    //
+    // Home reads averages rather than the last drive alone: the headline is a
+    // driver profile, not a single result. Each is nil/empty-safe so the first
+    // launch renders an intentional empty state rather than zeros.
+
+    /// The four channels, averaged over every drive that carries metrics.
+    private var channelAverages: [(label: String, value: Double)] {
+        let metrics: [DriveMetrics] = driveStorage.sessions.compactMap(\.metrics)
+        guard !metrics.isEmpty else { return [] }
+        let n = Double(metrics.count)
+        // Built by appending rather than as one array-of-tuples literal: Swift's
+        // type checker takes exponential time on literals like that and this one
+        // was already flagged as unsolvable in reasonable time.
+        var out: [(label: String, value: Double)] = []
+        out.append((label: "Braking",      value: metrics.map(\.braking).reduce(0, +) / n))
+        out.append((label: "Acceleration", value: metrics.map(\.acceleration).reduce(0, +) / n))
+        out.append((label: "Cornering",    value: metrics.map(\.cornering).reduce(0, +) / n))
+        out.append((label: "Smoothness",   value: metrics.map(\.smoothness).reduce(0, +) / n))
+        return out
+    }
+
+    /// Recent scores oldest-first, for the trace. `sessions` is newest-first.
+    private var traceValues: [Double] {
+        Array(driveStorage.sessions.prefix(8).map(\.score).reversed())
+    }
+
+    private var thisWeekSessions: [DriveSession] {
+        let cal = Calendar.current
+        return driveStorage.sessions.filter {
+            cal.isDate($0.date, equalTo: Date(), toGranularity: .weekOfYear)
+        }
+    }
+
+    private var lastWeekSessions: [DriveSession] {
+        let cal = Calendar.current
+        guard let prev = cal.date(byAdding: .weekOfYear, value: -1, to: Date()) else { return [] }
+        return driveStorage.sessions.filter {
+            cal.isDate($0.date, equalTo: prev, toGranularity: .weekOfYear)
+        }
+    }
+
+    /// Percentage change against last week. Nil when there's no basis to
+    /// compare, which is a different statement from "0%".
+    private var weekDelta: Double? {
+        let current = thisWeekSessions.map(\.score).average ?? 0
+        let previous = lastWeekSessions.map(\.score).average ?? 0
+        guard previous > 0, current > 0 else { return nil }
+        return ((current - previous) / previous) * 100
+    }
+
+    /// Weakest channel — what the coach should point at next.
+    private var focusChannel: (label: String, value: Double)? {
+        channelAverages.min { $0.value < $1.value }
+    }
+
     var body: some View {
         NavigationStack {
             ZStack {
@@ -220,60 +140,77 @@ struct HomeView: View {
                 GrainOverlay()
 
                 ScrollView(showsIndicators: false) {
-                    VStack(spacing: 0) {
+                    VStack(alignment: .leading, spacing: 0) {
 
-                        // School banner — shown when linked, zero height when not
+                        // Shown when linked to a driving school, zero height otherwise
                         SchoolBannerView(manager: schoolManager)
                             .opacity(appeared ? 1 : 0)
 
-                        // Avatar/settings — minimal, top right
-                        headerRow
-                            .padding(.horizontal, DS.Spacing.l)
-                            .padding(.top, DS.Spacing.s)
+                        masthead
+                            .padding(.horizontal, DS.Spacing.gutter)
+                            .padding(.top, DS.Spacing.m)
                             .opacity(appeared ? 1 : 0)
-                            .offset(y: entryY(-52))
+                            .offset(y: entryY(-24))
                             .animation(.spring(response: 0.55, dampingFraction: 0.9), value: appeared)
 
-                        // Score gauge — hero, dominates the top
-                        ExpandableScoreGauge(
-                            score: averageScore,
-                            metrics: latestDrive?.metrics,
-                            fallbackDrives: driveStorage.sessions.count,
-                            fallbackStreak: currentStreak(sessions: driveStorage.sessions),
-                            fallbackBest: Int(driveStorage.sessions.map(\.score).max() ?? 0),
-                            readyToAnimate: !splashVisible
-                        )
-                        .padding(.top, DS.Spacing.s)
-                        .opacity(appeared ? 1 : 0)
-                        .offset(y: appeared ? 0 : 20)
-                        .offset(tilt(0.85))
-                        .animation(.spring(response: 0.6, dampingFraction: 0.88).delay(0.10), value: appeared)
-
-                        // Start Drive — tight below gauge
-                        StartDriveButton { isDriving = true }
-                            .padding(.horizontal, 20)
+                        instrumentCluster
+                            .padding(.horizontal, DS.Spacing.gutter)
                             .padding(.top, DS.Spacing.xl)
                             .opacity(appeared ? 1 : 0)
                             .offset(y: entryY(20))
-                            .animation(.spring(response: 0.6, dampingFraction: 0.88).delay(0.18), value: appeared)
+                            .offset(tilt(0.5))
+                            .animation(.spring(response: 0.6, dampingFraction: 0.88).delay(0.08), value: appeared)
 
-                        clusterPanel
-                            .padding(.horizontal, 20)
-                            .padding(.top, 22)
-                            .opacity(appeared ? 1 : 0)
-                            .offset(y: entryY(30))
-                            .animation(.spring(response: 0.6, dampingFraction: 0.88).delay(0.26), value: appeared)
+                        IgnitionButton(title: "START DRIVE",
+                                       subtitle: latestDrive == nil ? "Begin your first session" : nil) {
+                            isDriving = true
+                        }
+                        .padding(.horizontal, DS.Spacing.gutter)
+                        .padding(.top, DS.Spacing.xl)
+                        .opacity(appeared ? 1 : 0)
+                        .offset(y: entryY(20))
+                        .animation(.spring(response: 0.6, dampingFraction: 0.88).delay(0.16), value: appeared)
 
-                        // Instructor goals (shown only when instructor has set goals)
-                        if !schoolManager.instructorGoals.isEmpty {
-                            InstructorGoalsCard(goals: schoolManager.instructorGoals)
-                                .padding(.horizontal, 20)
-                                .padding(.top, 12)
+                        if !channelAverages.isEmpty {
+                            channelsSection
+                                .padding(.horizontal, DS.Spacing.gutter)
+                                .padding(.top, DS.Spacing.section)
                                 .opacity(appeared ? 1 : 0)
+                                .offset(y: entryY(24))
+                                .animation(.spring(response: 0.6, dampingFraction: 0.88).delay(0.24), value: appeared)
                         }
 
+                        if traceValues.count >= 2 {
+                            weekSection
+                                .padding(.horizontal, DS.Spacing.gutter)
+                                .padding(.top, DS.Spacing.section)
+                                .opacity(appeared ? 1 : 0)
+                                .offset(y: entryY(24))
+                                .animation(.spring(response: 0.6, dampingFraction: 0.88).delay(0.30), value: appeared)
+                        }
+
+                        if let focus = focusChannel, !driveStorage.sessions.isEmpty {
+                            focusSection(focus)
+                                .padding(.horizontal, DS.Spacing.gutter)
+                                .padding(.top, DS.Spacing.section)
+                                .opacity(appeared ? 1 : 0)
+                                .offset(y: entryY(24))
+                                .animation(.spring(response: 0.6, dampingFraction: 0.88).delay(0.36), value: appeared)
+                        }
+
+                        clusterPanel
+                            .padding(.top, DS.Spacing.section)
+                            .opacity(appeared ? 1 : 0)
+                            .offset(y: entryY(24))
+                            .animation(.spring(response: 0.6, dampingFraction: 0.88).delay(0.42), value: appeared)
+
+                        if !schoolManager.instructorGoals.isEmpty {
+                            InstructorGoalsCard(goals: schoolManager.instructorGoals)
+                                .padding(.horizontal, DS.Spacing.gutter)
+                                .padding(.top, DS.Spacing.xl)
+                                .opacity(appeared ? 1 : 0)
+                        }
                     }
-                    .padding(.top, DS.Spacing.xs)
                     .padding(.bottom, DS.Spacing.xxl)
                 }
             }
@@ -306,7 +243,6 @@ struct HomeView: View {
             .sheet(isPresented: $showingSettings) {
                 SettingsView()
                     .presentationBackground(.regularMaterial)
-                    // Phase 6: content fades+scales in (the sheet slide itself is UIKit-controlled)
                     .transition(.asymmetric(
                         insertion: .opacity.combined(with: .scale(scale: 0.97)),
                         removal:   .opacity
@@ -331,6 +267,132 @@ struct HomeView: View {
                     }
                 }
             }
+        }
+    }
+
+    // MARK: – Composition
+
+    /// Wordmark, then the statement. The wordmark is deliberately tiny — the
+    /// screen should lead with what it is measuring, not with its own name.
+    private var masthead: some View {
+        VStack(alignment: .leading, spacing: DS.Spacing.l) {
+            HStack(alignment: .center) {
+                SectionLabel("Drive", size: 10, color: DS.Colors.secondary)
+                Spacer()
+                Button { showingSettings = true } label: {
+                    PhosphorIcon(name: "user-circle", size: 26, color: DS.Colors.secondary)
+                }
+                .sensoryFeedback(.impact(weight: .light), trigger: showingSettings)
+                .accessibilityLabel("Profile and settings")
+            }
+
+            Text("YOUR DRIVING\nPERFORMANCE")
+                .font(DS.Typography.display(30))
+                .tracking(-0.2)
+                .lineSpacing(2)
+                .foregroundStyle(DS.Colors.primaryText)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+    }
+
+    /// The cluster: dial to the left, supporting readouts stacked at the right
+    /// edge. Deliberately asymmetric — a centred gauge with everything below it
+    /// is the layout this redesign is moving away from.
+    private var instrumentCluster: some View {
+        HStack(alignment: .center, spacing: DS.Spacing.l) {
+            ScoreInstrument(score: averageScore, size: 208)
+
+            Spacer(minLength: 0)
+
+            VStack(alignment: .trailing, spacing: DS.Spacing.xl) {
+                StatReadout(label: "Drives",
+                            value: "\(driveStorage.sessions.count)",
+                            alignment: .trailing)
+                StatReadout(label: "Streak",
+                            value: "\(currentStreak(sessions: driveStorage.sessions))",
+                            unit: "D",
+                            alignment: .trailing)
+                StatReadout(label: "Best",
+                            value: driveStorage.sessions.isEmpty ? "—"
+                                : "\(Int(driveStorage.sessions.map(\.score).max() ?? 0))",
+                            tint: DS.Colors.exceptional,
+                            alignment: .trailing)
+            }
+            .padding(.trailing, DS.Spacing.xs)
+        }
+    }
+
+    /// Four channels of the same drive, sharing a left edge and a scale.
+    private var channelsSection: some View {
+        VStack(alignment: .leading, spacing: DS.Spacing.l) {
+            RuledSectionLabel(text: "Performance Channels")
+            VStack(spacing: DS.Spacing.l) {
+                ForEach(channelAverages, id: \.label) { channel in
+                    TelemetryChannel(label: channel.label, value: channel.value)
+                }
+            }
+            .padding(.top, DS.Spacing.xs)
+        }
+    }
+
+    /// The week as a report rather than a card: the number, the movement, then
+    /// the trace that justifies both.
+    private var weekSection: some View {
+        VStack(alignment: .leading, spacing: DS.Spacing.l) {
+            RuledSectionLabel(text: "This Week")
+
+            HStack(alignment: .firstTextBaseline, spacing: DS.Spacing.l) {
+                Text(String(format: "%.1f", thisWeekSessions.map(\.score).average ?? averageScore))
+                    .font(DS.Typography.display(40))
+                    .foregroundStyle(DS.Colors.primaryText)
+                    .monospacedDigit()
+
+                if let delta = weekDelta {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(delta >= 0 ? "+\(String(format: "%.1f", delta))%"
+                                        : "\(String(format: "%.1f", delta))%")
+                            .font(DS.Typography.data(14, weight: .semibold))
+                            .foregroundStyle(delta >= 0 ? DS.Colors.positive : DS.Colors.warning)
+                        SectionLabel("vs last week", size: 9, color: DS.Colors.tertiary)
+                    }
+                }
+                Spacer(minLength: 0)
+            }
+
+            PerformanceTrace(values: traceValues)
+                .padding(.top, DS.Spacing.xs)
+        }
+    }
+
+    /// The instructor's next instruction. Restrained on purpose: this is one
+    /// of the most valuable things on the screen and it should read as advice,
+    /// not as a promoted card.
+    private func focusSection(_ focus: (label: String, value: Double)) -> some View {
+        VStack(alignment: .leading, spacing: DS.Spacing.l) {
+            RuledSectionLabel(text: "Next Focus")
+            CoachingNote(
+                title: focusCopy(for: focus.label).title,
+                body: focusCopy(for: focus.label).detail
+            )
+        }
+    }
+
+    /// Copy for the weakest channel. Written as an instructor would say it —
+    /// one observation, one instruction.
+    private func focusCopy(for channel: String) -> (title: String, detail: String) {
+        switch channel {
+        case "Braking":
+            return ("Smoother Braking",
+                    "Begin slowing one to two seconds earlier on approach, then ease off the brake before you stop. Progressive pressure settles the car; late pressure unsettles it.")
+        case "Acceleration":
+            return ("Progressive Acceleration",
+                    "Build speed gradually from a standstill rather than in one push. Aim to reach the limit smoothly instead of quickly.")
+        case "Cornering":
+            return ("Cleaner Cornering",
+                    "Set your speed before you turn in, not during. Braking mid-corner costs grip and is the most common reason a turn feels rushed.")
+        default:
+            return ("Steadier Inputs",
+                    "Smoothness is the sum of every small correction. Fewer, slower steering and pedal adjustments will lift this the fastest.")
         }
     }
 
@@ -845,7 +907,9 @@ struct ScoreGauge: View {
 struct AnimatedScoreText: View {
     let score: Double
     var fontSize: CGFloat = 52
-    var useDisplayFace: Bool = false   // DIN Condensed for the home instrument readout
+    var useDisplayFace: Bool = false   // Space Grotesk for the home instrument readout
+    /// Defaults to the system label so existing call sites are unchanged.
+    var color: Color = .primary
     @State private var display: Double = 0
 
     private var readoutFont: Font {
@@ -857,7 +921,7 @@ struct AnimatedScoreText: View {
     var body: some View {
         Text(String(format: "%.0f", display))
             .font(readoutFont)
-            .foregroundColor(.primary)
+            .foregroundColor(color)
             .contentTransition(.numericText())
             .onAppear {
                 withAnimation(.easeOut(duration: 0.6).delay(0.25)) {
