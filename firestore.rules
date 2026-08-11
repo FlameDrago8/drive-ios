@@ -160,8 +160,12 @@ service cloud.firestore {
     // Write-once, tagged with the author's uid; consumed only by the ML pipeline
     // via the Admin SDK (which bypasses these rules), so clients get no read.
     match /trainingData/{docId} {
+      // Anonymized ML training samples. An authenticated request is required to
+      // write (abuse prevention), but the document is anonymous by design and
+      // must NOT carry a userID — authorization comes from the auth token, not
+      // from an identity field stored in the data.
       allow create: if isAuth()
-        && request.resource.data.userID == request.auth.uid;
+        && !('userID' in request.resource.data);
       allow read, update, delete: if false;
     }
 

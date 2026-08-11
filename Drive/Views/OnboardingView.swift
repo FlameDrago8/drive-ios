@@ -271,7 +271,9 @@ struct OnboardingView: View {
     private func advance() {
         if page == totalPages - 1 {
             saveProfile()
-            UserDefaults.standard.set(true, forKey: "ap_onboardingDone")
+            // Completion is recorded by the caller, against the signed-in
+            // account. Writing the old install-wide key here as well would put
+            // every future account on this device straight past onboarding.
             onComplete()
         } else {
             withAnimation { page += 1 }

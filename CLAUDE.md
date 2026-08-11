@@ -53,11 +53,22 @@ Kaggle): replace `Drive/DrivingEval.mlpackage`, then sanity-check
 assumptions. History: the road-detection threshold was lowered for testing and
 later restored — don't loosen scoring gates without asking.
 
+**v2 model contract (2026-07-26, MANDATORY):** every export must pass
+`DriveAI/scripts/parity_check.py` (PyTorch vs CoreML/ONNX parity + saturation
+check) before the .mlpackage is swapped in. Contract: input is raw 0–255 RGB
+(normalization baked into the graph); `score_preds` are RAW LOGITS —
+`calibratedScore()` in `DriveAIEngine.swift` is the only sigmoid allowed in
+the path. Do NOT pair a v1 (pre-2026-07-26) .mlpackage with current app code:
+v1 outputs sigmoid probabilities, so scores would compress into ~50–83.
+Also note: since 2026-07-26 the four sub-scores come from `SensorScoring`
+(20 Hz IMU+GPS physics); the vision model supplies events/context and is only
+the score fallback when the motion stream is too short.
+
 ## Launch / legal facts
 
-- Privacy Policy: https://flamedrago8.github.io/privacy.html
-- Support URL: https://flamedrago8.github.io/index.html
-- Both are wired into `SettingsView` (About section) and the `AuthView` signup consent line, and belong in App Store Connect (App Information).
+- Domain: **www.velantisco.com** (clean/extensionless paths). Privacy Policy: https://www.velantisco.com/privacy · Terms of Use: https://www.velantisco.com/terms · License/EULA: https://www.velantisco.com/license · Support/home: https://www.velantisco.com
+- (Old flamedrago8.github.io/*.html links retired 2026-07-25.)
+- Privacy + Terms + License are wired into `SettingsView` (About section); `AuthView` signup consent line links Terms + Privacy. Privacy Policy URL + Support URL go in App Store Connect (App Information); License Agreement text/URL goes in the EULA field.
 
 ## Past bugs worth remembering
 

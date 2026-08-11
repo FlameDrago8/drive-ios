@@ -181,7 +181,7 @@ struct AuthView: View {
                 .offset(y: appeared ? 0 : 40)
 
                 // Account-creation disclosure (App Review 5.1.1) — markdown links wrap naturally
-                Text("By continuing, you agree to our [Terms of Use](https://flamedrago8.github.io/terms.html) and [Privacy Policy](https://flamedrago8.github.io/privacy.html).")
+                Text("By continuing, you agree to our [Terms of Use](https://www.velantisco.com/terms) and [Privacy Policy](https://www.velantisco.com/privacy).")
                     .font(DS.Typography.body(11))
                     .foregroundColor(DS.Colors.secondary)
                     .tint(DS.Colors.accent)

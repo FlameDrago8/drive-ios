@@ -1,0 +1,30 @@
+rules_version = '2';
+
+// Firebase Storage rules for Drive.
+//
+// Drive footage is private to the user who recorded it. Paths are written by
+// StorageManager as: users/{uid}/videos/{sessionId}.mp4
+service firebase.storage {
+  match /b/{bucket}/o {
+
+    match /users/{userId}/videos/{videoId} {
+      // Only the owner can read their own footage.
+      allow read: if request.auth != null && request.auth.uid == userId;
+
+      // Owner may upload/replace, with guardrails:
+      //  - must be a video
+      //  - capped at 300 MB so a runaway export can't balloon the bill
+      allow write: if request.auth != null
+                   && request.auth.uid == userId
+                   && request.resource.size < 300 * 1024 * 1024
+                   && request.resource.contentType.matches('video/.*');
+
+      allow delete: if request.auth != null && request.auth.uid == userId;
+    }
+
+    // Nothing else in the bucket is reachable from the client.
+    match /{allPaths=**} {
+      allow read, write: if false;
+    }
+  }
+}

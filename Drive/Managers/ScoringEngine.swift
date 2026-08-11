@@ -44,6 +44,48 @@ struct SensorSample {
     // GPS-fused values (from nearest CLLocation update, ~1 Hz or when moved >10 m)
     let gpsSpeed: Double     // m/s; -1 if GPS fix was unavailable at this sample
     let gpsCourse: Double    // degrees 0–359 true north; -1 if unavailable
+
+    // ── v2 channels (DRIVE_REPRESENTATION.md Layer 0) ────────────────────────
+    // Captured because they're free from CMDeviceMotion and unrecoverable later.
+
+    /// `CACurrentMediaTime()` — monotonic and shared with the AVCapture clock,
+    /// so kinematics can be aligned to video frame-accurately. `timestamp`
+    /// (wall clock) is not safe for this: it can jump.
+    let monotonicTime: TimeInterval
+    /// Gravity direction in the same reference frame — makes the mount
+    /// orientation exactly recoverable instead of inferred from GPS.
+    let gravityX: Double
+    let gravityY: Double
+    let gravityZ: Double
+    /// Device attitude quaternion — lets a future pass rotate raw accelerations
+    /// into a true vehicle frame regardless of how the phone sat in the cradle.
+    let attitudeX: Double
+    let attitudeY: Double
+    let attitudeZ: Double
+    let attitudeW: Double
+    /// CLLocation.horizontalAccuracy in metres; -1 unknown. Training can weight
+    /// by GPS quality instead of trusting every fix equally.
+    let gpsAccuracy: Double
+
+    init(timestamp: Date,
+         userAccelX: Double, userAccelY: Double, userAccelZ: Double,
+         rotationX: Double, rotationY: Double, rotationZ: Double,
+         gpsSpeed: Double, gpsCourse: Double,
+         monotonicTime: TimeInterval = 0,
+         gravityX: Double = 0, gravityY: Double = 0, gravityZ: Double = 0,
+         attitudeX: Double = 0, attitudeY: Double = 0,
+         attitudeZ: Double = 0, attitudeW: Double = 1,
+         gpsAccuracy: Double = -1) {
+        self.timestamp = timestamp
+        self.userAccelX = userAccelX; self.userAccelY = userAccelY; self.userAccelZ = userAccelZ
+        self.rotationX = rotationX;   self.rotationY = rotationY;   self.rotationZ = rotationZ
+        self.gpsSpeed = gpsSpeed;     self.gpsCourse = gpsCourse
+        self.monotonicTime = monotonicTime
+        self.gravityX = gravityX; self.gravityY = gravityY; self.gravityZ = gravityZ
+        self.attitudeX = attitudeX; self.attitudeY = attitudeY
+        self.attitudeZ = attitudeZ; self.attitudeW = attitudeW
+        self.gpsAccuracy = gpsAccuracy
+    }
 }
 
 // MARK: – Coach Tip
@@ -103,6 +145,14 @@ struct DriveEvaluation {
     /// saving rather than persist a misleading score.
     var isScored: Bool = true
     var notScoredReason: String? = nil
+
+    // ── v2 representation (DRIVE_REPRESENTATION.md) ─────────────────────────
+    /// Layer 1: the per-second quality curve this score is the area under.
+    var quality: DriveQuality? = nil
+    /// Layer 2: typed maneuvers and instructor-style faults.
+    var maneuvers: ManeuverAnalysis? = nil
+    /// Layer 0: what the camera model saw, ~5 fps, for the on-device record.
+    var contextTrack: [VisionContextFrame] = []
 }
 
 // MARK: – Scoring Engine
@@ -124,151 +174,16 @@ final class ScoringEngine {
         driverType: DriverType,
         duration: TimeInterval
     ) -> DriveEvaluation {
-
-        // Delegate to DriveAIEngine when camera-based model results are available.
-        if DriveAIEngine.shared.hasResults {
-            return DriveAIEngine.shared.buildEvaluation(
-                samples: samples,
-                route: route,
-                driverType: driverType,
-                duration: duration
-            )
-        }
-
-        // ── Sensor-only fallback (no camera / simulator) ──────────────────────
-        //
-        // Uses accelerometer + gyroscope to approximate sub-scores.
-        // Less accurate than the camera model but works without camera access.
-        //
-        let validSpeeds = route.filter { $0.speed >= 0 }.map(\.speed)
-        let avgSpeed = validSpeeds.isEmpty ? -1.0 : validSpeeds.reduce(0, +) / Double(validSpeeds.count)
-        let topSpeed = validSpeeds.max() ?? -1.0
-
-        guard !samples.isEmpty else {
-            let metrics = DriveMetrics(
-                braking: 78, acceleration: 78, cornering: 78, smoothness: 78,
-                hardBrakeCount: 0, hardAccelCount: 0, hardCornerCount: 0,
-                avgSpeedMS: avgSpeed, topSpeedMS: topSpeed,
-                sampleCount: 0, gpsPointCount: validSpeeds.count, events: nil
-            )
-            return DriveEvaluation(overallScore: 78, metrics: metrics, coachTips: [
-                CoachTip(title: "No Sensor Data",
-                         message: "Motion data was unavailable for this drive.",
-                         category: .positive)
-            ], sensorWindows: [])
-        }
-
-        // Thresholds scale for learner vs full licence
-        let brakingThreshold:  Double = driverType == .learner ? 0.28 : 0.35
-        let accelThreshold:    Double = driverType == .learner ? 0.25 : 0.32
-        let cornerThreshold:   Double = driverType == .learner ? 0.22 : 0.30
-
-        var hardBrakes = 0, hardAccels = 0, hardCorners = 0
-        var brakePenalty = 0.0, accelPenalty = 0.0, cornerPenalty = 0.0, smoothPenalty = 0.0
-
-        // Cooldown counters (20 Hz → 2 s cooldown = 40 samples)
-        var brakeCool = 0, accelCool = 0, cornerCool = 0
-        let cooldownSamples = 40
-
-        // Capture event onset indices for training window extraction
-        var eventOnsets: [(DriveEventType, Int)] = []
-
-        for (i, s) in samples.enumerated() {
-            brakeCool  = max(0, brakeCool  - 1)
-            accelCool  = max(0, accelCool  - 1)
-            cornerCool = max(0, cornerCool - 1)
-
-            let longG = abs(s.userAccelY)
-            let latG  = abs(s.userAccelX)
-            let yaw   = abs(s.rotationZ)
-
-            if s.userAccelY < -brakingThreshold && brakeCool == 0 {
-                hardBrakes += 1; brakeCool = cooldownSamples
-                brakePenalty += min((longG - brakingThreshold) * 80, 25)
-                eventOnsets.append((.hardBrake, i))
-            }
-            if s.userAccelY > accelThreshold && accelCool == 0 {
-                hardAccels += 1; accelCool = cooldownSamples
-                accelPenalty += min((longG - accelThreshold) * 70, 20)
-                eventOnsets.append((.hardAccel, i))
-            }
-            if latG > cornerThreshold && cornerCool == 0 {
-                hardCorners += 1; cornerCool = cooldownSamples
-                cornerPenalty += min((latG - cornerThreshold) * 75, 20)
-                eventOnsets.append((.hardCorner, i))
-            }
-            smoothPenalty += (longG * 0.4 + latG * 0.35 + yaw * 0.25) * 0.015
-        }
-
-        let n = Double(samples.count)
-        let braking      = max(0, 100 - brakePenalty)
-        let acceleration = max(0, 100 - accelPenalty)
-        let cornering    = max(0, 100 - cornerPenalty)
-        let smoothness   = max(0, 100 - smoothPenalty / n * 120)
-        let overall      = braking * 0.30 + acceleration * 0.25 + cornering * 0.25 + smoothness * 0.20
-
-        var tips: [CoachTip] = []
-        if hardBrakes > 0 {
-            tips.append(CoachTip(
-                title:    "Smooth Braking",
-                message:  "\(hardBrakes) hard brake\(hardBrakes == 1 ? "" : "s") detected. Anticipate stops earlier.",
-                category: .braking))
-        }
-        if hardAccels > 0 {
-            tips.append(CoachTip(
-                title:    "Gentle Acceleration",
-                message:  "\(hardAccels) hard acceleration\(hardAccels == 1 ? "" : "s") detected. Ease into the throttle.",
-                category: .acceleration))
-        }
-        if hardCorners > 0 {
-            tips.append(CoachTip(
-                title:    "Cornering Technique",
-                message:  "\(hardCorners) sharp corner\(hardCorners == 1 ? "" : "s") detected. Slow before the turn.",
-                category: .cornering))
-        }
-        tips = Array(tips.sorted { a, b in
-            let scoreA: Double = a.category == .braking ? braking : a.category == .acceleration ? acceleration : cornering
-            let scoreB: Double = b.category == .braking ? braking : b.category == .acceleration ? acceleration : cornering
-            return scoreA < scoreB
-        }.prefix(2))
-        if tips.count < 3 {
-            tips.append(CoachTip(
-                title:    tips.isEmpty ? "Great Drive!" : "Keep It Up",
-                message:  tips.isEmpty
-                    ? "Clean inputs throughout. Well done."
-                    : "You're improving. Focus on the tips above.",
-                category: .positive))
-        }
-
-        let metrics = DriveMetrics(
-            braking:         braking,
-            acceleration:    acceleration,
-            cornering:       cornering,
-            smoothness:      smoothness,
-            hardBrakeCount:  hardBrakes,
-            hardAccelCount:  hardAccels,
-            hardCornerCount: hardCorners,
-            avgSpeedMS:      avgSpeed,
-            topSpeedMS:      topSpeed,
-            sampleCount:     samples.count,
-            gpsPointCount:   validSpeeds.count,
-            events:          nil
+        // One evaluation path for every case. buildEvaluation() scores the
+        // four sub-scores from the 20 Hz sensor stream (SensorScoring — the
+        // authority for dynamics), uses the camera model for events/context,
+        // falls back to model scores when the motion stream is too short, and
+        // returns a not-scored evaluation when neither source has data.
+        DriveAIEngine.shared.buildEvaluation(
+            samples: samples,
+            route: route,
+            driverType: driverType,
+            duration: duration
         )
-
-        // Build sensor windows around each detected event onset
-        let preSamples = 40, postSamples = 20   // 2 s before, 1 s after at 20 Hz
-        let sensorWindows: [SensorWindow] = eventOnsets.map { (type, idx) in
-            let start = max(0, idx - preSamples)
-            let end   = min(samples.count, idx + postSamples)
-            return SensorWindow(eventType: type,
-                                samples: Array(samples[start..<end]),
-                                modelScore: overall,
-                                driverType: driverType)
-        }
-
-        return DriveEvaluation(overallScore: overall, metrics: metrics,
-                               coachTips: tips, sensorWindows: sensorWindows)
-
-        // ── End sensor fallback ───────────────────────────────────────────────
     }
 }

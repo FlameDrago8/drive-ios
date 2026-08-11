@@ -18,6 +18,14 @@ class AppDelegate: NSObject, UIApplicationDelegate {
     func application(_ application: UIApplication,
                      didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]? = nil) -> Bool {
         FirebaseApp.configure()
+
+        // Clear any Live Activity stranded by a crash or force-quit mid-drive.
+        // The in-app teardown can't cover those — the process died holding the
+        // only handle — so the activity would keep counting on the Lock Screen
+        // until the system's 8-hour ceiling. Nothing can be driving this early
+        // in launch, so anything still running is by definition stale.
+        Task { await DriveActivityAttributes.endAll() }
+
         return true
     }
 
@@ -40,8 +48,8 @@ struct DriveApp: App {
     @UIApplicationDelegateAdaptor(AppDelegate.self) var delegate
     @StateObject var userManager = UserManager.shared
     @StateObject private var prefs = AppPreferences.shared
+    @StateObject private var onboarding = OnboardingState.shared
     @State private var showingSplash = true
-    @State private var onboardingDone = UserDefaults.standard.bool(forKey: "ap_onboardingDone")
 
     var body: some Scene {
         WindowGroup {
@@ -52,9 +60,9 @@ struct DriveApp: App {
                         AuthView()
                     } else if !(userManager.user?.isEmailVerified ?? false) {
                         VerifyEmailView()
-                    } else if !onboardingDone {
+                    } else if !onboarding.isComplete(for: userManager.user?.uid) {
                         OnboardingView {
-                            withAnimation { onboardingDone = true }
+                            withAnimation { onboarding.markComplete(for: userManager.user?.uid) }
                         }
                     } else {
                         HomeView(splashVisible: showingSplash)
@@ -62,11 +70,19 @@ struct DriveApp: App {
                 }
                 .preferredColorScheme(prefs.lightModeEnabled ? .light : .dark)
                 .onChange(of: userManager.user) { _, user in
+                    // Retire the install-wide onboarding flag in favour of a
+                    // per-account one, crediting whoever is signed in now.
+                    onboarding.migrateLegacyFlagIfNeeded(for: user?.uid)
                     if user != nil {
                         GameCenterManager.shared.authenticate()
                         NotificationManager.shared.requestPermission()
                         NotificationManager.shared.scheduleWeeklySummary()
                     }
+                }
+                .onAppear {
+                    // Firebase can restore a session before the first render,
+                    // in which case the change handler above never fires.
+                    onboarding.migrateLegacyFlagIfNeeded(for: userManager.user?.uid)
                 }
 
                 // Splash on top — removed after animation finishes

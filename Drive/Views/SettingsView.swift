@@ -212,22 +212,36 @@ struct SettingsView: View {
                         settingSection("About") {
                             SettingsRow(label: "Version \(appVersion)", showChevron: false)
                             settingDivider
-                            Link(destination: URL(string: "https://flamedrago8.github.io/privacy.html")!) {
+                            Link(destination: URL(string: "https://www.velantisco.com/privacy")!) {
                                 SettingsRow(label: "Privacy Policy", showChevron: true)
                             }
                             settingDivider
-                            Link(destination: URL(string: "https://flamedrago8.github.io/terms.html")!) {
+                            Link(destination: URL(string: "https://www.velantisco.com/terms")!) {
                                 SettingsRow(label: "Terms of Use", showChevron: true)
                             }
                             settingDivider
-                            Link(destination: URL(string: "https://flamedrago8.github.io/license.html")!) {
+                            Link(destination: URL(string: "https://www.velantisco.com/license")!) {
                                 SettingsRow(label: "License Agreement", showChevron: true)
                             }
                             settingDivider
-                            Link(destination: URL(string: "https://flamedrago8.github.io/index.html")!) {
+                            Link(destination: URL(string: "https://www.velantisco.com")!) {
                                 SettingsRow(label: "Support", showChevron: true)
                             }
                         }
+
+                        #if DEBUG
+                        // Compiled out of Release/TestFlight. Replaying the
+                        // intro is otherwise a delete-and-reinstall, which also
+                        // wipes every local drive.
+                        settingSection("Developer") {
+                            Button {
+                                OnboardingState.shared.reset(for: userManager.user?.uid)
+                            } label: {
+                                SettingsRow(label: "Replay Onboarding", showChevron: true)
+                            }
+                            .buttonStyle(.plain)
+                        }
+                        #endif
 
                         // Sign out — account action, contained to match the section panels
                         Button { userManager.signOut() } label: {
@@ -249,26 +263,6 @@ struct SettingsView: View {
                         .sensoryFeedback(.impact(weight: .medium), trigger: userManager.user == nil)
 
                         // Danger Zone — grouped destructive actions
-                        #if DEBUG
-                        settingSection("Screenshot Tools") {
-                            Button {
-                                UIImpactFeedbackGenerator(style: .medium).impactOccurred()
-                                DemoSeeder.seed()
-                            } label: {
-                                HStack {
-                                    Text("Seed Screenshot Data")
-                                        .font(.system(size: 15, weight: .medium))
-                                        .foregroundColor(DS.Colors.accent)
-                                    Spacer()
-                                    Image(systemName: "wand.and.stars")
-                                        .foregroundColor(DS.Colors.accent)
-                                }
-                                .padding(.vertical, DS.Spacing.s)
-                            }
-                            .buttonStyle(.plain)
-                        }
-                        #endif
-
                         settingSection("Danger Zone") {
                             Button { showClearAlert = true } label: {
                                 HStack {

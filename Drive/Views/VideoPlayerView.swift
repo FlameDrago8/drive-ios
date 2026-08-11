@@ -6,7 +6,11 @@
 import SwiftUI
 import AVKit
 
-/// Inline video player with a custom scrubber (event markers on track) and event-timeline chips.
+/// Seconds of run-up given before a jumped-to moment.
+private let kSeekPreroll: TimeInterval = 3.0
+
+/// Inline video player with a custom scrubber carrying markers for the drive's
+/// key moments.
 struct VideoPlayerView: View {
     let videoURL: URL
     let events: [DriveEvent]
@@ -62,14 +66,18 @@ struct VideoPlayerView: View {
                             .fill(DS.Colors.accent)
                             .frame(width: geo.size.width * CGFloat(currentTime / videoDuration), height: 4)
 
-                        // Event markers
-                        ForEach(events) { event in
+                        // Event markers — the worst moments only. Every event on
+                        // a long drive turns a 4 pt track into a solid dotted
+                        // line you can't aim at, which defeats the point of
+                        // marking anything.
+                        ForEach(markers) { event in
                             let xPos = geo.size.width * CGFloat(event.timeOffset / videoDuration)
                             let c = event.type.colorComponents
+                            let d: CGFloat = event.severity == .severe ? 9 : 7
                             Circle()
                                 .fill(Color(red: c.0, green: c.1, blue: c.2))
-                                .frame(width: 8, height: 8)
-                                .offset(x: xPos - 4, y: 0)
+                                .frame(width: d, height: d)
+                                .offset(x: xPos - d / 2, y: 0)
                         }
 
                         // Thumb
@@ -97,33 +105,18 @@ struct VideoPlayerView: View {
 
                 // Time labels
                 HStack {
-                    Text(timeLabel(currentTime))
+                    Text(driveTimeLabel(currentTime))
                     Spacer()
-                    Text(timeLabel(videoDuration))
+                    Text(driveTimeLabel(videoDuration))
                 }
                 .font(.system(size: 10, weight: .semibold, design: .monospaced))
                 .foregroundColor(DS.Colors.secondary)
             }
 
-            // ── Event timeline chips (tap to jump)
-            if !events.isEmpty {
-                VStack(alignment: .leading, spacing: DS.Spacing.xs) {
-                    Text("EVENTS — TAP TO JUMP")
-                        .font(.system(size: 9, weight: .heavy))
-                        .tracking(2)
-                        .foregroundColor(DS.Colors.secondary)
-
-                    ScrollView(.horizontal, showsIndicators: false) {
-                        HStack(spacing: DS.Spacing.s) {
-                            ForEach(events) { event in
-                                EventChip(event: event, isActive: isActiveEvent(event)) {
-                                    seekTo(event.timeOffset)
-                                }
-                            }
-                        }
-                    }
-                }
-            }
+            // The full event list lives in the report's own events section
+            // (DriveEventsSection), which is filterable and reachable even when
+            // a drive has no footage. Repeating it here as a flat chip strip
+            // was the same data a third time, and the least usable copy of it.
         }
         .onAppear { setupPlayer() }
         .onDisappear { teardownPlayer() }
@@ -165,18 +158,21 @@ struct VideoPlayerView: View {
     }
 
     private func seekTo(_ offset: TimeInterval) {
-        let target = CMTime(seconds: max(0, offset - 1.5), preferredTimescale: 600)
+        // Start well before the moment. The report scrolls the player back into
+        // view as it seeks, and the eye needs a beat to land on it — a short
+        // pre-roll means the event has already happened by the time you're
+        // looking at the right part of the screen.
+        let target = CMTime(seconds: max(0, offset - kSeekPreroll), preferredTimescale: 600)
         player?.seek(to: target, toleranceBefore: .zero, toleranceAfter: .zero)
         player?.play()
     }
 
-    private func isActiveEvent(_ event: DriveEvent) -> Bool {
-        abs(currentTime - event.timeOffset) < 2.5
-    }
-
-    private func timeLabel(_ seconds: TimeInterval) -> String {
-        let s = max(0, Int(seconds))
-        return String(format: "%d:%02d", s / 60, s % 60)
+    /// Markers the track can actually render as distinct targets. Declustered
+    /// by roughly a marker's width on a ~330 pt track, and capped, so the dots
+    /// stay aimable however long the drive is.
+    private var markers: [DriveEvent] {
+        events.keyMoments(limit: 10,
+                          minSeparation: videoDuration * (12.0 / 330.0))
     }
 }
 
@@ -197,10 +193,14 @@ private struct FullscreenPlayerView: View {
                 VideoPlayer(player: player)
                     .clipShape(RoundedRectangle(cornerRadius: DS.Radius.m, style: .continuous))
 
-                if !events.isEmpty {
+                // Fullscreen has no report underneath it, so it keeps a jump
+                // strip — but of the worst moments, not of everything. Ten
+                // chips is a shortcut; forty is a filing cabinet.
+                let jumps = events.keyMoments(limit: 8)
+                if !jumps.isEmpty {
                     ScrollView(.horizontal, showsIndicators: false) {
                         HStack(spacing: DS.Spacing.s) {
-                            ForEach(events) { event in
+                            ForEach(jumps) { event in
                                 EventChip(event: event, isActive: false) {
                                     onSeek(event.timeOffset)
                                 }
@@ -243,12 +243,12 @@ private struct EventChip: View {
     var body: some View {
         Button(action: onTap) {
             HStack(spacing: 5) {
-                Image(systemName: event.type.icon)
+                Image(systemName: event.direction?.icon ?? event.type.icon)
                     .font(.system(size: 11, weight: .bold))
                 VStack(alignment: .leading, spacing: 1) {
-                    Text(event.type.label)
+                    Text(event.displayLabel)
                         .font(.system(size: 11, weight: .bold))
-                    Text(timeLabel(event.timeOffset))
+                    Text(driveTimeLabel(event.timeOffset))
                         .font(.system(size: 9, weight: .semibold, design: .monospaced))
                         .foregroundColor(chipColor.opacity(0.75))
                 }
@@ -258,15 +258,13 @@ private struct EventChip: View {
             .padding(.vertical, 7)
             .background(chipColor.opacity(isActive ? 0.22 : 0.10))
             .clipShape(Capsule())
-            .overlay(Capsule().stroke(chipColor.opacity(isActive ? 0.7 : 0.25), lineWidth: isActive ? 1.5 : 1))
+            // strokeBorder keeps the whole line inside the capsule — a centred
+            // stroke bleeds half its width past the chip and reads ragged.
+            .overlay(Capsule().strokeBorder(chipColor.opacity(isActive ? 0.7 : 0.25), lineWidth: isActive ? 1.5 : 1))
             .scaleEffect(isActive ? 1.04 : 1.0)
             .animation(.easeOut(duration: 0.2), value: isActive)
         }
         .buttonStyle(.plain)
     }
 
-    private func timeLabel(_ seconds: TimeInterval) -> String {
-        let s = max(0, Int(seconds))
-        return String(format: "%d:%02d", s / 60, s % 60)
-    }
 }

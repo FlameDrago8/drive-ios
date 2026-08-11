@@ -1479,62 +1479,6 @@ struct RouteStatCard: View {
     }
 }
 
-// MARK: – Achievement Row
-struct AchievementRow: View {
-    let title: String
-    let description: String
-    let icon: String
-    let progress: Double
-    let isUnlocked: Bool
-
-    @State private var barAnimated = false
-
-    var body: some View {
-        HStack(spacing: DS.Spacing.m) {
-            ZStack {
-                Circle()
-                    .fill(isUnlocked ? Color(red: 1.0, green: 0.80, blue: 0.22).opacity(0.20) : Color.white.opacity(0.07))
-                    .frame(width: 50, height: 50)
-                PhosphorIcon.fill(icon, size: 20, color: isUnlocked ? Color(red: 1.0, green: 0.80, blue: 0.22) : DS.Colors.secondary)
-            }
-
-            VStack(alignment: .leading, spacing: 6) {
-                HStack {
-                    Text(title)
-                        .font(.system(size: 15, weight: .semibold))
-                        .foregroundColor(isUnlocked ? Color.primary : DS.Colors.secondary)
-                    Spacer()
-                    if isUnlocked {
-                        PhosphorIcon.fill("check-circle", size: 14, color: .green)
-                    } else {
-                        Text("\(Int(progress * 100))%")
-                            .font(.system(size: 12, weight: .semibold, design: .monospaced))
-                            .foregroundColor(DS.Colors.secondary)
-                    }
-                }
-
-                Text(description)
-                    .font(.system(size: 12, weight: .medium))
-                    .foregroundColor(DS.Colors.secondary)
-
-                if !isUnlocked {
-                    GeometryReader { geo in
-                        ZStack(alignment: .leading) {
-                            Capsule().fill(Color.white.opacity(0.09))
-                            Capsule()
-                                .fill(DS.Colors.accent)
-                                .frame(width: geo.size.width * (barAnimated ? progress : 0))
-                                .animation(.spring(response: 0.9, dampingFraction: 0.75).delay(0.2), value: barAnimated)
-                        }
-                    }
-                    .frame(height: 4)
-                }
-            }
-        }
-        .padding(.vertical, DS.Spacing.m)
-        .onAppear { barAnimated = true }
-    }
-}
 
 // MARK: – Shared helpers
 private var detailCardBG: some View {

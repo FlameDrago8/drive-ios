@@ -22,6 +22,10 @@ struct DriveView: View {
     @StateObject private var locationManager = LocationManager()
     @State private var driveStartDate: Date?
     @State private var currentScore: Double = 85
+    /// True once the motion stream is long enough to score. From that point the
+    /// HUD follows SensorScoring and ignores the model's live estimate, so the
+    /// live number matches the final report.
+    @State private var liveScoreFromSensors = false
 
     private let aiEngine = DriveAIEngine.shared
 
@@ -76,6 +80,10 @@ struct DriveView: View {
                         DispatchQueue.main.asyncAfter(deadline: .now() + 3) {
                             withAnimation { uploadStatus = .idle }
                         }
+                        // The drive is over even though it isn't being saved —
+                        // this early return used to skip teardown and leave the
+                        // Live Activity running indefinitely.
+                        endLiveActivity(finalScore: 0)
                     }
                     return
                 }
@@ -118,20 +126,43 @@ struct DriveView: View {
                         return nil
                     }
                 }()
+                // Layer 0: keep the full record. Everything richer we might
+                // later compute — re-scoring with a better model, the telemetry
+                // strip, per-maneuver history — is recoverable from this and
+                // from nothing else. See DRIVE_REPRESENTATION.md.
+                let sessionID = UUID()
+                let record = DriveRecord(
+                    sessionID: sessionID,
+                    kinematics: KinematicsBlob.encode(samples,
+                                                      sampleRate: LocationManager.captureHz),
+                    context: evaluation.contextTrack,
+                    trace: evaluation.quality?.trace ?? [],
+                    captureHz: LocationManager.captureHz
+                )
+                let savedRecord = DriveRecordStore.save(record)
+
                 let session = DriveSession(
+                    id: sessionID,
+                    date: Date(),
                     duration: duration,
                     score: evaluation.overallScore,
                     videoURL: permanentVideoURL,
+                    hasVideoRecording: permanentVideoURL != nil,
                     route: route,
                     metrics: evaluation.metrics,
-                    coachTips: evaluation.coachTips
+                    coachTips: evaluation.coachTips,
+                    maneuvers: evaluation.maneuvers?.maneuvers,
+                    faults: evaluation.maneuvers?.faults,
+                    meanQuality: evaluation.quality?.meanQuality,
+                    worstQuality: evaluation.quality?.worstDecileQuality,
+                    hasRecord: savedRecord
                 )
                 let prev = prevBadgeSnapshot
+                // School mirroring is handled inside driveStorage.add(session:) for
+                // every build config. The #if DRIVING_SCHOOL call that used to sit
+                // here fired a second, duplicate mirror write in Debug only.
                 driveStorage.add(session: session)
-                driveStorage.uploadTrainingData(sessionID: session.id, windows: evaluation.sensorWindows)
-                #if DRIVING_SCHOOL
-                Task { await SchoolManager.shared.mirrorDrive(session) }
-                #endif
+                driveStorage.uploadTrainingData(windows: evaluation.sensorWindows)
                 DispatchQueue.main.async {
                     UINotificationFeedbackGenerator().notificationOccurred(.success)
                     currentScore = evaluation.overallScore
@@ -155,6 +186,9 @@ struct DriveView: View {
                 DispatchQueue.main.asyncAfter(deadline: .now() + 4) {
                     withAnimation { uploadStatus = .idle }
                 }
+                // A failed recording still ends the drive; without this the
+                // Live Activity kept counting up as though it were ongoing.
+                endLiveActivity(finalScore: 0)
             })
             .ignoresSafeArea()
 
@@ -260,6 +294,7 @@ struct DriveView: View {
                             UIImpactFeedbackGenerator(style: .heavy).impactOccurred()
                             driveStartDate = Date()
                             isRecording = true
+                            liveScoreFromSensors = false
                             startTicker()
                             locationManager.startTracking()
                             prevBadgeSnapshot = badgeSnapshot()
@@ -367,8 +402,9 @@ struct DriveView: View {
             // Instrument power-on — the dock springs up rather than a flat fade
             withAnimation(.spring(response: 0.55, dampingFraction: 0.78)) { hudAppeared = true }
             aiEngine.onScoreUpdate = { score in
-                // Ignore any update that lands after the drive has ended.
-                guard isRecording else { return }
+                // Ignore any update that lands after the drive has ended, and
+                // stand down once sensor scoring has taken over the HUD.
+                guard isRecording, !liveScoreFromSensors else { return }
                 withAnimation(.easeOut(duration: 0.4)) { currentScore = score }
             }
             aiEngine.onRoadStatusChange = { onRoad in
@@ -379,8 +415,18 @@ struct DriveView: View {
         .onDisappear {
             aiEngine.onScoreUpdate = nil
             aiEngine.onRoadStatusChange = nil
+            aiEngine.stop()
+            locationManager.stopSensors()
             stopTicker()
             UIApplication.shared.isIdleTimerDisabled = false
+            // Safety net for the Live Activity. Leaving this screen ends the
+            // drive by definition, so nothing should outlive it — the close
+            // button, a recording error and a too-short drive all previously
+            // exited without ending it, stranding it on the Lock Screen. The
+            // normal finish path has already ended it by now and endAll on an
+            // empty list is a no-op, so this is safe to run unconditionally.
+            liveActivity = nil
+            Task { await DriveActivityAttributes.endAll() }
         }
     }
 
@@ -401,19 +447,14 @@ struct DriveView: View {
         )
     }
 
+    /// Ends the drive's Live Activity, leaving the summary up briefly.
+    ///
+    /// Goes through `endAll` rather than only ending `liveActivity`: if an
+    /// earlier drive stranded an activity, this process no longer has a handle
+    /// to it, and ending only our own would leave that one running forever.
     private func endLiveActivity(finalScore: Int) {
-        Task {
-            let state = DriveActivityAttributes.ContentState(
-                score: finalScore,
-                startDate: driveStartDate ?? Date(),
-                isRecording: false
-            )
-            await liveActivity?.end(
-                ActivityContent(state: state, staleDate: nil),
-                dismissalPolicy: .after(Date().addingTimeInterval(30))
-            )
-            liveActivity = nil
-        }
+        liveActivity = nil
+        Task { await DriveActivityAttributes.endAll(finalScore: finalScore, dismissAfter: 30) }
     }
 
     /// Immediately marks the Live Activity as "not recording" the moment the user
@@ -424,7 +465,8 @@ struct DriveView: View {
             let state = DriveActivityAttributes.ContentState(
                 score: Int(currentScore),
                 startDate: driveStartDate ?? Date(),
-                isRecording: false
+                isRecording: false,
+                endDate: Date()          // freezes the widget's elapsed timer
             )
             await activity.update(ActivityContent(state: state, staleDate: nil))
         }
@@ -461,7 +503,11 @@ struct DriveView: View {
             Text("Point camera at the road")
                 .font(DS.Typography.heading(15))
                 .foregroundColor(.white)
-            Text("SCORING PAUSED")
+            // Not "SCORING PAUSED" — that was false. The four sub-scores come
+            // from SensorScoring (IMU + GPS), which keeps running regardless of
+            // what the camera sees. Only the camera's own contribution — lane
+            // departures, following distance, scene context — is unavailable.
+            Text("CAMERA COACHING PAUSED")
                 .font(DS.Typography.label(11))
                 .foregroundColor(DS.Colors.warning.opacity(0.9))
                 .tracking(2)
@@ -519,7 +565,48 @@ struct DriveView: View {
         elapsed = 0
         ticker = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { _ in
             withAnimation(.easeOut(duration: 0.3)) { elapsed += 1 }
+            // Speed every second: it drives the road gate, and at 5 s the
+            // warning could flash before the first reading landed.
+            refreshDrivingSpeed()
+            // Refresh the live score from the same physics the final report
+            // uses, so the HUD never drifts from the number the driver sees at
+            // the end. Every 5 s — SensorScoring is O(n) over the drive.
+            if Int(elapsed) % 5 == 0 { refreshLiveScore() }
         }
+    }
+
+    /// Live score from the 20 Hz motion stream (SensorScoring is authoritative
+    /// for sub-scores). Falls back to the model's live estimate — emitted via
+    /// aiEngine.onScoreUpdate — until enough motion samples exist to score.
+    /// Feeds GPS speed to the road gate. This — not the vision model — is what
+    /// decides whether the user is actually driving; see `updateRoadState`.
+    /// Median of the last few fixes so one bad reading can't flip the gate.
+    private func refreshDrivingSpeed() {
+        let recent = locationManager.snapshot().route
+            .suffix(5).map(\.speed).filter { $0 >= 0 }.sorted()
+        aiEngine.currentSpeedMS = recent.isEmpty ? -1 : recent[recent.count / 2]
+    }
+
+    private func refreshLiveScore() {
+        let snap = locationManager.snapshot()
+
+        // Decimate exactly as buildEvaluation does. This previously scored the
+        // raw 50 Hz stream against constants written for the decimated rate, so
+        // the live HUD and the final report were computed from different data —
+        // event durations and cooldowns were off by the full stride factor.
+        let scoringSamples = snap.samples.decimated(from: LocationManager.captureHz,
+                                                    to: LocationManager.scoringHz)
+        let hz = [SensorSample].effectiveHz(from: LocationManager.captureHz,
+                                            to: LocationManager.scoringHz)
+        guard let s = SensorScoring.score(samples: scoringSamples,
+                                          route: snap.route,
+                                          driverType: ProfileManager.shared.driverType,
+                                          hz: hz)
+        else { return }
+        let overall = (s.braking * 0.30 + s.acceleration * 0.25
+                       + s.cornering * 0.25 + s.smoothness * 0.20)
+        liveScoreFromSensors = true
+        withAnimation(.easeOut(duration: 0.4)) { currentScore = overall }
     }
 
     private func stopTicker() {
@@ -529,37 +616,11 @@ struct DriveView: View {
 
 }
 
-// MARK: – Orientation helpers (file-level so HomeView can call them before DriveView appears)
-
-func driveRequestLandscape() {
-    if let delegate = UIApplication.shared.delegate as? AppDelegate {
-        delegate.orientationLock = .landscape
-    }
-    if #available(iOS 16.0, *) {
-        if let scene = UIApplication.shared.connectedScenes.first as? UIWindowScene {
-            scene.keyWindow?.rootViewController?.setNeedsUpdateOfSupportedInterfaceOrientations()
-            scene.requestGeometryUpdate(.iOS(interfaceOrientations: .landscape)) { _ in }
-        }
-    } else {
-        UIDevice.current.setValue(UIInterfaceOrientation.landscapeRight.rawValue, forKey: "orientation")
-        UINavigationController.attemptRotationToDeviceOrientation()
-    }
-}
-
-func driveRestorePortrait() {
-    if let delegate = UIApplication.shared.delegate as? AppDelegate {
-        delegate.orientationLock = .portrait
-    }
-    if #available(iOS 16.0, *) {
-        if let scene = UIApplication.shared.connectedScenes.first as? UIWindowScene {
-            scene.keyWindow?.rootViewController?.setNeedsUpdateOfSupportedInterfaceOrientations()
-            scene.requestGeometryUpdate(.iOS(interfaceOrientations: .portrait)) { _ in }
-        }
-    } else {
-        UIDevice.current.setValue(UIInterfaceOrientation.portrait.rawValue, forKey: "orientation")
-        UINavigationController.attemptRotationToDeviceOrientation()
-    }
-}
+// NOTE: this screen deliberately stays portrait-locked (AppDelegate.orientationLock)
+// and counter-rotates its HUD elements 90° instead, so they read correctly with the
+// phone mounted sideways. The old driveRequestLandscape()/driveRestorePortrait()
+// window-rotation helpers were left over from the abandoned approach and unused;
+// removed 2026-07-26.
 
 // MARK: – Route Tag Sheet
 

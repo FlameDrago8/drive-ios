@@ -2,69 +2,94 @@
 //  StorageManager.swift
 //  Drive
 //
-//  Created by Shiv g on 11/3/25.
+//  Firebase Storage access for drive footage.
 //
-
+//  Videos are keyed by session id (not a random UUID) so a drive maps to exactly
+//  one object — re-uploading replaces rather than orphans, and deleting a drive
+//  or an account can find the file again.
+//
+//  Firestore stores the storage *path*, not a download URL: download URLs embed a
+//  revocable token, so a persisted one can silently rot. The path is stable and
+//  the URL is resolved on demand at playback.
+//
 
 import Foundation
 import FirebaseStorage
 import FirebaseAuth
 
-class StorageManager {
+final class StorageManager {
     static let shared = StorageManager()
     private let storage = Storage.storage()
 
     private init() {}
 
-    /// Uploads a local video file to Firebase Storage for the current user.
-    /// - Parameters:
-    ///   - localURL: Local file URL of the recorded video.
-    ///   - completion: Returns a URL for Firestore or an Error.
-    func uploadVideo(localURL: URL, completion: @escaping (Result<URL, Error>) -> Void) {
-        guard let userID = Auth.auth().currentUser?.uid else {
-            completion(.failure(NSError(domain: "", code: 401, userInfo: [NSLocalizedDescriptionKey: "User not logged in"])))
-            return
+    enum StorageError: LocalizedError {
+        case notSignedIn
+        case fileMissing
+
+        var errorDescription: String? {
+            switch self {
+            case .notSignedIn: return "You must be signed in to upload drive footage."
+            case .fileMissing: return "The video file could not be found."
+            }
         }
+    }
 
-        // Sanitize userID to remove spaces/newlines
-        let safeUserID = userID.trimmingCharacters(in: .whitespacesAndNewlines)
+    /// Storage path for a given user's drive video.
+    func path(uid: String, sessionID: UUID) -> String {
+        "users/\(uid)/videos/\(sessionID.uuidString).mp4"
+    }
 
-        // Ensure the local video file exists
+    /// Uploads a compressed drive clip and returns the storage path to persist.
+    @discardableResult
+    func uploadDriveVideo(localURL: URL, sessionID: UUID) async throws -> String {
+        guard let uid = Auth.auth().currentUser?.uid,
+              !uid.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            throw StorageError.notSignedIn
+        }
         guard FileManager.default.fileExists(atPath: localURL.path) else {
-            completion(.failure(NSError(domain: "", code: 404, userInfo: [NSLocalizedDescriptionKey: "Local file does not exist"])))
-            return
+            throw StorageError.fileMissing
         }
 
-        let fileName = "driveVideo_\(UUID().uuidString).mov"
-        
-        // Sanitize fileName to remove spaces or invalid characters
-        let safeFileName = fileName.replacingOccurrences(of: " ", with: "_")
-
-        // Create storage reference
-        let storageRef = storage.reference().child("users/\(safeUserID)/videos/\(safeFileName)")
+        let objectPath = path(uid: uid, sessionID: sessionID)
+        let ref = storage.reference(withPath: objectPath)
 
         let metadata = StorageMetadata()
-        metadata.contentType = "video/quicktime"
+        metadata.contentType = "video/mp4"
 
-        storageRef.putFile(from: localURL, metadata: metadata) { _, error in
-            if let error = error {
-                completion(.failure(error))
-                return
+        _ = try await ref.putFileAsync(from: localURL, metadata: metadata)
+        return objectPath
+    }
+
+    /// Resolves a storage path to a playable, time-limited download URL.
+    func downloadURL(forPath path: String) async throws -> URL {
+        try await storage.reference(withPath: path).downloadURL()
+    }
+
+    /// Removes a drive's footage. Failures are swallowed so account/drive
+    /// teardown isn't blocked by a clip that never uploaded.
+    func deleteDriveVideo(atPath path: String) async {
+        do {
+            try await storage.reference(withPath: path).delete()
+        } catch {
+            #if DEBUG
+            print("StorageManager: delete failed for \(path) – \(error.localizedDescription)")
+            #endif
+        }
+    }
+
+    /// Deletes every stored video for the signed-in user (account teardown).
+    func deleteAllVideosForCurrentUser() async {
+        guard let uid = Auth.auth().currentUser?.uid, !uid.isEmpty else { return }
+        do {
+            let list = try await storage.reference(withPath: "users/\(uid)/videos").listAll()
+            for item in list.items {
+                try? await item.delete()
             }
-
-            storageRef.downloadURL { url, error in
-                if let error = error {
-                    completion(.failure(error))
-                    return
-                }
-
-                guard let url = url else {
-                    completion(.failure(NSError(domain: "", code: 500, userInfo: [NSLocalizedDescriptionKey: "Download URL not available"])))
-                    return
-                }
-
-                completion(.success(url))
-            }
+        } catch {
+            #if DEBUG
+            print("StorageManager: bulk delete failed – \(error.localizedDescription)")
+            #endif
         }
     }
 }

@@ -127,6 +127,14 @@ func scoreColor(for score: Double) -> Color {
     }
 }
 
+/// `m:ss` elapsed-time label for drive footage offsets. Single source of truth —
+/// this was duplicated three times (twice in VideoPlayerView, once in the coach
+/// tip card) and the copies disagreed on whether to clamp negatives.
+func driveTimeLabel(_ seconds: TimeInterval) -> String {
+    let s = max(0, Int(seconds))
+    return String(format: "%d:%02d", s / 60, s % 60)
+}
+
 func grade(for score: Double) -> String {
     switch score {
     case 95...: return "A+"
@@ -864,38 +872,6 @@ struct AnimatedScoreText: View {
     }
 }
 
-// MARK: – Metric Pill
-struct MetricPill: View {
-    let label: String
-    let value: Int
-    let color: Color
-
-    var body: some View {
-        VStack(spacing: 6) {
-            Text("\(value)")
-                .font(.system(size: 22, weight: .black, design: .monospaced))
-                .foregroundColor(.primary)
-            Text(label)
-                .font(DS.Typography.label(9))
-                .tracking(2)
-                .foregroundColor(DS.Colors.secondary)
-        }
-        .frame(maxWidth: .infinity)
-        .padding(.vertical, 14)
-        .physicalCard()
-    }
-}
-
-private struct AvatarGlassModifier: ViewModifier {
-    func body(content: Content) -> some View {
-        if #available(iOS 26, *) {
-            content.glassEffect(.regular.tint(DS.Colors.accent.opacity(0.15)).interactive(), in: Circle())
-        } else {
-            content.background(Circle().fill(DS.Colors.accent.opacity(0.15)))
-        }
-    }
-}
-
 // MARK: – Physical Card Surface
 private struct PhysicalCardBackground: ViewModifier {
     var cornerRadius: CGFloat
@@ -1014,7 +990,11 @@ struct DriveReportView: View {
     @State private var metricsRevealed = false
     @State private var renderedCard: RenderedDriveCard?
     @State private var videoSeekOffset: TimeInterval? = nil
+    /// Per-second quality curve, read from the on-device record. Loaded off the
+    /// main thread so opening a report never stalls on file I/O.
+    @State private var traceSeconds: [DriveTraceSecond] = []
     @ObservedObject private var driveStorage = DriveStorage.shared
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     private var isPersonalBest: Bool {
         let prev = driveStorage.sessions.filter { $0.id != session.id }
@@ -1041,9 +1021,16 @@ struct DriveReportView: View {
     }
 
     // Coach tips — use AI-generated tips when available, fall back to computed
-    // Timestamps (seconds from start) of the detected events of a given type
-    private func eventTimes(_ type: DriveEventType) -> [TimeInterval] {
-        (session.metrics?.events ?? []).filter { $0.type == type }.map(\.timeOffset).sorted()
+    /// Moments to offer for a given event type: the worst few in chronological
+    /// order, plus how many there were altogether.
+    ///
+    /// Ranking beats recency here. Under a fixed cap, taking the first few
+    /// chronologically buries the drive's hardest stop behind whichever routine
+    /// ones happened to come earlier — and it's the hard one the driver wants
+    /// to watch. The full list is one section up, in `DriveEventsSection`.
+    private func eventMoments(_ type: DriveEventType) -> (times: [TimeInterval], total: Int) {
+        let matching = (session.metrics?.events ?? []).filter { $0.type == type }
+        return (matching.keyMoments(limit: 4).map(\.timeOffset), matching.count)
     }
 
     private var reportCoaching: CoachingInsights.Summary {
@@ -1058,12 +1045,12 @@ struct DriveReportView: View {
         return c.focusArea != nil || c.trends.contains { $0.previous > 0.5 && $0.direction != 0 }
     }
 
-    private func tipTimes(_ category: CoachTip.Category) -> [TimeInterval] {
+    private func tipMoments(_ category: CoachTip.Category) -> (times: [TimeInterval], total: Int) {
         switch category {
-        case .braking:      return eventTimes(.hardBrake)
-        case .acceleration: return eventTimes(.hardAccel)
-        case .cornering:    return eventTimes(.hardCorner)
-        default:            return []
+        case .braking:      return eventMoments(.hardBrake)
+        case .acceleration: return eventMoments(.hardAccel)
+        case .cornering:    return eventMoments(.hardCorner)
+        default:            return ([], 0)
         }
     }
 
@@ -1071,25 +1058,31 @@ struct DriveReportView: View {
         var raw: [DisplayTip]
         // Prefer tips stored from the AI engine at drive time
         if let stored = session.coachTips, !stored.isEmpty {
-            raw = stored.map { DisplayTip(title: $0.title, message: $0.message,
-                                          category: $0.category, times: tipTimes($0.category)) }
+            raw = stored.map { tip in
+                let m = tipMoments(tip.category)
+                return DisplayTip(title: tip.title, message: tip.message,
+                                  category: tip.category, times: m.times, totalTimes: m.total)
+            }
         } else if let m = session.metrics {
             // Fallback for sessions recorded before AI tips were stored
             raw = []
             if m.hardBrakeCount > 0 {
                 raw.append(DisplayTip(title: "Smooth Braking",
                     message: "\(m.hardBrakeCount) hard braking event\(m.hardBrakeCount == 1 ? "" : "s") detected. Try releasing the brake 2 seconds earlier on approach.",
-                    category: .braking, times: eventTimes(.hardBrake)))
+                    category: .braking, times: eventMoments(.hardBrake).times,
+                    totalTimes: m.hardBrakeCount))
             }
             if m.hardAccelCount > 0 {
                 raw.append(DisplayTip(title: "Easy Acceleration",
                     message: "\(m.hardAccelCount) rapid acceleration event\(m.hardAccelCount == 1 ? "" : "s") detected. Build speed gradually from stops.",
-                    category: .acceleration, times: eventTimes(.hardAccel)))
+                    category: .acceleration, times: eventMoments(.hardAccel).times,
+                    totalTimes: m.hardAccelCount))
             }
             if m.hardCornerCount > 0 {
                 raw.append(DisplayTip(title: "Smoother Cornering",
                     message: "\(m.hardCornerCount) sharp corner\(m.hardCornerCount == 1 ? "" : "s") detected. Brake before the bend, accelerate through it.",
-                    category: .cornering, times: eventTimes(.hardCorner)))
+                    category: .cornering, times: eventMoments(.hardCorner).times,
+                    totalTimes: m.hardCornerCount))
             }
             if raw.isEmpty {
                 let worst = min(m.braking, m.acceleration, m.cornering, m.smoothness)
@@ -1119,10 +1112,28 @@ struct DriveReportView: View {
         return raw
     }
 
+    /// Scroll anchor for the footage player — see `seek(_:to:)`.
+    private static let footageAnchor = "drive-footage"
+
+    /// Jump the footage to a moment *and* bring the footage back on screen.
+    ///
+    /// The scroll is not a nicety, it's the other half of the seek: the events
+    /// and faults lists sit well below the player, so tapping a moment used to
+    /// start playback on a view scrolled far off the top — by the time you'd
+    /// scrolled up by hand, the moment had already played.
+    private func seek(_ proxy: ScrollViewProxy, to offset: TimeInterval) {
+        videoSeekOffset = offset
+        guard session.hasFootage else { return }
+        withAnimation(reduceMotion ? nil : .easeInOut(duration: 0.35)) {
+            proxy.scrollTo(Self.footageAnchor, anchor: .top)
+        }
+    }
+
     var body: some View {
         ZStack {
             DS.Colors.bg.ignoresSafeArea()
 
+            ScrollViewReader { proxy in
             ScrollView(showsIndicators: false) {
                 VStack(spacing: DS.Spacing.xl) {
 
@@ -1224,8 +1235,8 @@ struct DriveReportView: View {
                     // ── Route map (only shown when route data exists)
                     RouteMapView(route: session.route)
 
-                    // ── Drive video playback (only when a video was recorded)
-                    if let videoURL = session.resolvedVideoURL {
+                    // ── Drive video playback — local original first, Storage fallback
+                    if session.hasFootage {
                         VStack(alignment: .leading, spacing: DS.Spacing.s) {
                             Label("DRIVE FOOTAGE", systemImage: "video.fill")
                                 .font(.system(size: 10, weight: .heavy))
@@ -1233,9 +1244,8 @@ struct DriveReportView: View {
                                 .foregroundColor(DS.Colors.secondary)
                                 .padding(.leading, DS.Spacing.l)
 
-                            VideoPlayerView(
-                                videoURL: videoURL,
-                                events: session.metrics?.events ?? [],
+                            DriveFootagePlayer(
+                                session: session,
                                 seekToOffset: $videoSeekOffset
                             )
                             .padding(.horizontal, DS.Spacing.l)
@@ -1243,6 +1253,7 @@ struct DriveReportView: View {
                         .opacity(metricsRevealed ? 1 : 0)
                         .offset(y: metricsRevealed ? 0 : 12)
                         .animation(.spring(duration: 0.4, bounce: 0.2).delay(0.15), value: metricsRevealed)
+                        .id(Self.footageAnchor)
                     }
 
                     // ── Metric cards (2×2 grid)
@@ -1263,6 +1274,47 @@ struct DriveReportView: View {
                         }
                     }
                     .padding(.horizontal, DS.Spacing.l)
+
+                    // ── Control trace + manoeuvre breakdown + faults
+                    //    (v2 representation — DRIVE_REPRESENTATION.md Layers 1–2)
+                    if !traceSeconds.isEmpty {
+                        TelemetryStrip(
+                            trace: traceSeconds,
+                            events: session.metrics?.events ?? [],
+                            duration: session.duration,
+                            onSeek: { seek(proxy, to: $0) }
+                        )
+                        .padding(.horizontal, DS.Spacing.l)
+                        .opacity(metricsRevealed ? 1 : 0)
+                        .animation(.spring(duration: 0.4, bounce: 0.1).delay(0.18),
+                                   value: metricsRevealed)
+                    }
+
+                    // Events live here rather than under the footage so they're
+                    // reachable on drives recorded without video.
+                    if let events = session.metrics?.events, !events.isEmpty {
+                        DriveEventsSection(events: events) { seek(proxy, to: $0) }
+                            .padding(.horizontal, DS.Spacing.l)
+                            .opacity(metricsRevealed ? 1 : 0)
+                            .animation(.spring(duration: 0.4, bounce: 0.1).delay(0.20),
+                                       value: metricsRevealed)
+                    }
+
+                    if let maneuvers = session.maneuvers, !maneuvers.isEmpty {
+                        ManeuverBreakdown(maneuvers: maneuvers)
+                            .padding(.horizontal, DS.Spacing.l)
+                            .opacity(metricsRevealed ? 1 : 0)
+                            .animation(.spring(duration: 0.4, bounce: 0.1).delay(0.22),
+                                       value: metricsRevealed)
+                    }
+
+                    if let faults = session.faults, !faults.isEmpty {
+                        FaultList(faults: faults) { seek(proxy, to: $0) }
+                            .padding(.horizontal, DS.Spacing.l)
+                            .opacity(metricsRevealed ? 1 : 0)
+                            .animation(.spring(duration: 0.4, bounce: 0.1).delay(0.26),
+                                       value: metricsRevealed)
+                    }
 
                     // ── Cross-drive coaching headline (how this drive fits the trend)
                     if showReportInsight {
@@ -1293,7 +1345,7 @@ struct DriveReportView: View {
                         .padding(.horizontal, DS.Spacing.l)
 
                         ForEach(Array(tips.enumerated()), id: \.element.id) { i, tip in
-                            CoachTipCard(tip: tip) { videoSeekOffset = $0 }
+                            CoachTipCard(tip: tip) { seek(proxy, to: $0) }
                                 .padding(.horizontal, DS.Spacing.l)
                                 .opacity(metricsRevealed ? 1 : 0)
                                 .offset(y: metricsRevealed ? 0 : 20)
@@ -1307,6 +1359,7 @@ struct DriveReportView: View {
                 }
                 .padding(.bottom, DS.Spacing.xxl)
             }
+            }   // ScrollViewReader — `proxy` is what `seek(_:to:)` scrolls with
         }
         .navigationTitle("Drive Report")
         .navigationBarTitleDisplayMode(.inline)
@@ -1338,6 +1391,15 @@ struct DriveReportView: View {
                 renderedCard = RenderedDriveCard(image: img)
             }
         }
+        .task(id: session.id) {
+            // Only drives recorded since the v2 representation have a record.
+            guard session.hasRecord == true else { return }
+            let id = session.id
+            let loaded = await Task.detached(priority: .userInitiated) {
+                DriveRecordStore.loadTrace(id) ?? []
+            }.value
+            traceSeconds = loaded
+        }
     }
 
     // MARK: – Helpers
@@ -1361,6 +1423,85 @@ struct DriveReportView: View {
         .frame(maxWidth: .infinity)
     }
 
+}
+
+// MARK: – Drive Footage Player (local original, Firebase Storage fallback)
+
+/// Plays a drive's footage, preferring the full-quality original on the device
+/// that recorded it and falling back to the compressed copy in Firebase Storage
+/// when the file isn't local — a different device, or after a reinstall.
+///
+/// Download URLs are resolved on demand rather than persisted, because they carry
+/// a revocable token that can expire out from under a stored value.
+struct DriveFootagePlayer: View {
+    let session: DriveSession
+    @Binding var seekToOffset: TimeInterval?
+
+    @State private var remoteURL: URL?
+    @State private var failed = false
+
+    var body: some View {
+        Group {
+            if let local = session.resolvedVideoURL {
+                player(local)
+            } else if let remote = remoteURL {
+                player(remote)
+            } else if failed {
+                // `warning` is a real entry in the Phosphor map — unmapped names
+                // render as invisible Color.clear, so don't invent one here.
+                placeholder(icon: "warning", text: "Footage couldn't be loaded")
+            } else if session.videoPath != nil {
+                placeholder(icon: "info", text: "Loading footage…", showsSpinner: true)
+                    .task { await resolveRemote() }
+            } else if session.footageIsOnAnotherDevice {
+                // The state every synced drive is in until Cloud Storage is
+                // enabled. Say so plainly rather than hiding the section, which
+                // reads as "this drive was never recorded".
+                placeholder(icon: "info", text: "Footage is on the device that recorded this drive")
+            }
+        }
+    }
+
+    private func player(_ url: URL) -> some View {
+        VideoPlayerView(
+            videoURL: url,
+            events: session.metrics?.events ?? [],
+            seekToOffset: $seekToOffset
+        )
+    }
+
+    private func placeholder(icon: String, text: String, showsSpinner: Bool = false) -> some View {
+        HStack(spacing: DS.Spacing.s) {
+            if showsSpinner {
+                ProgressView().tint(DS.Colors.secondary).scaleEffect(0.8)
+            } else {
+                PhosphorIcon.fill(icon, size: 15, color: DS.Colors.secondary)
+            }
+            Text(text)
+                .font(DS.Typography.body(13))
+                .foregroundColor(DS.Colors.secondary)
+            Spacer(minLength: 0)
+        }
+        .padding(DS.Spacing.m)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(
+            RoundedRectangle(cornerRadius: DS.Radius.m, style: .continuous)
+                .fill(DS.Colors.bgCard)
+                .overlay(
+                    RoundedRectangle(cornerRadius: DS.Radius.m, style: .continuous)
+                        .strokeBorder(DS.Colors.cardStroke, lineWidth: 1)
+                )
+        )
+    }
+
+    private func resolveRemote() async {
+        guard let path = session.videoPath, remoteURL == nil else { return }
+        do {
+            remoteURL = try await StorageManager.shared.downloadURL(forPath: path)
+        } catch {
+            failed = true
+        }
+    }
 }
 
 // MARK: – Metric Score Card (2×2 grid card in debrief)
@@ -1424,7 +1565,11 @@ struct DisplayTip: Identifiable {
     let title: String
     let message: String
     let category: CoachTip.Category
+    /// The moments worth jumping to — already curated, not the whole list.
     var times: [TimeInterval] = []
+    /// How many events this tip actually covers, so the overflow count stays
+    /// honest when `times` has been trimmed to the worst few.
+    var totalTimes: Int = 0
     var isFocus: Bool = false
 
     var color: Color { coachTipStyle(category).color }
@@ -1449,19 +1594,96 @@ func coachTipStyle(_ category: CoachTip.Category) -> (color: Color, icon: String
 /// cleanly on the tinted tip card, no tint-on-tint halo), igniting to the tip's
 /// colour on press — the same "quiet at rest, ignites on press" language as the
 /// Start Drive button and nav rows.
+///
+/// The height is pinned to a whole number of points rather than derived from
+/// text + vertical padding: a fractional height put the capsule's end caps on
+/// sub-pixel boundaries, which made the 1pt border render broken/uneven at the
+/// curves. Fixed height also keeps every chip identical, gauge-cluster style.
 private struct TimestampChipStyle: ButtonStyle {
     let tint: Color
+
+    private let height: CGFloat = 28
+
     func makeBody(configuration: Configuration) -> some View {
         configuration.label
-            .padding(.horizontal, 9)
-            .padding(.vertical, 4)
+            .lineLimit(1)
+            .fixedSize()                     // never compress/truncate to fit the row
+            .padding(.horizontal, 12)
+            .frame(height: height)
             .background(
                 Capsule().fill(configuration.isPressed ? tint.opacity(0.22) : DS.Surface.weak)
             )
             .overlay(
                 Capsule().strokeBorder(tint.opacity(configuration.isPressed ? 0 : 0.22), lineWidth: 1)
             )
+            // Hit area intentionally left as the full 24pt rect, not the capsule —
+            // these are small secondary targets, so forgiveness beats precision.
             .animation(.easeOut(duration: 0.15), value: configuration.isPressed)
+    }
+}
+
+/// Left-to-right flow layout that wraps to a new line when the row runs out of
+/// width. Timestamp chips previously lived in a plain `HStack`, so a drive with
+/// several flagged moments squeezed them until the labels truncated and the
+/// trailing chip was clipped by the card's rounded corner. Wrapping keeps every
+/// chip whole and tappable at any width.
+struct WrapLayout: Layout {
+    var spacing: CGFloat = 7
+    var lineSpacing: CGFloat = 6
+
+    private struct Row {
+        var indices: [Int] = []
+        var width: CGFloat = 0
+        var height: CGFloat = 0
+    }
+
+    private func rows(_ subviews: Subviews, maxWidth: CGFloat) -> [Row] {
+        var rows: [Row] = []
+        var current = Row()
+
+        for index in subviews.indices {
+            let size = subviews[index].sizeThatFits(.unspecified)
+            if current.indices.isEmpty {
+                current.indices = [index]
+                current.width  = size.width
+                current.height = size.height
+            } else if current.width + spacing + size.width > maxWidth {
+                rows.append(current)
+                current = Row(indices: [index], width: size.width, height: size.height)
+            } else {
+                current.indices.append(index)
+                current.width += spacing + size.width
+                current.height = max(current.height, size.height)
+            }
+        }
+        if !current.indices.isEmpty { rows.append(current) }
+        return rows
+    }
+
+    func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
+        let maxWidth = proposal.width ?? .infinity
+        let rows = rows(subviews, maxWidth: maxWidth)
+        let height = rows.reduce(0) { $0 + $1.height }
+            + lineSpacing * CGFloat(max(0, rows.count - 1))
+        let widest = rows.map(\.width).max() ?? 0
+        return CGSize(width: min(maxWidth, widest), height: height)
+    }
+
+    func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize,
+                       subviews: Subviews, cache: inout ()) {
+        var y = bounds.minY
+        for row in rows(subviews, maxWidth: bounds.width) {
+            var x = bounds.minX
+            for index in row.indices {
+                let size = subviews[index].sizeThatFits(.unspecified)
+                subviews[index].place(
+                    at: CGPoint(x: x, y: y + (row.height - size.height) / 2),
+                    proposal: ProposedViewSize(size)
+                )
+                x += size.width + spacing
+            }
+            y += row.height + lineSpacing
+        }
     }
 }
 
@@ -1471,10 +1693,6 @@ struct CoachTipCard: View {
 
     private var isSafety: Bool { tip.category == .safety }
     private var isPositive: Bool { tip.category == .positive }
-
-    private func mmss(_ t: TimeInterval) -> String {
-        String(format: "%d:%02d", Int(t) / 60, Int(t) % 60)
-    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
@@ -1507,19 +1725,28 @@ struct CoachTipCard: View {
 
             // When the coach flagged it — tap a moment to jump to it in the footage
             if !tip.times.isEmpty {
-                HStack(spacing: 7) {
+                HStack(alignment: .top, spacing: 8) {
                     PhosphorIcon.fill("clock", size: 11, color: DS.Colors.secondary)
-                    ForEach(Array(tip.times.prefix(6).enumerated()), id: \.0) { _, t in
-                        Button { onSeek(t) } label: {
-                            Text(mmss(t))
-                                .font(DS.Typography.data(11, weight: .bold))
-                                .foregroundColor(tip.color)
+                        .frame(height: 28)          // centre against the first chip row
+                    WrapLayout(spacing: 8, lineSpacing: 8) {
+                        ForEach(Array(tip.times.enumerated()), id: \.0) { _, t in
+                            Button { onSeek(t) } label: {
+                                Text(driveTimeLabel(t))
+                                    .font(DS.Typography.data(11, weight: .bold))
+                                    .foregroundColor(tip.color)
+                            }
+                            .buttonStyle(TimestampChipStyle(tint: tip.color))
                         }
-                        .buttonStyle(TimestampChipStyle(tint: tip.color))
+                        if tip.totalTimes > tip.times.count {
+                            Text("+\(tip.totalTimes - tip.times.count)")
+                                .font(DS.Typography.data(11, weight: .bold))
+                                .foregroundColor(DS.Colors.secondary)
+                                .frame(height: 28)
+                        }
                     }
-                    Spacer(minLength: 0)
+                    .frame(maxWidth: .infinity, alignment: .leading)
                 }
-                .padding(.top, 2)
+                .padding(.top, 4)
             }
         }
         .padding(DS.Spacing.m)
@@ -1528,11 +1755,17 @@ struct CoachTipCard: View {
             RoundedRectangle(cornerRadius: DS.Radius.m, style: .continuous)
                 .fill(cardFill)
                 .overlay(
+                    // strokeBorder (not stroke) — a centred stroke puts half its
+                    // width outside the shape, where the clipShape below shaves
+                    // it off and leaves a thin, uneven-looking card edge.
                     RoundedRectangle(cornerRadius: DS.Radius.m, style: .continuous)
-                        .stroke(cardStroke, lineWidth: 1)
+                        .strokeBorder(cardStroke, lineWidth: 1)
                 )
         )
-        .clipShape(RoundedRectangle(cornerRadius: DS.Radius.m, style: .continuous))
+        // No .clipShape here on purpose. It used to be needed to trim the card's
+        // centred .stroke, but the border is a .strokeBorder now (drawn inside the
+        // shape), and the clip was cropping the timestamp pills against the card's
+        // rounded corners — cut off on all four sides.
     }
 
     // Safety tips read as urgent; positive tips as celebratory; rest neutral.
@@ -1545,28 +1778,6 @@ struct CoachTipCard: View {
         if isSafety   { return tip.color.opacity(0.40) }
         if isPositive { return DS.Colors.scoreGreat.opacity(0.30) }
         return DS.Colors.cardStroke
-    }
-}
-
-struct StatCard: View {
-    let label: String
-    let value: String
-    let icon: String
-    let color: Color
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: DS.Spacing.s) {
-            PhosphorIcon.fill(icon, size: 16, color: color)
-            Text(value)
-                .font(.system(size: 22, weight: .black, design: .monospaced))
-                .foregroundColor(.primary)
-            Text(label)
-                .font(.system(size: 10, weight: .heavy))
-                .tracking(1.5)
-                .foregroundColor(DS.Colors.secondary)
-        }
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(.vertical, DS.Spacing.l)
     }
 }
 

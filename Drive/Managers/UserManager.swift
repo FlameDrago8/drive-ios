@@ -96,6 +96,11 @@ class UserManager: ObservableObject {
                 try? await db.collection("schools").document(orgId)
                     .collection("students").document(uid).delete()
             }
+            // Uploaded drive footage in Storage. Must happen while the user is
+            // still authenticated — the rules key on request.auth.uid — otherwise
+            // the videos orphan in the bucket and keep costing money.
+            await StorageManager.shared.deleteAllVideosForCurrentUser()
+
             // The user document itself
             try? await db.collection("users").document(uid).delete()
 

@@ -5,8 +5,16 @@
 
 import CoreLocation
 import CoreMotion
+import QuartzCore
 
 final class LocationManager: NSObject, ObservableObject, CLLocationManagerDelegate {
+
+    /// Capture rate. 50 Hz future-proofs the training record (comma logs at
+    /// 100 Hz) at negligible battery cost; the scoring path decimates to 20 Hz,
+    /// which is what its windows and thresholds are tuned for.
+    /// See DRIVE_REPRESENTATION.md Layer 0.
+    static let captureHz: Double = 50
+    static let scoringHz: Double = 20
 
     // MARK: – Location
     private let clManager = CLLocationManager()
@@ -46,6 +54,24 @@ final class LocationManager: NSObject, ObservableObject, CLLocationManagerDelega
         startMotionCapture()
     }
 
+    /// Non-destructive snapshot of what's been collected so far, for live
+    /// in-drive scoring. The final report uses stopAndFlush() instead.
+    func snapshot() -> (route: [RoutePoint], samples: [SensorSample]) {
+        (route, sampleQueue.sync { samples })
+    }
+
+    /// Powers down GPS + motion without touching the collected buffers.
+    ///
+    /// Used by teardown paths that must not race the save: `stopAndFlush()`
+    /// clears `route` and `samples`, so calling it from `onDisappear` could wipe
+    /// a drive out from under `onRecordingFinished`, which reads them on a
+    /// background thread after the capture session finishes writing. This stops
+    /// the battery drain and leaves the data alone. Idempotent.
+    func stopSensors() {
+        clManager.stopUpdatingLocation()
+        motionManager.stopDeviceMotionUpdates()
+    }
+
     /// Stops all sensors and returns everything collected during this drive.
     func stopAndFlush() -> (route: [RoutePoint], samples: [SensorSample]) {
         clManager.stopUpdatingLocation()
@@ -71,7 +97,8 @@ final class LocationManager: NSObject, ObservableObject, CLLocationManagerDelega
             lng:       loc.coordinate.longitude,
             speed:     loc.speed  >= 0 ? loc.speed  : -1,
             course:    loc.course >= 0 ? loc.course : -1,
-            timestamp: loc.timestamp
+            timestamp: loc.timestamp,
+            accuracy:  loc.horizontalAccuracy
         )
         route.append(pt)
     }
@@ -80,7 +107,7 @@ final class LocationManager: NSObject, ObservableObject, CLLocationManagerDelega
 
     private func startMotionCapture() {
         guard motionManager.isDeviceMotionAvailable else { return }
-        motionManager.deviceMotionUpdateInterval = 1.0 / 20.0   // 20 Hz
+        motionManager.deviceMotionUpdateInterval = 1.0 / Self.captureHz
 
         // xArbitraryZVertical keeps Z pointing away from Earth regardless of
         // phone orientation, which makes vertical (bump) detection reliable.
@@ -92,6 +119,7 @@ final class LocationManager: NSObject, ObservableObject, CLLocationManagerDelega
 
             // Snapshot current GPS values (set on main thread by CLLocationManager)
             let loc = self.lastLocation
+            let q = m.attitude.quaternion
 
             let sample = SensorSample(
                 timestamp:   Date(),
@@ -102,7 +130,13 @@ final class LocationManager: NSObject, ObservableObject, CLLocationManagerDelega
                 rotationY:   m.rotationRate.y,
                 rotationZ:   m.rotationRate.z,
                 gpsSpeed:    loc.map { $0.speed  >= 0 ? $0.speed  : -1 } ?? -1,
-                gpsCourse:   loc.map { $0.course >= 0 ? $0.course : -1 } ?? -1
+                gpsCourse:   loc.map { $0.course >= 0 ? $0.course : -1 } ?? -1,
+                // Monotonic clock, shared with AVCapture — wall-clock Date can
+                // jump, which would desync kinematics from the video.
+                monotonicTime: CACurrentMediaTime(),
+                gravityX: m.gravity.x, gravityY: m.gravity.y, gravityZ: m.gravity.z,
+                attitudeX: q.x, attitudeY: q.y, attitudeZ: q.z, attitudeW: q.w,
+                gpsAccuracy: loc?.horizontalAccuracy ?? -1
             )
 
             self.sampleQueue.async { self.samples.append(sample) }

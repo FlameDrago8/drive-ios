@@ -18,6 +18,25 @@ private let laOkay   = Color(red: 1.000, green: 0.690, blue: 0.125)  // #FFB020
 private let laPoor   = Color(red: 0.960, green: 0.400, blue: 0.360)  // #F5665C
 private let laRec    = Color(red: 0.925, green: 0.325, blue: 0.235)  // #EC5338
 
+// MARK: - Elapsed timer
+
+/// Elapsed-time readout that stops when the drive does.
+///
+/// `Text(_:style: .timer)` is driven by the system clock, not by Live Activity
+/// updates, so it counts up forever once started — the activity kept showing a
+/// running clock beside "DONE" after the drive had ended. Once `endDate` is set
+/// we render a bounded interval with `pauseTime`, which freezes the display at
+/// the drive's real duration.
+@ViewBuilder
+private func driveTimer(_ state: DriveActivityAttributes.ContentState) -> some View {
+    if let end = state.endDate {
+        Text(timerInterval: state.startDate...max(end, state.startDate.addingTimeInterval(1)),
+             pauseTime: end)
+    } else {
+        Text(state.startDate, style: .timer)
+    }
+}
+
 // MARK: - Live Activity Widget
 
 struct DriveWidgetLiveActivity: Widget {
@@ -40,7 +59,7 @@ struct DriveWidgetLiveActivity: Widget {
                                 .tracking(1.5)
                                 .foregroundStyle(context.state.isRecording ? laRec : laGreat)
                         }
-                        Text(context.state.startDate, style: .timer)
+                        driveTimer(context.state)
                             .font(.system(size: 22, weight: .bold, design: .monospaced))
                             .monospacedDigit()
                             .foregroundStyle(.white)
@@ -132,7 +151,7 @@ private struct LiveActivityLockScreenView: View {
                         .foregroundStyle(laAccent)
                 }
 
-                Text(context.state.startDate, style: .timer)
+                driveTimer(context.state)
                     .font(.system(size: 26, weight: .bold, design: .monospaced))
                     .monospacedDigit()
                     .foregroundStyle(.white)
