@@ -14,6 +14,19 @@ import, modify or replace anything in `Drive/`, `DriveWidget/` or
 > Status: written on Linux without an Apple toolchain, so **it has not been
 > compiled**. Expect a few small fixes the first time Xcode builds it.
 
+## v2: Road Furniture (design only, not yet in code)
+
+`v2-RoadFurniture-spec.md` is the design spec for v2. It keeps this
+skeleton's chassis and adds a road-furniture layer:
+- road-sign plates for categories and events;
+- a yellow Focus Sign with a "Your one job" loop that replaces the Focus pill;
+- the lane-line strip, where calm driving is empty road;
+- a single car character, plus a Parked reveal, a Driver Card, a Logbook and
+  a share card.
+
+The design canvas has v1 and v2 on separate pages. The SwiftUI code in
+`DriveUI/` is still v1; port the v2 components once the look is approved.
+
 ## The direction in one paragraph
 
 Flighty feels native because the chrome is stock (large titles, inset grouped
