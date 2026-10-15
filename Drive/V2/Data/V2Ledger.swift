@@ -48,6 +48,19 @@ final class V2RevealLedger {
         loaded = ledger
     }
 
+    /// First run on a device: every drive that already exists counts as
+    /// revealed, so the update doesn't replay old drives' one-time reveals.
+    /// An empty list is ignored (it may be a Firestore fetch still in flight);
+    /// a drive parked in the last 10 minutes is left for Parked / the Report.
+    func seedFromHistory(sessions: [DriveSession], now: Date) {
+        let seededKey = V2UserKey.scoped("revealedSeeded")
+        guard !defaults.bool(forKey: seededKey), !sessions.isEmpty else { return }
+        for s in sessions where now.timeIntervalSince(s.date) > 600 {
+            markRevealed(s.id)
+        }
+        defaults.set(true, forKey: seededKey)
+    }
+
     var lastStreakAnimatedDay: Date? {
         get { defaults.object(forKey: V2UserKey.scoped("streakAnimatedDay")) as? Date }
         set {

@@ -585,6 +585,7 @@ final class V2Library: ObservableObject {
         // Same input the launch beta uses everywhere (all drives, not just counted).
         let badges = AchievementEngine.badges(from: sessions)
         V2BadgeTracker.shared.seedFromHistory(sessions: sessions, badges: badges, now: now)
+        V2RevealLedger.shared.seedFromHistory(sessions: sessions, now: now)
 
         factsIndex = newFactsIndex
         sessionIndex = newSessionIndex
