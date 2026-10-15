@@ -29,6 +29,34 @@ struct DriveWidgetSummary: Codable {
     let lastScore: Double?
     let lastDate: Date?
 
+    // v2 "Road Furniture" fields. Optional `var`s with defaults, so JSON written
+    // by an older build still decodes and the memberwise init stays
+    // source-compatible. Written by WidgetDataStore.update(sessions:).
+
+    /// 30-day average of valid drives (the Today hero number).
+    var thirtyDayScore: Double? = nil
+    /// This week's average vs last week's, in whole percent (+5 = up 5%).
+    var weekChangePct: Int? = nil
+    /// Driven flags for the rolling last 7 days, oldest first, today last.
+    var last7Driven: [Bool]? = nil
+    /// Latest drive: route name ("School run" or "Tuesday evening").
+    var lastRouteName: String? = nil
+    /// Latest drive: route shield number, nil when the drive is unnamed.
+    var lastRouteNumber: Int? = nil
+    /// Latest drive: BEST/PB tab text, nil when neither applies.
+    var lastTab: String? = nil
+    /// Latest drive: duration in seconds.
+    var lastDuration: Double? = nil
+    /// Latest drive: distance in miles.
+    var lastDistanceMiles: Double? = nil
+    /// Latest drive: lane-line strip, q per 20 s bucket (0–100).
+    var lastBars: [UInt8]? = nil
+    /// Current Focus job: CoachTip.Category raw value and short title.
+    var focusCategory: String? = nil
+    var focusShortTitle: String? = nil
+    /// "learner" or "full" (DriverType raw value), for Permit voice.
+    var driverType: String? = nil
+
     static let empty = DriveWidgetSummary(
         avgScore: 0, totalDrives: 0, streak: 0, lastScore: nil, lastDate: nil
     )
