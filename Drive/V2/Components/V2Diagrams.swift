@@ -40,23 +40,23 @@ struct V2ManeuverDiagram: View {
         let s = size / 40
         let pathColor: Color = band == .great ? V2.label : band.color
         ZStack {
-            V2DiagramShape(type: type, part: .edges)
+            V2DgLayerShape(type: type, part: .edges)
                 .stroke(V2.paint, style: StrokeStyle(lineWidth: 1.5 * s))
-            if V2DiagramShape.hasDashes(type) {
-                V2DiagramShape(type: type, part: .dashes)
+            if V2DgLayerShape.hasDashes(type) {
+                V2DgLayerShape(type: type, part: .dashes)
                     .stroke(V2.paint, style: StrokeStyle(lineWidth: 1.5 * s, dash: [4 * s, 3 * s]))
             }
-            V2DiagramShape(type: type, part: .route)
+            V2DgLayerShape(type: type, part: .route)
                 .stroke(pathColor, style: StrokeStyle(lineWidth: 2.5 * s,
                                                       lineCap: type == .stop ? .butt : .round,
                                                       lineJoin: .round))
-            V2DiagramShape(type: type, part: .arrow)
+            V2DgLayerShape(type: type, part: .arrow)
                 .fill(pathColor)
             if type == .stop {
-                V2DiagramShape(type: type, part: .stopLine)
+                V2DgLayerShape(type: type, part: .stopLine)
                     .stroke(V2.label, style: StrokeStyle(lineWidth: 2.5 * s))
             }
-            V2DiagramShape(type: type, part: .car)
+            V2DgLayerShape(type: type, part: .car)
                 .fill(V2.label)
         }
         .frame(width: size, height: size)
@@ -66,13 +66,13 @@ struct V2ManeuverDiagram: View {
 }
 
 /// One layer of a diagram, built in 40-unit coordinates and scaled to the frame.
-private struct V2DiagramShape: Shape {
+private struct V2DgLayerShape: Shape {
     enum Part { case edges, dashes, route, arrow, stopLine, car }
 
-    var type: ManeuverType
-    var part: Part
+    let type: ManeuverType
+    let part: Part
 
-    static func hasDashes(_ type: ManeuverType) -> Bool {
+    nonisolated static func hasDashes(_ type: ManeuverType) -> Bool {
         type == .straight || type == .laneChange
     }
 
@@ -83,9 +83,9 @@ private struct V2DiagramShape: Shape {
             .offsetBy(dx: rect.minX, dy: rect.minY)
     }
 
-    private func pt(_ x: CGFloat, _ y: CGFloat) -> CGPoint { CGPoint(x: x, y: y) }
+    private nonisolated func pt(_ x: CGFloat, _ y: CGFloat) -> CGPoint { CGPoint(x: x, y: y) }
 
-    private func unitPath() -> Path {
+    private nonisolated func unitPath() -> Path {
         switch part {
         case .edges:    return edges()
         case .dashes:   return dashes()
@@ -96,12 +96,12 @@ private struct V2DiagramShape: Shape {
         }
     }
 
-    private func vertical(_ path: inout Path, x: CGFloat, from y0: CGFloat = 0, to y1: CGFloat = 40) {
+    private nonisolated func vertical(_ path: inout Path, x: CGFloat, from y0: CGFloat = 0, to y1: CGFloat = 40) {
         path.move(to: pt(x, y0))
         path.addLine(to: pt(x, y1))
     }
 
-    private func edges() -> Path {
+    private nonisolated func edges() -> Path {
         var p = Path()
         switch type {
         case .straight, .stop:
@@ -129,13 +129,13 @@ private struct V2DiagramShape: Shape {
         return p
     }
 
-    private func dashes() -> Path {
+    private nonisolated func dashes() -> Path {
         var p = Path()
         if Self.hasDashes(type) { vertical(&p, x: 20) }
         return p
     }
 
-    private func route() -> Path {
+    private nonisolated func route() -> Path {
         var p = Path()
         switch type {
         case .straight:
@@ -173,7 +173,7 @@ private struct V2DiagramShape: Shape {
     }
 
     /// 5 pt arrowheads; the stop has a flat cap and no head.
-    private func arrow() -> Path {
+    private nonisolated func arrow() -> Path {
         var p = Path()
         let head: [CGPoint]
         switch type {
@@ -192,7 +192,7 @@ private struct V2DiagramShape: Shape {
         return p
     }
 
-    private func stopLine() -> Path {
+    private nonisolated func stopLine() -> Path {
         var p = Path()
         if type == .stop {
             p.move(to: pt(10, 12)); p.addLine(to: pt(30, 12))
@@ -201,7 +201,7 @@ private struct V2DiagramShape: Shape {
     }
 
     /// The diagram car: a top-down 6×10 r2 rect facing up.
-    private func car() -> Path {
+    private nonisolated func car() -> Path {
         let origin: CGPoint
         switch type {
         case .straight:              origin = pt(17, 24)

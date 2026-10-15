@@ -98,7 +98,11 @@ struct V2HeroScore: View {
         .accessibilityLabel("Score \(target), grade \(v2cSpokenGrade(grade(for: score)))")
         .task(id: revealed) { await reveal() }
         .onChange(of: score) { _, newValue in
-            if revealed && plateShown { shown = v2cScoreInt(newValue) }
+            // A data event (e.g. a live commit): one numericText step, no roll.
+            guard revealed && plateShown else { return }
+            withAnimation(V2Motion.reduced(V2Motion.rollStep, reduceMotion: reduceMotion)) {
+                shown = v2cScoreInt(newValue)
+            }
         }
         .onChange(of: rollFrom) { _, newValue in
             if !revealed { shown = v2cScoreInt(newValue ?? score) }
@@ -927,12 +931,32 @@ struct V2SectionHeader: View {
 // MARK: - Check line
 
 /// A cleared / retired verdict: SF `checkmark.circle.fill` in `great` with a
-/// `markerInk` check, and the sentence in 15 semibold `label`.
+/// `markerInk` check, and the sentence in 15 semibold `label`. A "(was 3)"
+/// inside the sentence is set in regular `label2`, as on the Report board.
 struct V2CheckLine: View {
     private let text: String
 
     init(_ text: String) {
         self.text = text
+    }
+
+    private var styled: AttributedString {
+        var result = AttributedString(text)
+        let baseFont: Font = V2Type.subheadSemibold
+        let baseColor: Color = V2.label
+        result.font = baseFont
+        result.foregroundColor = baseColor
+        if let open = text.range(of: "(was "),
+           let close = text[open.upperBound...].firstIndex(of: ")") {
+            let was = String(text[open.lowerBound...close])
+            if let range = result.range(of: was) {
+                let wasFont: Font = V2Type.subhead
+                let wasColor: Color = V2.label2
+                result[range].font = wasFont
+                result[range].foregroundColor = wasColor
+            }
+        }
+        return result
     }
 
     var body: some View {
@@ -942,12 +966,11 @@ struct V2CheckLine: View {
                 .symbolRenderingMode(.palette)
                 .foregroundStyle(V2.markerInk, V2.great)
                 .accessibilityHidden(true)
-            Text(verbatim: text)
-                .font(V2Type.subheadSemibold)
-                .foregroundStyle(V2.label)
+            Text(styled)
                 .fixedSize(horizontal: false, vertical: true)
         }
-        .accessibilityElement(children: .combine)
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(text)
     }
 }
 

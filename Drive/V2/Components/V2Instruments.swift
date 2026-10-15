@@ -45,8 +45,10 @@ struct V2PointsInstrument: View {
 
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
-    /// Per-segment reveal, 0…1.
-    @State private var progress: [Double]
+    /// Earned fills drawn. Each segment animates it with its own staggered
+    /// `.animation(_:value:)`, so the stagger never depends on how SwiftUI
+    /// coalesces several `withAnimation` writes in one turn.
+    @State private var filled: Bool
 
     init(braking: Double, acceleration: Double, cornering: Double, smoothness: Double,
          caption: String?, sweep: Bool = true, inCard: Bool = true) {
@@ -54,7 +56,7 @@ struct V2PointsInstrument: View {
         self.caption = caption
         self.sweep = sweep
         self.inCard = inCard
-        _progress = State(initialValue: Array(repeating: sweep ? 1 : 0, count: 4))
+        _filled = State(initialValue: sweep)
     }
 
     var body: some View {
@@ -67,9 +69,12 @@ struct V2PointsInstrument: View {
         }
         .onChange(of: sweep) { oldValue, newValue in
             if newValue && !oldValue {
-                playSweep()
+                filled = true
             } else if !newValue {
-                progress = Array(repeating: 0, count: 4)
+                // Re-arm silently: no reverse sweep.
+                var transaction = Transaction(animation: nil)
+                transaction.disablesAnimations = true
+                withTransaction(transaction) { filled = false }
             }
         }
     }
@@ -121,27 +126,21 @@ struct V2PointsInstrument: View {
                                            topTrailingRadius: i == 3 ? 8 : 3,
                                            style: .continuous)
         let earned = width * CGFloat(sub / 100)
-        let p = CGFloat(progress[i])
+        // 500 ms total: four 260 ms fills, 80 ms apart.
+        let animation: Animation = reduceMotion
+            ? .easeInOut(duration: 0.15)
+            : .easeOut(duration: 0.26).delay(0.08 * Double(i))
         return ZStack(alignment: .leading) {
             shape.fill(sub < 85 ? V2Band(score: sub).color : V2.fill)
             // Reduce Motion fades the fill in instead of sweeping it.
             Rectangle()
                 .fill(V2.label)
-                .frame(width: reduceMotion ? earned : earned * p)
-                .opacity(reduceMotion ? Double(p) : 1)
+                .frame(width: (reduceMotion || filled) ? earned : 0)
+                .opacity((reduceMotion && !filled) ? 0 : 1)
+                .animation(animation, value: filled)
         }
         .frame(width: width, height: 28)
         .clipShape(shape)
-    }
-
-    @MainActor
-    private func playSweep() {
-        for i in 0..<4 {
-            let animation: Animation = reduceMotion
-                ? .easeInOut(duration: 0.15)
-                : .easeOut(duration: 0.26).delay(0.08 * Double(i))
-            withAnimation(animation) { progress[i] = 1 }
-        }
     }
 
     // MARK: Columns
@@ -234,7 +233,7 @@ private struct V2ISegmentColumns: Layout {
         }
     }
 
-    private func columnWidth(_ i: Int, _ frames: [CGRect], _ width: CGFloat) -> CGFloat {
+    private nonisolated func columnWidth(_ i: Int, _ frames: [CGRect], _ width: CGFloat) -> CGFloat {
         i + 1 < frames.count ? frames[i + 1].minX - frames[i].minX - 2 : width - frames[i].minX
     }
 }
@@ -357,6 +356,9 @@ struct V2HoldToEnd: View {
 
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var progress: CGFloat = 0
+    /// Hides the round-capped ring at 0 % (it would draw a dot) without
+    /// fading it during the 200 ms unwind.
+    @State private var ringVisible = false
     @State private var isPressed = false
     @State private var didComplete = false
     @State private var keepHolding = false
@@ -381,10 +383,18 @@ struct V2HoldToEnd: View {
         }
         .accessibilityElement(children: .ignore)
         .accessibilityLabel("End drive")
-        .accessibilityHint("Press and hold to end the drive.")
+        .accessibilityHint("Double-tap to end the drive.")
         .accessibilityAddTraits(.isButton)
         .accessibilityAction { complete() }
-        .accessibilityAction(named: "End drive") { complete() }
+        .onAppear {
+            // A control kept alive across drives must be usable again.
+            if didComplete {
+                didComplete = false
+                progress = 0
+                ringVisible = false
+                keepHolding = false
+            }
+        }
         .onDisappear {
             if isPressed && !didComplete { V2Haptics.shared.stop() }
             isPressed = false
@@ -412,7 +422,7 @@ struct V2HoldToEnd: View {
                 .trim(from: 0, to: progress)
                 .rotation(.degrees(-90))
                 .stroke(V2.label, style: StrokeStyle(lineWidth: 6, lineCap: .round))
-                .opacity(progress > 0 ? 1 : 0)
+                .opacity(ringVisible ? 1 : 0)
         }
         .frame(width: 128, height: 128)
         .contentShape(Circle())
@@ -428,6 +438,7 @@ struct V2HoldToEnd: View {
         guard !didComplete else { return }
         isPressed = true
         pressStart = Date()
+        ringVisible = true
         if keepHolding {
             keepHoldingToken &+= 1
             withAnimation(.easeInOut(duration: 0.2)) { keepHolding = false }
@@ -448,18 +459,26 @@ struct V2HoldToEnd: View {
         }
         pressStart = nil
         V2Haptics.shared.stop()
+        // Reduce Motion: the unwind is instant (M2).
         if reduceMotion {
             var transaction = Transaction(animation: nil)
             transaction.disablesAnimations = true
-            withTransaction(transaction) { progress = 0 }
+            withTransaction(transaction) {
+                progress = 0
+                ringVisible = false
+            }
         } else {
             withAnimation(.easeOut(duration: 0.2)) { progress = 0 }
         }
         keepHoldingToken &+= 1
         let token = keepHoldingToken
         withAnimation(.easeInOut(duration: 0.2)) { keepHolding = true }
+        // Follow-ups to the driver's own release; a new press bumps the token.
         Task { @MainActor in
-            try? await Task.sleep(for: .seconds(1.5))
+            try? await Task.sleep(for: .seconds(0.22))
+            guard token == keepHoldingToken else { return }
+            if !isPressed && !didComplete { ringVisible = false }
+            try? await Task.sleep(for: .seconds(1.28))
             guard token == keepHoldingToken else { return }
             withAnimation(.easeInOut(duration: 0.2)) { keepHolding = false }
         }
@@ -472,6 +491,7 @@ struct V2HoldToEnd: View {
         isPressed = false
         pressStart = nil
         keepHolding = false
+        ringVisible = true
         withAnimation(.linear(duration: 0.05)) { progress = 1 }
         onComplete()
     }
