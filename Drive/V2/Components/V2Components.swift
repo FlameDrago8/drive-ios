@@ -405,14 +405,31 @@ private struct V2CBarsShape: Shape {
     func path(in rect: CGRect) -> Path {
         var path = Path()
         for r in rects {
-            let corner = min(radius, r.width / 2)
-            path.addPath(UnevenRoundedRectangle(topLeadingRadius: corner, bottomLeadingRadius: 0,
-                                                bottomTrailingRadius: 0, topTrailingRadius: corner,
-                                                style: .circular)
-                .path(in: r.offsetBy(dx: rect.minX, dy: rect.minY)))
+            path.addPath(v2cTopRoundedBar(r.offsetBy(dx: rect.minX, dy: rect.minY), radius: radius))
         }
         return path
     }
+}
+
+/// A bar with rounded top corners and a flat base. Plain path math, so
+/// `path(in:)` never constructs a SwiftUI shape from a nonisolated context.
+fileprivate func v2cTopRoundedBar(_ r: CGRect, radius: CGFloat) -> Path {
+    var p = Path()
+    let rad = max(0, min(radius, r.width / 2, r.height))
+    p.move(to: CGPoint(x: r.minX, y: r.maxY))
+    if rad > 0 {
+        p.addLine(to: CGPoint(x: r.minX, y: r.minY + rad))
+        p.addArc(tangent1End: CGPoint(x: r.minX, y: r.minY),
+                 tangent2End: CGPoint(x: r.minX + rad, y: r.minY), radius: rad)
+        p.addArc(tangent1End: CGPoint(x: r.maxX, y: r.minY),
+                 tangent2End: CGPoint(x: r.maxX, y: r.minY + rad), radius: rad)
+    } else {
+        p.addLine(to: CGPoint(x: r.minX, y: r.minY))
+        p.addLine(to: CGPoint(x: r.maxX, y: r.minY))
+    }
+    p.addLine(to: CGPoint(x: r.maxX, y: r.maxY))
+    p.closeSubpath()
+    return p
 }
 
 /// A horizontal line across the frame at `y`.

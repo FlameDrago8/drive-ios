@@ -86,13 +86,14 @@ struct V2LaneStrip: View {
         self.drawProgress = drawProgress
     }
 
-    /// The strip's vertical metrics. Pass the same flags the view gets; a
-    /// neutral strip draws no markers, so pass `showMarkers: false` for it
-    /// (and `hasTicks: true` when it shows HUD ticks).
-    static func metrics(zoneHeight: CGFloat, showMarkers: Bool, hasClocks: Bool,
-                        car: V2CarSize?, showBracket: Bool, hasTicks: Bool = false) -> V2LaneStripMetrics {
-        let l = V2LLayout(zoneHeight: zoneHeight, showMarkers: showMarkers, hasClocks: hasClocks,
-                          car: car, showBracket: showBracket, hasTicks: hasTicks)
+    /// The strip's vertical metrics. Pass the same flags the view gets: a
+    /// `neutral` strip draws no markers or bracket, and `hasTicks` reserves
+    /// room for HUD ticks. Pure, so callable from any context.
+    nonisolated static func metrics(zoneHeight: CGFloat, showMarkers: Bool, hasClocks: Bool,
+                                    car: V2CarSize?, showBracket: Bool, hasTicks: Bool = false,
+                                    neutral: Bool = false) -> V2LaneStripMetrics {
+        let l = V2LLayout(zoneHeight: zoneHeight, showMarkers: showMarkers && !neutral, hasClocks: hasClocks,
+                          car: car, showBracket: showBracket && !neutral, hasTicks: hasTicks)
         return V2LaneStripMetrics(markerSpace: l.markerSpace, baselineY: l.baselineY,
                                   carTopY: l.carTopY, height: l.height)
     }

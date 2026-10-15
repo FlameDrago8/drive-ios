@@ -17,7 +17,9 @@ import Foundation
 
 struct V2FocusJob: Equatable {
     let category: CoachTip.Category
-    /// The tip's own title (the AI tips are short imperative-ish lines).
+    /// An instructor sentence for the category (`V2FocusEngine.title(for:tipTitle:)`),
+    /// e.g. "Start slowing earlier for stops". Not the tip's own title: the
+    /// stored AI titles are nouns ("Smooth Braking").
     let title: String
     /// ≤ 5 words for HUD Ready, per category.
     let shortTitle: String
@@ -168,15 +170,42 @@ enum V2FocusEngine {
         category != .positive && category != .notScored
     }
 
-    /// ≤ 5 words, for HUD Ready.
-    static func shortTitle(for category: CoachTip.Category) -> String {
+    /// The job title as an imperative instructor sentence (§5). The stored AI
+    /// tip titles are nouns ("Smooth Braking", "Throttle Control"), so the
+    /// title comes from the category; safety splits by the tip's title.
+    static func title(for category: CoachTip.Category, tipTitle: String) -> String {
+        switch category {
+        case .braking:      return "Start slowing earlier for stops"
+        case .acceleration: return "Ease onto the gas from a stop"
+        case .cornering:    return "Brake before the turn, not in it"
+        case .smoothness:   return "Smooth out your steering and pedals"
+        case .speed:        return "Hold a steadier pace"
+        case .safety:
+            switch cleanTitle(tipTitle).lowercased() {
+            case "lane position":      return "Hold the center of your lane"
+            case "following distance": return "Leave more room ahead"
+            default:                   return "Keep your eyes on the road"   // "Stay Focused", "Night Driving", …
+            }
+        case .positive, .notScored:
+            return cleanTitle(tipTitle)
+        }
+    }
+
+    /// ≤ 5 words, for HUD Ready. Safety splits by the tip's title so the HUD
+    /// names the same job as Today.
+    static func shortTitle(for category: CoachTip.Category, tipTitle: String = "") -> String {
         switch category {
         case .braking:      return "Brake earlier for stops"
         case .acceleration: return "Ease onto the gas"
         case .cornering:    return "Slow before the turn"
         case .smoothness:   return "Smooth out your inputs"
         case .speed:        return "Hold a steady pace"
-        case .safety:       return "Keep your eyes ahead"
+        case .safety:
+            switch cleanTitle(tipTitle).lowercased() {
+            case "lane position":      return "Hold your lane"
+            case "following distance": return "Leave more room ahead"
+            default:                   return "Eyes on the road"
+            }
         case .positive, .notScored: return ""
         }
     }
@@ -209,8 +238,8 @@ enum V2FocusEngine {
                 .map(\.timeOffset)
         }
         return V2FocusJob(category: tip.category,
-                          title: cleanTitle(tip.title),
-                          shortTitle: shortTitle(for: tip.category),
+                          title: title(for: tip.category, tipTitle: tip.title),
+                          shortTitle: shortTitle(for: tip.category, tipTitle: tip.title),
                           body: tip.message,
                           linkedTypes: types,
                           baseline: measure(types, in: session).count,

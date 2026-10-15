@@ -5,11 +5,12 @@
 //  Report tips. A straight port of v1 `DriveReportView.tips` (HomeView.swift):
 //  stored AI tips win; drives recorded before tips were stored get count-based
 //  fallbacks (capped at 3); drives with no metrics get "Scoring In
-//  Development". The first tip that isn't safety, positive or not-scored is the
-//  focus. Each tip links to its moments the same way v1 did.
+//  Development". Each tip links to its moments the same way v1 did.
 //
-//  The only change from v1 is text hygiene: v2's voice has no exclamation
-//  marks, so "Great Drive!" and stored "Personal Best!" lose theirs.
+//  Two changes from v1: the focus is the first actionable tip (not positive
+//  or not-scored), matching the Focus job, where v1 also skipped safety; and
+//  text hygiene: v2's voice has no exclamation marks, so "Great Drive!" and
+//  stored "Personal Best!" lose theirs.
 //
 
 import Foundation
@@ -25,7 +26,8 @@ struct V2Tip: Identifiable {
     let momentOffsets: [TimeInterval]
     /// How many linked events there were altogether (for an honest "+N").
     let totalMoments: Int
-    /// The first actionable tip (v1's "FOCUS" rule).
+    /// The first actionable tip (`V2FocusEngine.isActionable`): the one a drive
+    /// with no active job turns into the Focus job.
     let isFocus: Bool
 }
 
@@ -83,10 +85,10 @@ enum V2Tips {
                        times: [], total: 0)]
         }
 
-        // Highlight the first actionable (non-safety, non-positive) tip as the focus.
-        let focusIndex = raw.firstIndex {
-            $0.category != .safety && $0.category != .positive && $0.category != .notScored
-        }
+        // The focus is the first actionable tip, the same rule that sets the
+        // Focus job, so the Report never marks one tip while the job is another.
+        // (v1 also skipped safety; the job can be a safety job.)
+        let focusIndex = raw.firstIndex { V2FocusEngine.isActionable($0.category) }
 
         var out: [V2Tip] = []
         out.reserveCapacity(raw.count)

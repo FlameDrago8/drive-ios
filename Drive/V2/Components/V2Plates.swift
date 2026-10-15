@@ -396,7 +396,7 @@ struct V2FocusSign: View {
         self.cleared = cleared
     }
 
-    static func legend(for category: CoachTip.Category) -> V2Legend {
+    nonisolated static func legend(for category: CoachTip.Category) -> V2Legend {
         switch category {
         case .braking:      return .stopAhead
         case .acceleration: return .upArrow
