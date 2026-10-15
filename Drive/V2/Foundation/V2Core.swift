@@ -323,6 +323,8 @@ enum V2Destination: Hashable {
     case logbook
     case badges
     case driverCard
+    /// All-time friends list ("See all time" under the week leaderboard).
+    case leaderboard
 }
 
 /// Connects the three tabs, the full-screen HUD and the Profile sheet, so the
