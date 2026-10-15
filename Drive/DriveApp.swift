@@ -65,7 +65,7 @@ struct DriveApp: App {
                             withAnimation { onboarding.markComplete(for: userManager.user?.uid) }
                         }
                     } else {
-                        HomeView(splashVisible: showingSplash)
+                        V2Root(splashVisible: showingSplash)
                     }
                 }
                 .preferredColorScheme(prefs.lightModeEnabled ? .light : .dark)

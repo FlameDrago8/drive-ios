@@ -4,6 +4,12 @@
 //
 //  Created by Shiv g on 10/31/25.
 //
+//  v2 "Road Furniture" HUD (§6.5, §6.6): Ready → Recording → Analysing →
+//  Saved / Parked / Too short / Not scored / Save failed. The recording,
+//  scoring and saving logic below is the launch beta's, unchanged in order;
+//  the UI is drawn in one fake-landscape container (V2HUDLandscape) over the
+//  single full-bleed CameraView.
+//
 
 import SwiftUI
 import CoreLocation
@@ -11,7 +17,14 @@ import ActivityKit
 import StoreKit
 
 private enum UploadStatus: Equatable {
-    case idle, uploading, done, failed(String), tooShort, notScored(String)
+    case idle, uploading, done, failed(String), tooShort(TimeInterval), notScored(String)
+}
+
+/// What the HUD shows. Derived from the recording flags; there is no
+/// separate state machine to fall out of sync with them.
+private enum HUDPhase: Equatable {
+    case ready, recording, analysing, saved, parked(UUID)
+    case tooShort(TimeInterval), notScored(String), failed(String)
 }
 
 struct DriveView: View {
@@ -32,14 +45,10 @@ struct DriveView: View {
     @State private var elapsed: TimeInterval = 0
     @State private var ticker: Timer?
 
-    // Cinematic HUD state
-    @State private var hudAppeared = false
     @State private var uploadStatus: UploadStatus = .idle
-    @State private var showIgnition = false
 
-    // Route tagging
+    // Route tagging (Parked's "Name this route?" alert uses the saved id)
     @State private var lastSavedSessionID: UUID? = nil
-    @State private var showRouteTagSheet = false
 
     // Live Activity
     @State private var liveActivity: Activity<DriveActivityAttributes>?
@@ -52,21 +61,46 @@ struct DriveView: View {
 
     @Environment(\.requestReview) private var requestReview
 
-    private var existingRouteNames: [String] {
-        Array(Set(driveStorage.sessions.compactMap(\.routeTag))).sorted()
-    }
+    // v2 HUD
+    /// Buckets, ticks, grade hysteresis, distance and Live Activity coalescing.
+    @StateObject private var liveDrive = V2LiveDrive()
+    /// Today's job for the Ready panel (snapshot.focus.current).
+    @ObservedObject private var library = V2Library.shared
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    /// Stop was held and the video is finalising: Analysing until the finish
+    /// callback reports. Without it the HUD would flash Ready in between.
+    @State private var awaitingFinish = false
+    /// Speed gate (§6.5): GPS over 5 mph in the last 10 s before the stop →
+    /// "Saved" (the reveal waits); otherwise Parked plays.
+    @State private var savedWhileMoving = false
+    /// The saved drive, for Parked's fallback if the library never lists it.
+    @State private var lastSavedSession: DriveSession?
+    /// The first badge the post-save diff found: Parked's hook.
+    @State private var newBadge: Badge?
 
-    private var timeString: String {
-        let m = Int(elapsed) / 60
-        let s = Int(elapsed) % 60
-        return String(format: "%02d:%02d", m, s)
+    private var phase: HUDPhase {
+        switch uploadStatus {
+        case .done:
+            if let id = lastSavedSessionID, !savedWhileMoving { return .parked(id) }
+            return .saved
+        case .tooShort(let duration): return .tooShort(duration)
+        case .notScored(let reason):  return .notScored(reason)
+        case .failed(let message):    return .failed(message)
+        case .uploading:              return .analysing
+        case .idle:
+            if isRecording { return .recording }
+            return awaitingFinish ? .analysing : .ready
+        }
     }
 
     var body: some View {
         ZStack {
-            Color(red: 0.039, green: 0.039, blue: 0.059).ignoresSafeArea()
+            V2.bg.ignoresSafeArea()
 
-            // Full-screen camera
+            // The one CameraView: full-bleed, in a fixed position for every
+            // phase (its Coordinator.parent is never refreshed, and rebuilding
+            // it mid-drive would tear down the capture session). Ready shows it
+            // through a window in the HUD scrim; every other phase covers it.
             CameraView(isRecording: $isRecording, onRecordingFinished: { tempVideoURL in
                 let duration: TimeInterval = driveStartDate.map { Date().timeIntervalSince($0) } ?? 0
                 let (route, samples) = locationManager.stopAndFlush()
@@ -76,10 +110,8 @@ struct DriveView: View {
                 let minSeconds = Double(prefs.minSessionMinutes * 60)
                 if prefs.minSessionMinutes > 0 && duration < minSeconds {
                     DispatchQueue.main.async {
-                        withAnimation { uploadStatus = .tooShort }
-                        DispatchQueue.main.asyncAfter(deadline: .now() + 3) {
-                            withAnimation { uploadStatus = .idle }
-                        }
+                        withAnimation { uploadStatus = .tooShort(duration) }
+                        // v2: Too short stays up until Done (no auto-return to Ready).
                         // The drive is over even though it isn't being saved —
                         // this early return used to skip teardown and leave the
                         // Live Activity running indefinitely.
@@ -88,8 +120,9 @@ struct DriveView: View {
                     return
                 }
 
-                // Show the "analyzing" radar while the evaluation runs on this
-                // background thread (real processing, not a fabricated delay).
+                // Show the "Analysing your drive" state while the evaluation
+                // runs on this background thread (real processing, not a
+                // fabricated delay).
                 DispatchQueue.main.async { withAnimation { uploadStatus = .uploading } }
 
                 let evaluation = aiEngine.buildEvaluation(
@@ -105,9 +138,6 @@ struct DriveView: View {
                 if !evaluation.isScored {
                     DispatchQueue.main.async {
                         withAnimation { uploadStatus = .notScored(evaluation.notScoredReason ?? "This drive wasn't scored.") }
-                        DispatchQueue.main.asyncAfter(deadline: .now() + 4) {
-                            withAnimation { uploadStatus = .idle }
-                        }
                         endLiveActivity(finalScore: 0)
                     }
                     return
@@ -164,16 +194,17 @@ struct DriveView: View {
                 driveStorage.add(session: session)
                 driveStorage.uploadTrainingData(windows: evaluation.sensorWindows)
                 DispatchQueue.main.async {
-                    UINotificationFeedbackGenerator().notificationOccurred(.success)
+                    // v2: the success haptic is Parked's `land`; naming is
+                    // Parked's "Name this route?" alert (RouteTagSheet retired);
+                    // Saved / Parked stay up until Done.
                     currentScore = evaluation.overallScore
                     lastSavedSessionID = session.id
-                    if prefs.routeTagEnabled { showRouteTagSheet = true }
+                    lastSavedSession = session
                     withAnimation { uploadStatus = .done }
-                    DispatchQueue.main.asyncAfter(deadline: .now() + 3) {
-                        withAnimation { uploadStatus = .idle }
-                    }
-                    endLiveActivity(finalScore: Int(evaluation.overallScore))
-                    notifyNewBadges(prev: prev)
+                    endLiveActivityParked(sessionID: session.id,
+                                          finalScore: Int(evaluation.overallScore),
+                                          fallbackName: V2Format.unnamedDriveName(session.date.addingTimeInterval(-duration)))
+                    newBadge = notifyNewBadges(prev: prev).first
                     // Request App Store review after the 3rd drive
                     if driveStorage.sessions.count == 3 {
                         DispatchQueue.main.asyncAfter(deadline: .now() + 2.0) {
@@ -183,224 +214,26 @@ struct DriveView: View {
                 }
             }, onRecordingError: { error in
                 withAnimation { uploadStatus = .failed(error.localizedDescription) }
-                DispatchQueue.main.asyncAfter(deadline: .now() + 4) {
-                    withAnimation { uploadStatus = .idle }
-                }
                 // A failed recording still ends the drive; without this the
                 // Live Activity kept counting up as though it were ongoing.
                 endLiveActivity(finalScore: 0)
             })
             .ignoresSafeArea()
+            .accessibilityHidden(true)
 
-            // Radial vignette — depth without distraction
-            Canvas { ctx, size in
-                let center = CGPoint(x: size.width / 2, y: size.height / 2)
-                let radius = max(size.width, size.height) * 0.75
-                let gradient = Gradient(colors: [
-                    Color.black.opacity(0.0),
-                    Color.black.opacity(0.0),
-                    Color.black.opacity(0.55)
-                ])
-                ctx.fill(
-                    Path(ellipseIn: CGRect(origin: .zero, size: size)),
-                    with: .radialGradient(
-                        gradient,
-                        center: center,
-                        startRadius: radius * 0.35,
-                        endRadius: radius
-                    )
-                )
-            }
-            .ignoresSafeArea()
-            .allowsHitTesting(false)
-
-            // Road detection warning — only visible when recording and off-road
-            if isRecording && !isOnRoad {
-                offRoadWarning
-            }
-
-            // HUD overlay
-            VStack(spacing: 0) {
-
-                // ── Top bar
-                HStack(alignment: .center) {
-                    // Exit button — landscape bottom-left
-                    Button { isDriving = false } label: {
-                        Image(systemName: "xmark")
-                            .font(.system(size: 14, weight: .bold))
-                            .foregroundColor(.white)
-                            .frame(width: 36, height: 36)
-                            .background(.ultraThinMaterial)
-                            .clipShape(Circle())
-                            .overlay(Circle().strokeBorder(Color.white.opacity(0.15), lineWidth: 1))
-                    }
-                    .opacity(hudAppeared ? 1 : 0)
-                    .offset(x: hudAppeared ? 0 : -20)
-
-                    Spacer()
-
-                    // REC / READY pill — landscape top-left
-                    HStack(spacing: 7) {
-                        if isRecording {
-                            Image(systemName: "circle.fill")
-                                .font(.system(size: 7))
-                                .foregroundColor(.red)
-                                .symbolEffect(.pulse, isActive: isRecording)
-                        } else {
-                            Circle()
-                                .fill(Color.white.opacity(0.4))
-                                .frame(width: 7, height: 7)
-                        }
-                        Text(isRecording ? timeString : "READY")
-                            .font(DS.Typography.data(13, weight: .bold))
-                            .foregroundColor(.white)
-                            .tracking(0.5)
-                    }
-                    .padding(.horizontal, 14)
-                    .padding(.vertical, 8)
-                    .background(.ultraThinMaterial)
-                    .clipShape(Capsule())
-                    .overlay(
-                        Capsule().strokeBorder(
-                            (isRecording ? Color(red: 0.91, green: 0.38, blue: 0.29) : .white).opacity(isRecording ? 0.5 : 0.15),
-                            lineWidth: 1
-                        )
-                    )
-                    .fixedSize()
-                    .rotationEffect(.degrees(90))
-                    .padding(.top, DS.Spacing.l)
-                    .opacity(hudAppeared ? 1 : 0)
-                    .offset(x: hudAppeared ? 0 : 20)
-                }
-                .padding(.horizontal, DS.Spacing.l)
-                .padding(.top, DS.Spacing.l)
-
-                Spacer()
-
-                // ── Bottom control dock
-                HStack(alignment: .center, spacing: DS.Spacing.xl) {
-
-                    // Record / Stop — landscape bottom-right
-                    Button {
-                        if isRecording {
-                            UIImpactFeedbackGenerator(style: .medium).impactOccurred()
-                            isRecording = false
-                            stopTicker()
-                            aiEngine.stop()
-                            isOnRoad = true
-                            UIApplication.shared.isIdleTimerDisabled = false
-                            pauseLiveActivity()
-                        } else {
-                            UIImpactFeedbackGenerator(style: .heavy).impactOccurred()
-                            driveStartDate = Date()
-                            isRecording = true
-                            liveScoreFromSensors = false
-                            startTicker()
-                            locationManager.startTracking()
-                            prevBadgeSnapshot = badgeSnapshot()
-                            startLiveActivity()
-                            aiEngine.start()
-                            UIApplication.shared.isIdleTimerDisabled = true
-                        }
-                    } label: {
-                        ZStack {
-                            // Crisp concentric ring — shutter-button presence without a blurry glow
-                            Circle()
-                                .stroke((isRecording ? Color(red: 0.91, green: 0.38, blue: 0.29) : DS.Colors.accent).opacity(0.35),
-                                        lineWidth: 2)
-                                .frame(width: 80, height: 80)
-                            Circle()
-                                .fill(isRecording ? Color(red: 0.91, green: 0.38, blue: 0.29) : DS.Colors.accent)
-                                .frame(width: 68, height: 68)
-                            Image(systemName: isRecording ? "stop.fill" : "play.fill")
-                                .font(.system(size: 22, weight: .black))
-                                .foregroundColor(.white)
-                                .rotationEffect(.degrees(90))
-                                .offset(x: isRecording ? 0 : 2)
-                        }
-                        .animation(.easeOut(duration: 0.25), value: isRecording)
-                    }
-
-                    Spacer()
-
-                    // Live score — landscape top-right. Colored by value so a glance
-                    // reads good/easy-up while driving, echoing the home gauge.
-                    VStack(alignment: .center, spacing: 4) {
-                        Text("LIVE SCORE")
-                            .font(DS.Typography.label(9))
-                            .tracking(DS.Tracking.display)
-                            .foregroundColor(.white.opacity(0.45))
-                        HStack(alignment: .firstTextBaseline, spacing: 8) {
-                            Text("\(Int(currentScore))")
-                                .font(DS.Typography.data(56))
-                                .foregroundColor(scoreColor(for: currentScore))
-                                .contentTransition(.numericText())
-                            Text(grade(for: currentScore))
-                                .font(DS.Typography.label(15))
-                                .tracking(1)
-                                .foregroundColor(scoreColor(for: currentScore).opacity(0.85))
-                        }
-                    }
-                    .animation(.easeOut(duration: 0.4), value: currentScore)
-                    .rotationEffect(.degrees(90))
-                }
-                .padding(.horizontal, DS.Spacing.xl)
-                .padding(.vertical, DS.Spacing.l)
-                .background(.ultraThinMaterial)
-                .clipShape(RoundedRectangle(cornerRadius: DS.Radius.l, style: .continuous))
-                .overlay(
-                    RoundedRectangle(cornerRadius: DS.Radius.l, style: .continuous)
-                        .strokeBorder(Color.white.opacity(0.12), lineWidth: 1)
-                )
-                .padding(.horizontal, DS.Spacing.l)
-                .padding(.bottom, DS.Spacing.l)
-                .opacity(hudAppeared ? 1 : 0)
-                .scaleEffect(hudAppeared ? 1 : 0.96)
-                .offset(y: hudAppeared ? 0 : 30)
+            V2HUDLandscape { size in
+                hud(V2HUDMetrics(size: size))
             }
         }
-        // Ignition flourish when a drive starts (transparent, over the camera).
-        .overlay {
-            if showIgnition {
-                LottieView(.driveStart) { showIgnition = false }
-                    .frame(width: 300, height: 300)
-                    .rotationEffect(.degrees(90))
-                    .allowsHitTesting(false)
-            }
-        }
-        // Analyzing radar while the drive is being scored.
-        .overlay {
-            if uploadStatus == .uploading {
-                LottieView(.analyzing, loop: true)
-                    .frame(width: 240, height: 240)
-                    .rotationEffect(.degrees(90))
-                    .allowsHitTesting(false)
-            }
-        }
-        // Upload status pill — centered on screen after a drive ends, matching
-        // the analyzing gauge it replaces (was previously floating above the dock).
-        .overlay {
-            if uploadStatus != .idle && uploadStatus != .uploading {
-                uploadStatusPill
-                    .rotationEffect(.degrees(90))
-                    .transition(.opacity.combined(with: .scale(scale: 0.9)))
-                    .allowsHitTesting(false)
-            }
-        }
-        .onChange(of: isRecording) { _, rec in if rec { showIgnition = true } }
-        .sheet(isPresented: $showRouteTagSheet) {
-            RouteTagSheet(existingRoutes: existingRouteNames) { tag in
-                if let id = lastSavedSessionID, !tag.isEmpty {
-                    driveStorage.updateRouteTag(id: id, tag: tag)
-                }
-                showRouteTagSheet = false
-            }
-        }
+        // HUD, Parked and Demo are dark-only.
+        .preferredColorScheme(.dark)
         .statusBarHidden(true)
+        .onChange(of: Int(currentScore)) { _, _ in pushLiveActivity() }
+        .onChange(of: uploadStatus) { _, status in
+            if status != .idle { awaitingFinish = false }
+        }
         .onAppear {
             locationManager.requestPermission()
-            // Instrument power-on — the dock springs up rather than a flat fade
-            withAnimation(.spring(response: 0.55, dampingFraction: 0.78)) { hudAppeared = true }
             aiEngine.onScoreUpdate = { score in
                 // Ignore any update that lands after the drive has ended, and
                 // stand down once sensor scoring has taken over the HUD.
@@ -430,21 +263,225 @@ struct DriveView: View {
         }
     }
 
+    // MARK: – HUD (landscape coordinates, board 874 × 402)
+
+    private func hud(_ m: V2HUDMetrics) -> some View {
+        let phase = self.phase
+        let slide: AnyTransition = reduceMotion
+            ? .opacity
+            : .move(edge: .leading).combined(with: .opacity)
+        return ZStack(alignment: .topLeading) {
+            V2HUDScrim(size: m.size, window: m.cardRect, open: phase == .ready)
+
+            if phase == .ready {
+                V2HUDCameraGuides()
+                    .frame(width: m.cardRect.width, height: m.cardRect.height)
+                    .clipShape(RoundedRectangle(cornerRadius: V2.radiusCard, style: .continuous))
+                    .accessibilityElement()
+                    .accessibilityLabel("Camera preview")
+                    .offset(x: m.cardRect.minX, y: m.cardRect.minY)
+                    .transition(.opacity)
+
+                // Today's job: crossfades out in 200 ms when the drive starts.
+                if let job = library.snapshot.focus.current {
+                    V2HUDJobBlock(job: job)
+                        .frame(width: m.leftWidth, alignment: .leading)
+                        .offset(x: m.side, y: 84 + m.dy)
+                        .transition(.opacity.animation(.easeOut(duration: 0.2)))
+                }
+
+                readyPanel(m)
+                    .transition(slide)
+            }
+
+            switch phase {
+            case .ready:
+                EmptyView()
+            case .recording:
+                V2HUDRecordingLayer(metrics: m, score: currentScore,
+                                    gradeScore: liveDrive.displayScore(live: currentScore),
+                                    elapsed: elapsed, distanceM: liveDrive.distanceM,
+                                    buckets: liveDrive.buckets, ticks: liveDrive.ticks,
+                                    capacity: liveDrive.capacity, startClock: startClock,
+                                    cameraBlocked: !isOnRoad) {
+                    V2HoldToEnd { stopDrive() }
+                }
+                .transition(.opacity)
+            case .analysing:
+                messageLayer(m, title: "Analysing your drive", message: nil, onDone: nil, strip: .completed)
+                    .transition(.opacity)
+            case .saved:
+                messageLayer(m, title: V2Voice.speedGate.title, message: V2Voice.speedGate.body,
+                             onDone: { finish() }, strip: .completed)
+                    .transition(.opacity)
+            case .parked(let id):
+                V2ParkedView(sessionID: id, fallback: lastSavedSession, newBadge: newBadge,
+                             onSeeReport: { reportID in
+                                 V2Router.shared.openReport(reportID)
+                                 finish()
+                             },
+                             onDone: { finish() })
+                    .frame(width: m.size.width, height: m.size.height)
+                    .transition(.opacity)
+            case .tooShort(let duration):
+                let copy = tooShortCopy(duration)
+                messageLayer(m, title: copy.title, message: copy.body,
+                             onDone: { isDriving = false }, strip: .short(duration))
+                    .transition(.opacity)
+            case .notScored(let reason):
+                messageLayer(m, title: "Not scored.", message: reason,
+                             onDone: { isDriving = false }, strip: nil)
+                    .transition(.opacity)
+            case .failed(let message):
+                messageLayer(m, title: "Save failed.", message: message,
+                             onDone: { isDriving = false }, strip: nil)
+                    .transition(.opacity)
+            }
+
+            // Close: Ready (nothing to lose) and Analysing (an escape if the
+            // camera never delivers a file). The drive keeps saving if closed.
+            if phase == .ready || phase == .analysing {
+                V2HUDCloseButton { isDriving = false }
+                    .offset(x: m.side, y: V2.hudTop)
+                    .transition(.opacity)
+            }
+        }
+        .frame(width: m.size.width, height: m.size.height, alignment: .topLeading)
+        .animation(V2Motion.reduced(.smooth(duration: 0.35), reduceMotion: reduceMotion), value: phase)
+    }
+
+    /// Ready's left column under the job: road check, PERMIT line, Start.
+    private func readyPanel(_ m: V2HUDMetrics) -> some View {
+        ZStack(alignment: .topLeading) {
+            V2HUDRoadCheck(onRoad: isOnRoad)
+                .frame(height: 22)
+                .offset(x: m.side, y: 200 + m.dy)
+            if ProfileManager.shared.driverType == .learner {
+                V2HUDPermitLine()
+                    .frame(height: 20)
+                    .offset(x: m.side, y: 236 + m.dy)
+            }
+            V2StartDriveButton(height: 72) { startDrive() }
+                .frame(width: 240)
+                .offset(x: m.side, y: 292 + m.dy)
+        }
+        .frame(width: m.size.width, height: m.size.height, alignment: .topLeading)
+    }
+
+    private enum MessageStrip { case completed, short(TimeInterval) }
+
+    /// End-of-drive text at y 112 and, under it, the neutral strip.
+    private func messageLayer(_ m: V2HUDMetrics, title: String, message: String?,
+                              onDone: (() -> Void)?, strip: MessageStrip?) -> some View {
+        let sm = V2HUDCompletedStrip.metrics(hasTicks: !liveDrive.ticks.isEmpty, hasClock: startClock != nil)
+        return ZStack(alignment: .topLeading) {
+            V2HUDMessage(title: title, message: message, onDone: onDone)
+                .frame(width: m.contentWidth, alignment: .leading)
+                .offset(x: m.side, y: 112 + m.dy)
+            if let strip {
+                switch strip {
+                case .completed:
+                    V2HUDCompletedStrip(buckets: liveDrive.buckets, ticks: liveDrive.ticks,
+                                        startClock: startClock, width: m.contentWidth)
+                        .offset(x: m.side, y: m.hudBaselineY - sm.baselineY)
+                case .short(let duration):
+                    let shortMetrics = V2HUDLiveStrip.metrics(hasTicks: false, hasClock: false)
+                    V2HUDShortStrip(duration: duration, width: m.contentWidth)
+                        .offset(x: m.side, y: m.hudBaselineY - shortMetrics.baselineY)
+                }
+            }
+        }
+        .frame(width: m.size.width, height: m.size.height, alignment: .topLeading)
+    }
+
+    private var startClock: String? {
+        driveStartDate.map { V2Format.clock($0) }
+    }
+
+    /// "Too short to score." / "Drives need 2 minutes; this one was 1:24."
+    private func tooShortCopy(_ duration: TimeInterval) -> (title: String, body: String) {
+        let minutes = AppPreferences.shared.minSessionMinutes
+        if minutes == 2 { return V2Voice.tooShort(duration: duration) }
+        let need = minutes == 1 ? "1 minute" : "\(minutes) minutes"
+        return ("Too short to score.", "Drives need \(need); this one was \(V2Format.elapsed(duration)).")
+    }
+
+    /// Done / See report after a save: the HUD dismisses and Today knows when
+    /// (the Badge Earned sheet waits for this).
+    private func finish() {
+        V2Router.shared.parkedDismissedAt = Date()
+        isDriving = false
+    }
+
+    // MARK: – Start / stop
+
+    /// The beta's start sequence, in its order. Its heavy impact is now the
+    /// `start` haptic V2StartDriveButton plays.
+    private func startDrive() {
+        liveDrive.reset()
+        awaitingFinish = false
+        savedWhileMoving = false
+        newBadge = nil
+        driveStartDate = Date()
+        isRecording = true
+        liveScoreFromSensors = false
+        startTicker()
+        locationManager.startTracking()
+        prevBadgeSnapshot = badgeSnapshot()
+        startLiveActivity()
+        aiEngine.start()
+        UIApplication.shared.isIdleTimerDisabled = true
+    }
+
+    /// The beta's stop sequence (the old Stop tap), in its order; V2HoldToEnd
+    /// runs it once the hold completes. Its medium impact is now the ratchet.
+    private func stopDrive() {
+        // Read before stopping: the capture thread flushes the route right after.
+        savedWhileMoving = V2LiveDrive.isMoving(route: locationManager.snapshot().route,
+                                                engineSpeedMS: aiEngine.currentSpeedMS)
+        awaitingFinish = true
+        isRecording = false
+        stopTicker()
+        aiEngine.stop()
+        isOnRoad = true
+        UIApplication.shared.isIdleTimerDisabled = false
+        pauseLiveActivity()
+    }
+
     // MARK: – Live Activity
 
     private func startLiveActivity() {
         guard ActivityAuthorizationInfo().areActivitiesEnabled else { return }
         let name = ProfileManager.shared.displayName.isEmpty ? "Driver" : ProfileManager.shared.displayName
         let attrs = DriveActivityAttributes(driverName: name)
-        let state = DriveActivityAttributes.ContentState(
+        var state = DriveActivityAttributes.ContentState(
             score: Int(currentScore),
             startDate: driveStartDate ?? Date(),
             isRecording: true
         )
+        state.bars = []
+        state.distanceM = 0
+        state.elapsedMinutes = 0
+        state.focusCategory = library.snapshot.focus.current?.category.rawValue
         liveActivity = try? Activity.request(
             attributes: attrs,
             content: ActivityContent(state: state, staleDate: nil)
         )
+    }
+
+    /// Live score, bars, distance and minutes on bucket commits and score
+    /// changes, at most every 5 s. Copies the running state so nothing resets.
+    private func pushLiveActivity() {
+        guard isRecording, liveActivity != nil else { return }
+        let focus = library.snapshot.focus.current?.category.rawValue
+        liveDrive.coalesceActivityUpdate {
+            guard isRecording, let activity = liveActivity else { return }
+            let state = liveDrive.liveActivityState(from: activity.content.state,
+                                                    score: Int(currentScore),
+                                                    elapsed: elapsed,
+                                                    focusCategory: focus)
+            Task { await activity.update(ActivityContent(state: state, staleDate: nil)) }
+        }
     }
 
     /// Ends the drive's Live Activity, leaving the summary up briefly.
@@ -457,17 +494,55 @@ struct DriveView: View {
         Task { await DriveActivityAttributes.endAll(finalScore: finalScore, dismissAfter: 30) }
     }
 
-    /// Immediately marks the Live Activity as "not recording" the moment the user
-    /// taps stop — before the video finishes saving and onRecordingFinished fires.
+    /// Saved drives: the activity switches to its Parked state (§6.9) — final
+    /// score, route, verdict — then ends with a 15-minute dismissal. Waits
+    /// briefly for the library rebuild that carries the verdict.
+    private func endLiveActivityParked(sessionID: UUID, finalScore: Int, fallbackName: String) {
+        let activity = liveActivity
+        liveActivity = nil
+        Task { @MainActor in
+            var facts = V2Library.shared.facts(sessionID)
+            var tries = 0
+            while facts == nil && tries < 15 {
+                try? await Task.sleep(for: .milliseconds(100))
+                tries += 1
+                facts = V2Library.shared.facts(sessionID)
+            }
+            if let activity, activity.activityState == .active {
+                var state = activity.content.state
+                state.score = finalScore
+                state.isRecording = false
+                state.endDate = state.endDate ?? Date()
+                state.parked = true
+                state.routeName = facts?.name ?? fallbackName
+                state.routeNumber = facts?.routeNumber
+                state.verdict = facts?.verdict.text
+                state.verdictWas = facts?.verdict.was
+                if facts != nil {
+                    state.bars = V2LiveDrive.fitBars(V2Library.shared.strip(for: sessionID).quantised)
+                }
+                await activity.update(ActivityContent(state: state, staleDate: nil))
+            }
+            await DriveActivityAttributes.endAll(finalScore: finalScore, dismissAfter: 900)
+        }
+    }
+
+    /// Immediately marks the Live Activity as "not recording" the moment the
+    /// hold completes — before the video finishes saving and
+    /// onRecordingFinished fires. Copies the running state (bars, distance,
+    /// focus) so only the end-of-drive keys change.
     private func pauseLiveActivity() {
         guard let activity = liveActivity else { return }
+        let live = liveDrive.liveActivityState(from: activity.content.state,
+                                               score: Int(currentScore),
+                                               elapsed: elapsed,
+                                               focusCategory: activity.content.state.focusCategory)
+        let start = driveStartDate ?? Date()
         Task {
-            let state = DriveActivityAttributes.ContentState(
-                score: Int(currentScore),
-                startDate: driveStartDate ?? Date(),
-                isRecording: false,
-                endDate: Date()          // freezes the widget's elapsed timer
-            )
+            var state = live
+            state.startDate = start
+            state.isRecording = false
+            state.endDate = Date()          // freezes the widget's elapsed timer
             await activity.update(ActivityContent(state: state, staleDate: nil))
         }
     }
@@ -480,8 +555,12 @@ struct DriveView: View {
         )
     }
 
-    private func notifyNewBadges(prev: [String: (Bool, BadgeTier?)]) {
+    /// Posts a notification per newly earned badge / tier and returns them
+    /// (Parked shows the first). No haptic here: Parked's budget is two.
+    @discardableResult
+    private func notifyNewBadges(prev: [String: (Bool, BadgeTier?)]) -> [Badge] {
         let newBadges = AchievementEngine.badges(from: driveStorage.sessions)
+        var fresh: [Badge] = []
         for badge in newBadges {
             guard badge.isEarned else { continue }
             if let (wasEarned, wasTier) = prev[badge.id] {
@@ -489,82 +568,17 @@ struct DriveView: View {
                 if !badge.isOneTime && wasTier == badge.currentTier { continue }
             }
             NotificationManager.shared.notifyBadgeUnlocked(badge)
-            UINotificationFeedbackGenerator().notificationOccurred(.success)
+            fresh.append(badge)
         }
-    }
-
-    // MARK: – Off-road warning overlay
-
-    @ViewBuilder private var offRoadWarning: some View {
-        VStack(spacing: 10) {
-            Image(systemName: "eye.slash.fill")
-                .font(.system(size: 28, weight: .bold))
-                .foregroundColor(.white)
-            Text("Point camera at the road")
-                .font(DS.Typography.heading(15))
-                .foregroundColor(.white)
-            // Not "SCORING PAUSED" — that was false. The four sub-scores come
-            // from SensorScoring (IMU + GPS), which keeps running regardless of
-            // what the camera sees. Only the camera's own contribution — lane
-            // departures, following distance, scene context — is unavailable.
-            Text("CAMERA COACHING PAUSED")
-                .font(DS.Typography.label(11))
-                .foregroundColor(DS.Colors.warning.opacity(0.9))
-                .tracking(2)
-        }
-        .padding(.horizontal, 28)
-        .padding(.vertical, 20)
-        .background(
-            RoundedRectangle(cornerRadius: DS.Radius.l, style: .continuous)
-                .fill(Color.black.opacity(0.72))
-                .overlay(
-                    RoundedRectangle(cornerRadius: DS.Radius.l, style: .continuous)
-                        .strokeBorder(DS.Colors.warning.opacity(0.4), lineWidth: 1)
-                )
-        )
-        .rotationEffect(.degrees(90))
-        .transition(.opacity.combined(with: .scale(scale: 0.9)))
-        .zIndex(10)
-    }
-
-    // MARK: – Upload status pill
-
-    @ViewBuilder private var uploadStatusPill: some View {
-        HStack(spacing: 6) {
-            switch uploadStatus {
-            case .uploading:
-                ProgressView().tint(.white).scaleEffect(0.75)
-                Text("Saving drive…")
-            case .done:
-                Image(systemName: "checkmark.circle.fill").foregroundColor(.green)
-                Text("Drive saved")
-            case .failed(let msg):
-                Image(systemName: "exclamationmark.triangle.fill").foregroundColor(DS.Colors.scoreOkay)
-                Text("Save failed: \(msg)").lineLimit(2)
-            case .tooShort:
-                Image(systemName: "clock.badge.xmark").foregroundColor(DS.Colors.scoreOkay)
-                Text("Drive too short to save")
-            case .notScored(let reason):
-                Image(systemName: "eye.slash").foregroundColor(DS.Colors.scoreOkay)
-                Text(reason).lineLimit(2)
-            case .idle:
-                EmptyView()
-            }
-        }
-        .font(DS.Typography.body(12, weight: .semibold))
-        .foregroundColor(.white)
-        .padding(.horizontal, 14)
-        .padding(.vertical, 8)
-        .background(.ultraThinMaterial)
-        .clipShape(Capsule())
-        .overlay(Capsule().strokeBorder(Color.white.opacity(0.15), lineWidth: 1))
+        return fresh
     }
 
     // MARK: – Timer
     private func startTicker() {
         elapsed = 0
         ticker = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { _ in
-            withAnimation(.easeOut(duration: 0.3)) { elapsed += 1 }
+            // Not animated: nothing on the HUD moves between commits.
+            elapsed += 1
             // Speed every second: it drives the road gate, and at 5 s the
             // warning could flash before the first reading landed.
             refreshDrivingSpeed()
@@ -572,6 +586,9 @@ struct DriveView: View {
             // uses, so the HUD never drifts from the number the driver sees at
             // the end. Every 5 s — SensorScoring is O(n) over the drive.
             if Int(elapsed) % 5 == 0 { refreshLiveScore() }
+            // v2 live layer: distance every second, one strip bucket every 20 s.
+            liveDrive.trackDistance(route: locationManager.snapshot().route)
+            if Int(elapsed) % 20 == 0 { commitLiveBucket() }
         }
     }
 
@@ -607,6 +624,22 @@ struct DriveView: View {
                        + s.cornering * 0.25 + s.smoothness * 0.20)
         liveScoreFromSensors = true
         withAnimation(.easeOut(duration: 0.4)) { currentScore = overall }
+        // v2: hard-event ticks on the neutral strip (no markers, no haptics).
+        liveDrive.noteEvents(s.eventOnsets, hz: hz)
+    }
+
+    /// One 20 s bucket for the HUD strip. The quality curve runs off the main
+    /// thread; the bar grows and the car advances one pitch when it lands.
+    private func commitLiveBucket() {
+        let index = Int(elapsed) / 20 - 1
+        guard index >= 0 else { return }
+        let animation = V2Motion.reduced(V2Motion.driveLive, reduceMotion: reduceMotion, fallback: nil)
+        liveDrive.commitBucket(index: index,
+                               samples: locationManager.snapshot().samples,
+                               score: currentScore,
+                               animation: animation) {
+            pushLiveActivity()
+        }
     }
 
     private func stopTicker() {
@@ -616,11 +649,12 @@ struct DriveView: View {
 
 }
 
-// NOTE: this screen deliberately stays portrait-locked (AppDelegate.orientationLock)
-// and counter-rotates its HUD elements 90° instead, so they read correctly with the
-// phone mounted sideways. The old driveRequestLandscape()/driveRestorePortrait()
-// window-rotation helpers were left over from the abandoned approach and unused;
-// removed 2026-07-26.
+// NOTE: this screen deliberately stays portrait-locked (AppDelegate.orientationLock).
+// The v2 HUD is drawn in ONE container rotated +90° with its frame swapped
+// (V2HUDLandscape), the same mount the beta's per-element counter-rotation
+// assumed, so it reads correctly with the phone mounted sideways. The old
+// driveRequestLandscape()/driveRestorePortrait() window-rotation helpers were
+// left over from the abandoned approach and unused; removed 2026-07-26.
 
 // MARK: – Route Tag Sheet
 
