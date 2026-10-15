@@ -594,7 +594,7 @@ final class V2Library: ObservableObject {
         snapshot = V2Snapshot(facts: facts, routeNumbers: routeNumbers, focus: focus,
                               stats: stats, badges: badges)
         if traceStrips != newTraceStrips { traceStrips = newTraceStrips }
-        // S7: WidgetDataStore.shared.writeV2(snapshot) is called here once it exists.
+        WidgetDataStore.shared.writeV2(snapshot)
     }
 
     private func routeInfo(_ s: DriveSession) -> RouteEntry {

@@ -5,15 +5,15 @@
 //  Created by Shiv g on 3/9/26.
 //
 
-import WidgetKit
 import SwiftUI
+import WidgetKit
 
 @main
 struct DriveWidgetBundle: WidgetBundle {
     var body: some Widget {
-        DriveWidget()
         DriveWidgetControl()
         DriveWidgetLiveActivity()
         DriveWidgetHome()
+        DriveWidgetStreak()
     }
 }

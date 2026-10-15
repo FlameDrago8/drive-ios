@@ -12,6 +12,16 @@
 				<string>com.googleusercontent.apps.744929252412-bjj6pgcf5o9hp4ubdgsd87sfjnn6rphq</string>
 			</array>
 		</dict>
+		<dict>
+			<key>CFBundleTypeRole</key>
+			<string>Viewer</string>
+			<key>CFBundleURLName</key>
+			<string>com.venkatgunupuru.Driv.drive</string>
+			<key>CFBundleURLSchemes</key>
+			<array>
+				<string>drive</string>
+			</array>
+		</dict>
 	</array>
 	<key>UIAppFonts</key>
 	<array>

@@ -2,256 +2,551 @@
 //  DriveWidgetHome.swift
 //  DriveWidget
 //
+//  v2 "Road Furniture" Home Screen and Lock Screen widgets (spec §6.9):
+//  Score (small), Last drive (medium), Lock Screen rectangular + circular
+//  under the existing "DriveWidgetHome" kind, and the Streak widget
+//  ("DriveWidgetStreak"). Data comes from the App Group summary written by
+//  WidgetDataStore (base fields) + writeV2 (v2 fields, optional).
+//
 
-import WidgetKit
+import Foundation
 import SwiftUI
-
-// MARK: - Colors (mirrors the main-app DS — widget can't import it)
-// Values kept in exact sync with DS.Colors so the widget matches the app.
-
-private let wAccent    = Color(red: 0.118, green: 0.588, blue: 1.000)  // #1E96FF
-private let wGreat     = Color(red: 0.180, green: 0.820, blue: 0.500)  // #2ED180
-private let wOkay      = Color(red: 1.000, green: 0.690, blue: 0.125)  // #FFB020
-private let wPoor      = Color(red: 0.960, green: 0.400, blue: 0.360)  // #F5665C
-private let wSecondary = Color(red: 0.557, green: 0.557, blue: 0.604)  // #8E8E9A
-private let wBg        = Color(red: 0.039, green: 0.039, blue: 0.059)  // #0A0A0F
-private let wHairline  = Color.white.opacity(0.08)
-
-private func wScoreColor(_ s: Double) -> Color {
-    s >= 85 ? wGreat : s >= 70 ? wOkay : wPoor
-}
-private func wGrade(_ s: Double) -> String {
-    switch s {
-    case 95...: return "A+"; case 90..<95: return "A"; case 85..<90: return "A−"
-    case 80..<85: return "B+"; case 75..<80: return "B"; case 70..<75: return "B−"
-    case 65..<70: return "C+"; default: return "C"
-    }
-}
+import WidgetKit
 
 // MARK: - Provider
 
 struct DriveWidgetProvider: TimelineProvider {
+    /// The payload the widget last saw, and when: the app writes the painted
+    /// days anchored on its write day, and this is the closest the widget
+    /// can get to that day.
+    private static let seenDataKey = "drive.widget.v2.seenData"
+    private static let seenAtKey = "drive.widget.v2.seenAt"
+
     func placeholder(in context: Context) -> DriveWidgetEntry {
-        DriveWidgetEntry(date: Date(), summary: .placeholder)
+        DriveWidgetEntry(date: Date(), summary: V2WSample.summary)
     }
+
     func getSnapshot(in context: Context, completion: @escaping (DriveWidgetEntry) -> Void) {
-        completion(DriveWidgetEntry(date: Date(), summary: load()))
-    }
-    func getTimeline(in context: Context, completion: @escaping (Timeline<DriveWidgetEntry>) -> Void) {
-        let next = Calendar.current.date(byAdding: .hour, value: 1, to: Date()) ?? Date()
-        completion(Timeline(entries: [DriveWidgetEntry(date: Date(), summary: load())],
-                            policy: .after(next)))
-    }
-    private func load() -> DriveWidgetSummary {
-        guard let data = UserDefaults(suiteName: driveAppGroupID)?.data(forKey: driveWidgetKey),
-              let s = try? JSONDecoder().decode(DriveWidgetSummary.self, from: data) else {
-            return .empty
+        let now = Date()
+        let loaded = load(now: now)
+        // The gallery shows the canonical drive until there's a real one.
+        if context.isPreview && !V2WData.hasDrives(loaded.summary) {
+            completion(DriveWidgetEntry(date: now, summary: V2WSample.summary))
+        } else {
+            completion(DriveWidgetEntry(date: now, summary: loaded.summary, writtenAt: loaded.writtenAt))
         }
-        return s
+    }
+
+    func getTimeline(in context: Context, completion: @escaping (Timeline<DriveWidgetEntry>) -> Void) {
+        let now = Date()
+        let loaded = load(now: now)
+        var entries = [DriveWidgetEntry(date: now, summary: loaded.summary, writtenAt: loaded.writtenAt)]
+        // Painted days and the streak roll over at midnight without an app
+        // write; everything else reloads when a drive saves.
+        let cal = Calendar.current
+        if let midnight = cal.date(byAdding: .day, value: 1, to: cal.startOfDay(for: now)) {
+            entries.append(DriveWidgetEntry(date: midnight.addingTimeInterval(1),
+                                            summary: loaded.summary, writtenAt: loaded.writtenAt))
+        }
+        completion(Timeline(entries: entries, policy: .atEnd))
+    }
+
+    private func load(now: Date) -> (summary: DriveWidgetSummary, writtenAt: Date?) {
+        guard let defaults = UserDefaults(suiteName: driveAppGroupID),
+              let data = defaults.data(forKey: driveWidgetKey),
+              let summary = try? JSONDecoder().decode(DriveWidgetSummary.self, from: data) else {
+            return (.empty, nil)
+        }
+        if defaults.data(forKey: Self.seenDataKey) == data,
+           let seen = defaults.object(forKey: Self.seenAtKey) as? Date {
+            return (summary, seen)
+        }
+        defaults.set(data, forKey: Self.seenDataKey)
+        defaults.set(now, forKey: Self.seenAtKey)
+        return (summary, now)
     }
 }
 
 struct DriveWidgetEntry: TimelineEntry {
     let date: Date
     let summary: DriveWidgetSummary
+    /// When the provider first saw this payload (≈ when the app wrote it).
+    var writtenAt: Date? = nil
 }
 
-// MARK: - Widget
+// MARK: - Widgets
 
 struct DriveWidgetHome: Widget {
     let kind = "DriveWidgetHome"
+
     var body: some WidgetConfiguration {
         StaticConfiguration(kind: kind, provider: DriveWidgetProvider()) { entry in
             DriveWidgetView(entry: entry)
-                .containerBackground(for: .widget) {
-                    // Subtle top-lit gradient instead of a flat fill — gives the
-                    // dark panel a hint of depth, echoing the app's background.
-                    LinearGradient(
-                        colors: [Color(red: 0.075, green: 0.075, blue: 0.098), wBg],
-                        startPoint: .top, endPoint: .bottom
-                    )
-                }
         }
         .configurationDisplayName("Drive")
-        .description("Your average score and streak at a glance.")
-        .supportedFamilies([.systemSmall, .systemMedium])
+        .description("Your 30-day score, your last drive, and your one job.")
+        .supportedFamilies([.systemSmall, .systemMedium, .accessoryRectangular, .accessoryCircular])
     }
 }
 
-// MARK: - Reusable score gauge (mirrors the app's hero gauge)
+struct DriveWidgetStreak: Widget {
+    let kind = "DriveWidgetStreak"
 
-private struct ScoreGauge: View {
-    let score: Double
-    let hasData: Bool
-    var caption: String = "AVG"
-    var size: CGFloat = 74
-    var lineWidth: CGFloat = 7
-
-    private var progress: Double { min(max(score, 0), 100) / 100 * 0.75 }
-    private var color: Color { wScoreColor(score) }
-
-    var body: some View {
-        ZStack {
-            // Track — 270° open-bottom arc
-            Circle()
-                .trim(from: 0, to: 0.75)
-                .stroke(Color.white.opacity(0.07),
-                        style: StrokeStyle(lineWidth: lineWidth, lineCap: .round))
-                .rotationEffect(.degrees(135))
-
-            // Progress fill with a soft colored glow for presence
-            Circle()
-                .trim(from: 0, to: hasData ? progress : 0)
-                .stroke(color, style: StrokeStyle(lineWidth: lineWidth, lineCap: .round))
-                .rotationEffect(.degrees(135))
-                .shadow(color: color.opacity(0.45), radius: 4)
-
-            VStack(spacing: 0) {
-                Text(hasData ? "\(Int(score))" : "—")
-                    .font(.system(size: size * 0.34, weight: .black, design: .monospaced))
-                    .foregroundColor(.white)
-                Text(caption)
-                    .font(.system(size: 8, weight: .heavy))
-                    .tracking(2)
-                    .foregroundColor(wSecondary)
-            }
+    var body: some WidgetConfiguration {
+        StaticConfiguration(kind: kind, provider: DriveWidgetProvider()) { entry in
+            V2WStreakWidgetView(entry: entry)
         }
-        .frame(width: size, height: size)
+        .configurationDisplayName("Streak")
+        .description("Your painted days for the last week.")
+        .supportedFamilies([.systemSmall])
     }
 }
 
-// MARK: - Streak / drives footer chip
+// MARK: - Data helpers
 
-private struct StreakChip: View {
-    let streak: Int
-    let totalDrives: Int
+enum V2WData {
+    static func hasDrives(_ s: DriveWidgetSummary) -> Bool {
+        s.totalDrives > 0 || s.lastScore != nil
+    }
 
-    var body: some View {
-        if streak > 0 {
-            HStack(spacing: 5) {
-                Text("🔥").font(.system(size: 11))
-                Text("\(streak)-day streak")
-                    .font(.system(size: 11, weight: .bold))
-                    .foregroundColor(.white)
-            }
-        } else {
-            HStack(spacing: 5) {
-                Image(systemName: "car.fill")
-                    .font(.system(size: 9)).foregroundColor(wSecondary)
-                Text("\(totalDrives) drives")
-                    .font(.system(size: 11, weight: .semibold))
-                    .foregroundColor(wSecondary)
-            }
-        }
+    /// The hero number: the 30-day score, else (older payloads, lapsed
+    /// drivers) the all-time average.
+    static func heroScore(_ s: DriveWidgetSummary) -> Double? {
+        if let d = s.thirtyDayScore { return d }
+        return s.totalDrives > 0 ? s.avgScore : nil
+    }
+
+    /// "Up 5% this week". Changes worth under ~3 points are never mentioned
+    /// (same gate as the Today hero line).
+    static func weekLine(pct: Int?, score: Double) -> String? {
+        guard let p = pct else { return nil }
+        guard Double(abs(p)) / 100 * score >= 2.5 else { return "Steady this week" }
+        return p > 0 ? "Up \(p)% this week" : "Down \(abs(p))% this week"
     }
 }
 
-// MARK: - Wordmark
-
-private struct Wordmark: View {
-    var body: some View {
-        Text("DRIVE")
-            .font(.system(size: 9, weight: .heavy))
-            .tracking(3)
-            .foregroundColor(wAccent)
-    }
-}
-
-// MARK: - Root View
+// MARK: - Root views (every family handled explicitly)
 
 struct DriveWidgetView: View {
     let entry: DriveWidgetEntry
     @Environment(\.widgetFamily) private var family
 
-    private var hasData: Bool { entry.summary.totalDrives > 0 }
+    var body: some View {
+        content
+            .widgetURL(URL(string: "drive://open"))
+            .containerBackground(for: .widget) { background }
+    }
+
+    @ViewBuilder private var content: some View {
+        switch family {
+        case .systemSmall:
+            V2WScoreSmall(summary: entry.summary)
+        case .systemMedium:
+            V2WLastDriveMedium(summary: entry.summary)
+        case .systemLarge, .systemExtraLarge:
+            V2WLastDriveMedium(summary: entry.summary)      // not offered; medium layout
+        case .accessoryRectangular:
+            V2WLastDriveRectangular(summary: entry.summary)
+        case .accessoryCircular:
+            V2WFocusCircular(summary: entry.summary)
+        case .accessoryInline:
+            V2WInline(summary: entry.summary)                // not offered
+        @unknown default:
+            V2WScoreSmall(summary: entry.summary)
+        }
+    }
+
+    @ViewBuilder private var background: some View {
+        switch family {
+        case .accessoryCircular:
+            AccessoryWidgetBackground()
+        case .accessoryRectangular, .accessoryInline:
+            Color.clear
+        default:
+            V2W.card
+        }
+    }
+}
+
+struct V2WStreakWidgetView: View {
+    let entry: DriveWidgetEntry
+    @Environment(\.widgetFamily) private var family
 
     var body: some View {
+        let streak = V2WStreak.resolve(entry.summary, writtenAt: entry.writtenAt, now: entry.date)
+        content(streak)
+            .widgetURL(URL(string: "drive://open"))
+            .containerBackground(for: .widget) { background }
+    }
+
+    @ViewBuilder private func content(_ streak: V2WStreak) -> some View {
         switch family {
-        case .systemSmall:  smallView
-        default:            mediumView
+        case .systemSmall, .systemMedium, .systemLarge, .systemExtraLarge:
+            V2WStreakSmall(streak: streak)                 // only .systemSmall is offered
+        case .accessoryCircular, .accessoryRectangular, .accessoryInline:
+            Text(verbatim: "\(streak.streak) day streak")  // not offered
+                .font(V2WType.collectible(15, .semibold))
+        @unknown default:
+            V2WStreakSmall(streak: streak)
         }
     }
 
-    // MARK: Small (2×2)
-
-    private var smallView: some View {
-        VStack(spacing: 0) {
-            HStack {
-                Wordmark()
-                Spacer()
-            }
-            Spacer(minLength: 4)
-            ScoreGauge(score: entry.summary.avgScore, hasData: hasData, caption: "AVG SCORE")
-            Spacer(minLength: 4)
-            HStack {
-                StreakChip(streak: entry.summary.streak, totalDrives: entry.summary.totalDrives)
-                Spacer()
-            }
+    @ViewBuilder private var background: some View {
+        switch family {
+        case .accessoryCircular, .accessoryRectangular, .accessoryInline:
+            Color.clear
+        default:
+            V2W.card
         }
-        .padding(14)
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
+}
 
-    // MARK: Medium (4×2)
+// MARK: - Shared pieces
 
-    private var mediumView: some View {
-        HStack(spacing: 16) {
-            // Left — gauge + branding
+/// Calm first-run state: the empty-state car and one quiet line.
+struct V2WEmptyState: View {
+    let title: String
+    let line: String
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 2) {
+            V2WCar(size: .l, color: V2W.label3)
+            Spacer(minLength: 0)
+            Text(title)
+                .font(V2WType.text(15, .semibold))
+                .foregroundStyle(V2W.label)
+                .lineLimit(1)
+            Text(line)
+                .font(V2WType.text(13))
+                .foregroundStyle(V2W.label2)
+                .lineLimit(3)
+                .minimumScaleFactor(0.85)
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        .accessibilityElement(children: .combine)
+    }
+}
+
+/// "24" semibold `label` + " min" `label2`, 13 pt.
+struct V2WValueUnit: View {
+    let value: String
+    let unit: String
+
+    var body: some View {
+        HStack(alignment: .firstTextBaseline, spacing: 0) {
+            Text(verbatim: value)
+                .font(V2WType.text(13, .semibold))
+                .foregroundStyle(V2W.label)
+            Text(verbatim: unit)
+                .font(V2WType.text(13))
+                .foregroundStyle(V2W.label2)
+        }
+        .lineLimit(1)
+        .fixedSize()
+    }
+}
+
+// MARK: - Small: Score
+
+struct V2WScoreSmall: View {
+    let summary: DriveWidgetSummary
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    var body: some View {
+        if let score = V2WData.heroScore(summary) {
+            let isThirtyDay = summary.thirtyDayScore != nil
+            let caption = isThirtyDay ? "30-day score" : "Average score"
+            let line = isThirtyDay ? V2WData.weekLine(pct: summary.weekChangePct, score: score) : nil
+            let value = V2WScore.int(score)
+            let grade = V2WScore.grade(score)
             VStack(alignment: .leading, spacing: 0) {
-                Wordmark()
-                Spacer(minLength: 4)
-                ScoreGauge(score: entry.summary.avgScore, hasData: hasData,
-                           caption: "AVG SCORE", size: 78)
-                    .frame(maxWidth: .infinity)
-                Spacer(minLength: 4)
-                StreakChip(streak: entry.summary.streak, totalDrives: entry.summary.totalDrives)
-            }
-            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
-
-            Rectangle().fill(wHairline).frame(width: 1)
-
-            // Right — last drive
-            VStack(alignment: .leading, spacing: 0) {
-                Text("LAST DRIVE")
-                    .font(.system(size: 8, weight: .heavy)).tracking(2)
-                    .foregroundColor(wSecondary)
-
-                Spacer(minLength: 6)
-
-                if let lastScore = entry.summary.lastScore,
-                   let lastDate  = entry.summary.lastDate {
-                    VStack(alignment: .leading, spacing: 4) {
-                        HStack(alignment: .firstTextBaseline, spacing: 6) {
-                            Text("\(Int(lastScore))")
-                                .font(.system(size: 34, weight: .black, design: .monospaced))
-                                .foregroundColor(wScoreColor(lastScore))
-                            Text(wGrade(lastScore))
-                                .font(.system(size: 15, weight: .heavy))
-                                .foregroundColor(wScoreColor(lastScore).opacity(0.75))
-                        }
-                        Text(lastDate.formatted(.relative(presentation: .named)))
-                            .font(.system(size: 11, weight: .medium))
-                            .foregroundColor(wSecondary)
+                HStack(alignment: .lastTextBaseline, spacing: 4) {
+                    Text(verbatim: "\(value)")
+                        .font(V2WType.text(56, .bold))
+                        .tracking(-1.5)
+                        .foregroundStyle(V2W.label)
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.6)
+                        .contentTransition(reduceMotion ? .identity : .numericText(value: Double(value)))
+                    V2WGradePlate(score: score, height: 28)
+                        .alignmentGuide(.lastTextBaseline) { d in d[.bottom] }
+                        .widgetAccentable()
+                }
+                Spacer(minLength: 0)
+                VStack(alignment: .leading, spacing: 0) {
+                    Text(verbatim: caption)
+                        .font(V2WType.text(13))
+                        .foregroundStyle(V2W.label2)
+                    if let line {
+                        Text(verbatim: line)
+                            .font(V2WType.text(13, .semibold))
+                            .foregroundStyle(V2W.label)
                     }
-                } else {
-                    Text("No drives yet")
-                        .font(.system(size: 13, weight: .medium))
-                        .foregroundColor(wSecondary)
                 }
+                .lineLimit(1)
+                .minimumScaleFactor(0.85)
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+            .accessibilityElement(children: .ignore)
+            .accessibilityLabel(Text(verbatim: "\(caption) \(value), \(V2WScore.spoken(grade))." + (line.map { " " + $0 + "." } ?? "")))
+        } else {
+            V2WEmptyState(title: "No drives yet",
+                          line: "Your 30-day score shows here after your first drive.")
+        }
+    }
+}
 
-                Spacer(minLength: 6)
+// MARK: - Medium: Last drive
 
-                HStack(spacing: 5) {
-                    Image(systemName: "car.fill")
-                        .font(.system(size: 9)).foregroundColor(wSecondary)
-                    Text("\(entry.summary.totalDrives) total")
-                        .font(.system(size: 11, weight: .semibold))
-                        .foregroundColor(wSecondary)
+struct V2WLastDriveMedium: View {
+    let summary: DriveWidgetSummary
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    var body: some View {
+        if let score = summary.lastScore, let end = summary.lastDate {
+            let name = summary.lastRouteName ?? "Last drive"
+            let start: Date? = summary.lastDuration.map { end.addingTimeInterval(-$0) }
+            let minutes: Int? = summary.lastDuration.map { V2WFormat.minutes($0) }
+            let miles = summary.lastDistanceMiles
+            let value = V2WScore.int(score)
+            let grade = V2WScore.grade(score)
+            VStack(alignment: .leading, spacing: 0) {
+                VStack(alignment: .leading, spacing: 2) {
+                    HStack(spacing: 0) {
+                        if let number = summary.lastRouteNumber {
+                            V2WRouteShield(number: number, size: 16)
+                                .padding(.trailing, 6)
+                        }
+                        Text(verbatim: name)
+                            .font(V2WType.text(15, .semibold))
+                            .foregroundStyle(V2W.label)
+                            .lineLimit(1)
+                        if let tab = summary.lastTab {
+                            V2WRecordTab(text: tab)
+                                .padding(.leading, 4)
+                        }
+                        Spacer(minLength: 8)
+                        HStack(alignment: .firstTextBaseline, spacing: 4) {
+                            Text(verbatim: "\(value)")
+                                .font(V2WType.text(28, .bold))
+                                .foregroundStyle(V2W.label)
+                                .contentTransition(reduceMotion ? .identity : .numericText(value: Double(value)))
+                            Text(verbatim: grade)
+                                .font(V2WType.text(17, .bold))
+                                .foregroundStyle(V2WBand(score: score).color)
+                        }
+                        .fixedSize()
+                    }
+                    .frame(height: 28)
+                    Text(verbatim: V2WFormat.shortDate(start ?? end))
+                        .font(V2WType.text(13))
+                        .foregroundStyle(V2W.label2)
+                }
+                Spacer(minLength: 0)
+                V2WLaneStrip(bars: summary.lastBars ?? [], zone: 18, topSpace: 6, dots: true)
+                    .widgetAccentable()
+                HStack(spacing: 0) {
+                    if let start {
+                        Text(verbatim: V2WFormat.clock(start))
+                            .font(V2WType.text(13))
+                            .foregroundStyle(V2W.label2)
+                    }
+                    Spacer(minLength: 6)
+                    HStack(spacing: 10) {
+                        if let minutes { V2WValueUnit(value: "\(minutes)", unit: " min") }
+                        if let miles { V2WValueUnit(value: V2WFormat.oneDecimal(miles), unit: " mi") }
+                    }
+                    Spacer(minLength: 6)
+                    Text(verbatim: V2WFormat.clock(end))
+                        .font(V2WType.text(13))
+                        .foregroundStyle(V2W.label2)
+                }
+                .lineLimit(1)
+                .frame(height: 16)
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+            .accessibilityElement(children: .ignore)
+            .accessibilityLabel(Self.spoken(name: name, tab: summary.lastTab, start: start, end: end,
+                                            value: value, grade: grade, minutes: minutes, miles: miles))
+        } else {
+            V2WEmptyState(title: "No drives yet",
+                          line: "Your last drive shows here, lane line and all.")
+        }
+    }
+
+    /// "Last drive: School run, Friday, October 16. 91, A, route best.
+    /// 3:28 PM to 3:52 PM, 24 minutes, 8.3 miles."
+    private static func spoken(name: String, tab: String?, start: Date?, end: Date, value: Int,
+                               grade: String, minutes: Int?, miles: Double?) -> String {
+        let day = (start ?? end).formatted(.dateTime.weekday(.wide).month(.wide).day())
+        var s = "Last drive: \(name), \(day). \(value), \(V2WScore.spoken(grade))"
+        if let tab { s += tab == "PB" ? ", personal best" : ", route best" }
+        s += "."
+        var parts: [String] = []
+        if let start { parts.append("\(V2WFormat.clock(start)) to \(V2WFormat.clock(end))") }
+        if let minutes { parts.append(minutes == 1 ? "1 minute" : "\(minutes) minutes") }
+        if let miles { parts.append("\(V2WFormat.oneDecimal(miles)) miles") }
+        if !parts.isEmpty { s += " " + parts.joined(separator: ", ") + "." }
+        return s
+    }
+}
+
+// MARK: - Lock Screen: rectangular and circular (vibrant / monochrome)
+
+struct V2WLastDriveRectangular: View {
+    let summary: DriveWidgetSummary
+
+    var body: some View {
+        if let score = summary.lastScore {
+            let name = summary.lastRouteName ?? "Last drive"
+            let value = V2WScore.int(score)
+            let grade = V2WScore.grade(score)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(verbatim: name)
+                    .font(V2WType.text(13, .semibold))
+                    .lineLimit(1)
+                HStack(alignment: .firstTextBaseline, spacing: 4) {
+                    Text(verbatim: "\(value)")
+                        .font(V2WType.text(24, .bold))
+                    Text(verbatim: grade)
+                        .font(V2WType.text(15, .bold))
+                }
+                .lineLimit(1)
+                V2WLaneStrip(bars: summary.lastBars ?? [], zone: 14, ink: .primary, lineColor: .secondary,
+                             pinColor: .primary, plateColor: .primary, plateInk: .black)
+                    .frame(maxWidth: 150)
+            }
+            .foregroundStyle(.primary)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .accessibilityElement(children: .ignore)
+            .accessibilityLabel(Text(verbatim: "Last drive: \(name), \(value), \(V2WScore.spoken(grade))."))
+        } else {
+            VStack(alignment: .leading, spacing: 2) {
+                Text(verbatim: "No drives yet")
+                    .font(V2WType.text(13, .semibold))
+                    .foregroundStyle(.primary)
+                Text(verbatim: "Your last drive shows here.")
+                    .font(V2WType.text(13))
+                    .foregroundStyle(.secondary)
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .accessibilityElement(children: .combine)
+        }
+    }
+}
+
+/// The Focus Sign in accessory rendering (monochrome, accentable). No job
+/// yet: the car.
+struct V2WFocusCircular: View {
+    let summary: DriveWidgetSummary
+    @Environment(\.widgetRenderingMode) private var renderingMode
+
+    var body: some View {
+        let job: String? = V2WFormat.isJob(summary.focusCategory) ? summary.focusCategory : nil
+        ZStack {
+            if let job {
+                V2WFocusSign(category: job, size: 44, monochrome: renderingMode != .fullColor, ink: .primary)
+                    .widgetAccentable()
+            } else {
+                V2WCar(size: .l, color: .primary)
+            }
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(Self.spoken(job: job, title: summary.focusShortTitle))
+    }
+
+    private static func spoken(job: String?, title: String?) -> String {
+        guard let job else { return "Drive. No job set yet." }
+        if let title, !title.isEmpty { return "Your one job: \(title)." }
+        return "Your one job: \(V2WFormat.categoryName(job) ?? job)."
+    }
+}
+
+/// Inline accessory (not offered; kept so every family renders sensibly).
+struct V2WInline: View {
+    let summary: DriveWidgetSummary
+
+    var body: some View {
+        if let score = V2WData.heroScore(summary) {
+            Text(verbatim: "\(V2WScore.int(score)) \(V2WScore.grade(score)), 30-day score")
+        } else {
+            Text(verbatim: "No drives yet")
+        }
+    }
+}
+
+// MARK: - Small: Streak
+
+struct V2WStreakSmall: View {
+    let streak: V2WStreak
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            VStack(alignment: .leading, spacing: 10) {
+                HStack(alignment: .firstTextBaseline, spacing: 6) {
+                    Text(verbatim: "\(streak.streak)")
+                        .font(V2WType.collectible(44, .bold))
+                        .contentTransition(reduceMotion ? .identity : .numericText(value: Double(streak.streak)))
+                    Text(verbatim: "day streak")
+                        .font(V2WType.collectible(15, .semibold))
+                }
+                .foregroundStyle(V2W.label)
+                .lineLimit(1)
+                .minimumScaleFactor(0.7)
+                if let milestone = streak.milestone {
+                    V2WMilePost(days: milestone)
+                        .widgetAccentable()
+                } else {
+                    V2WStreakDashes(days: streak.days)
+                        .widgetAccentable()
                 }
             }
-            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
+            Spacer(minLength: 4)
+            Text(verbatim: streak.line)
+                .font(V2WType.text(13, .semibold))
+                .foregroundStyle(V2W.label)
+                .lineLimit(3)
+                .minimumScaleFactor(0.85)
         }
-        .padding(16)
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(Text(verbatim: "\(streak.streak) day streak. \(streak.line)"))
     }
+}
+
+// MARK: - Previews
+
+#Preview(as: .systemSmall) {
+    DriveWidgetHome()
+} timeline: {
+    DriveWidgetEntry(date: .now, summary: V2WSample.summary)
+    DriveWidgetEntry(date: .now, summary: .empty)
+}
+
+#Preview(as: .systemMedium) {
+    DriveWidgetHome()
+} timeline: {
+    DriveWidgetEntry(date: .now, summary: V2WSample.summary)
+    DriveWidgetEntry(date: .now, summary: .empty)
+}
+
+#Preview(as: .accessoryRectangular) {
+    DriveWidgetHome()
+} timeline: {
+    DriveWidgetEntry(date: .now, summary: V2WSample.summary)
+}
+
+#Preview(as: .accessoryCircular) {
+    DriveWidgetHome()
+} timeline: {
+    DriveWidgetEntry(date: .now, summary: V2WSample.summary)
+}
+
+#Preview(as: .systemSmall) {
+    DriveWidgetStreak()
+} timeline: {
+    DriveWidgetEntry(date: .now, summary: V2WSample.summary)
+    DriveWidgetEntry(date: .now, summary: .empty)
 }

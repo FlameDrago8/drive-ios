@@ -2,76 +2,30 @@
 //  DriveWidgetControl.swift
 //  DriveWidget
 //
-//  Created by Shiv g on 3/9/26.
+//  "Start Drive" control (Control Center, Lock Screen, Action button).
+//  Opens drive://start, which the app routes to the recording HUD
+//  (V2Router.startDrive()). The kind string is unchanged so controls users
+//  already placed keep working.
 //
 
 import AppIntents
+import Foundation
 import SwiftUI
 import WidgetKit
 
 struct DriveWidgetControl: ControlWidget {
     static let kind: String = "com.venkatgunupuru.Drive.DriveWidget"
 
+    /// The app's own `drive` scheme (registered in Drive/Info.plist).
+    private static let startURL = URL(string: "drive://start")!
+
     var body: some ControlWidgetConfiguration {
-        AppIntentControlConfiguration(
-            kind: Self.kind,
-            provider: Provider()
-        ) { value in
-            ControlWidgetToggle(
-                "Start Timer",
-                isOn: value.isRunning,
-                action: StartTimerIntent(value.name)
-            ) { isRunning in
-                Label(isRunning ? "On" : "Off", systemImage: "timer")
+        StaticControlConfiguration(kind: Self.kind) {
+            ControlWidgetButton(action: OpenURLIntent(Self.startURL)) {
+                Label("Start Drive", systemImage: "steeringwheel")
             }
         }
-        .displayName("Timer")
-        .description("A an example control that runs a timer.")
-    }
-}
-
-extension DriveWidgetControl {
-    struct Value {
-        var isRunning: Bool
-        var name: String
-    }
-
-    struct Provider: AppIntentControlValueProvider {
-        func previewValue(configuration: TimerConfiguration) -> Value {
-            DriveWidgetControl.Value(isRunning: false, name: configuration.timerName)
-        }
-
-        func currentValue(configuration: TimerConfiguration) async throws -> Value {
-            let isRunning = true // Check if the timer is running
-            return DriveWidgetControl.Value(isRunning: isRunning, name: configuration.timerName)
-        }
-    }
-}
-
-struct TimerConfiguration: ControlConfigurationIntent {
-    static let title: LocalizedStringResource = "Timer Name Configuration"
-
-    @Parameter(title: "Timer Name", default: "Timer")
-    var timerName: String
-}
-
-struct StartTimerIntent: SetValueIntent {
-    static let title: LocalizedStringResource = "Start a timer"
-
-    @Parameter(title: "Timer Name")
-    var name: String
-
-    @Parameter(title: "Timer is running")
-    var value: Bool
-
-    init() {}
-
-    init(_ name: String) {
-        self.name = name
-    }
-
-    func perform() async throws -> some IntentResult {
-        // Start the timer…
-        return .result()
+        .displayName("Start Drive")
+        .description("Start recording a drive.")
     }
 }
