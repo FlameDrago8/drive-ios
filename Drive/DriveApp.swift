@@ -57,11 +57,11 @@ struct DriveApp: App {
                 // Main content underneath
                 Group {
                     if userManager.user == nil {
-                        AuthView()
+                        V2SignInView()
                     } else if !(userManager.user?.isEmailVerified ?? false) {
-                        VerifyEmailView()
+                        V2VerifyEmailView()
                     } else if !onboarding.isComplete(for: userManager.user?.uid) {
-                        OnboardingView {
+                        V2OnboardingView {
                             withAnimation { onboarding.markComplete(for: userManager.user?.uid) }
                         }
                     } else {

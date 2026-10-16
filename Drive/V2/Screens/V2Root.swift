@@ -115,6 +115,7 @@ struct V2Root: View {
         // then would wipe Parked's "See report" push.
         if !handledEarlyURL { router.reset() }
         V2BadgeTracker.shared.seedIfNeeded(library.snapshot.badges)
+        NotificationManager.shared.startSchoolGoalWatcher()
     }
 
     private func userChanged() {
@@ -177,6 +178,7 @@ struct V2Root: View {
         // Never while recording: cancel now, re-schedule when the HUD closes.
         let streak = router.isDriving ? 0 : stats.currentStreak
         NotificationManager.shared.scheduleStreakReminder(streak: streak, droveToday: stats.droveToday)
+        NotificationManager.shared.scheduleWeeklyRecap()
     }
 
     // MARK: - URLs

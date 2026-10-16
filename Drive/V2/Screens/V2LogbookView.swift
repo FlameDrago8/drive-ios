@@ -4,7 +4,9 @@
 //
 //  The Logbook (§4.14): one ruled page per week, oldest → newest (opens on
 //  the newest), then the endpaper with lifetime miles and named stats. Badge
-//  stamps land once per user, the first time their page is shown.
+//  stamps land once per user, the first time their page is shown. Rows open
+//  the drive's Report. After graduation the Permit weeks close as
+//  "Volume 1: Permit" and the License weeks open "Volume 2: License".
 //
 
 import SwiftUI
@@ -15,6 +17,9 @@ struct V2LogbookView: View {
 
     /// `logbook()` is expensive and uncached: computed once per data change.
     @State private var book: V2Logbook?
+    /// The book's pages: weeks, split into Volume 1: Permit / Volume 2: License
+    /// once the user graduated (§4.14). The endpaper follows them.
+    @State private var pages: [V2LogbookPage] = []
     @State private var bookOwner = ""
     @State private var page = 0
     /// Stamp keys that already landed for this user (UserDefaults, per user).
@@ -30,12 +35,12 @@ struct V2LogbookView: View {
             if let book {
                 let atRest = storedStamps.union(landed)
                 TabView(selection: $page) {
-                    ForEach(Array(book.weeks.enumerated()), id: \.element.id) { i, week in
-                        V2LogbookWeekPage(week: week, atRest: atRest, reduceMotion: reduceMotion)
+                    ForEach(Array(pages.enumerated()), id: \.element.id) { i, item in
+                        pageView(item, atRest: atRest)
                             .tag(i)
                     }
                     V2LogbookEndpaper(book: book)
-                        .tag(book.weeks.count)
+                        .tag(pages.count)
                 }
                 .tabViewStyle(.page(indexDisplayMode: .never))
             } else {
@@ -53,28 +58,43 @@ struct V2LogbookView: View {
         }
     }
 
+    @ViewBuilder
+    private func pageView(_ item: V2LogbookPage, atRest: Set<String>) -> some View {
+        if let week = item.week {
+            V2LogbookWeekPage(week: week, volumeLabel: item.volumeLabel,
+                              atRest: atRest, reduceMotion: reduceMotion)
+        } else if let volume = item.volume {
+            V2LogbookVolumePage(volume: volume, hasLaterPages: item.hasLaterPages)
+        } else {
+            Color.clear
+        }
+    }
+
     private var uid: String {
         UserManager.shared.user?.uid ?? "anon"
     }
 
-    /// Rebuild when the user, the drives or the earned badges change.
+    /// Rebuild when the user, the drives, the earned badges or the licence change.
     private var bookKey: String {
         let snap = library.snapshot
-        return "\(uid)|\(snap.facts.count)|\(snap.facts.first?.id.uuidString ?? "")|\(snap.earnedBadgeCount)|\(snap.routeNumbers.count)"
+        let closed = V2LicenseChange.permitClosedAt.map { "\(Int($0.timeIntervalSince1970))" } ?? "-"
+        return "\(uid)|\(snap.facts.count)|\(snap.facts.first?.id.uuidString ?? "")|\(snap.earnedBadgeCount)|\(snap.routeNumbers.count)|\(closed)"
     }
 
     private func load() {
         let owner = uid
         let fresh = library.logbook()
+        let freshPages = V2LogbookPages.build(fresh, permitClosedAt: V2LicenseChange.permitClosedAt)
         let firstOpen = book == nil || bookOwner != owner
         book = fresh
+        pages = freshPages
         storedStamps = Set(UserDefaults.standard.stringArray(forKey: V2UserKey.scoped("logbookStamps")) ?? [])
         if firstOpen {
             bookOwner = owner
             landed = []
-            page = max(0, fresh.weeks.count - 1)     // open on the newest week
+            page = max(0, freshPages.count - 1)     // open on the newest page
         } else {
-            page = min(page, fresh.weeks.count)
+            page = min(page, freshPages.count)
         }
     }
 
@@ -82,8 +102,8 @@ struct V2LogbookView: View {
     /// haptic per page at contact. Reduce Motion: a 150 ms fade, haptic kept.
     /// Swiping on before they land leaves them for next time.
     private func landStamps(onPage index: Int) async {
-        guard let book, book.weeks.indices.contains(index) else { return }
-        let pending = V2LogbookStamp.keys(in: book.weeks[index])
+        guard pages.indices.contains(index), let week = pages[index].week else { return }
+        let pending = V2LogbookStamp.keys(in: week)
             .filter { !storedStamps.contains($0) && !landed.contains($0) }
         guard !pending.isEmpty else { return }
         try? await Task.sleep(for: .milliseconds(350))
@@ -103,6 +123,95 @@ struct V2LogbookView: View {
         if list.count > 4000 { list.removeFirst(list.count - 4000) }
         UserDefaults.standard.set(list, forKey: key)
         storedStamps.formUnion(keys)
+    }
+}
+
+// MARK: - Pages and volumes
+
+/// One page of the book: a week (or the part of a week on one side of the
+/// licence change), or the closing page of the Permit volume.
+fileprivate struct V2LogbookPage: Identifiable {
+    let id: String
+    let week: V2LogbookWeek?
+    /// "Volume 2: License" over the first License week.
+    let volumeLabel: String?
+    let volume: V2LogbookVolume?
+    /// The closing page is followed by License weeks.
+    let hasLaterPages: Bool
+}
+
+fileprivate struct V2LogbookVolume {
+    let title: String
+    let closedOn: Date
+    let drives: Int
+    let minutes: Int
+    let nightMinutes: Int
+}
+
+fileprivate enum V2LogbookPages {
+    /// Weeks oldest first. With a Permit → License date, drives parked before
+    /// it fill Volume 1 (a week that straddles it splits in two), then the
+    /// closing page "Volume 1: Permit", then Volume 2. No Permit drives → no split.
+    static func build(_ book: V2Logbook, permitClosedAt closed: Date?) -> [V2LogbookPage] {
+        let plain = book.weeks.map { week in
+            V2LogbookPage(id: weekKey(week), week: week, volumeLabel: nil, volume: nil, hasLaterPages: false)
+        }
+        guard let closed else { return plain }
+
+        var before: [V2LogbookPage] = []
+        var after: [V2LogbookWeek] = []
+        var permitDrives: [V2DriveFacts] = []
+        for week in book.weeks {
+            let early = week.drives.filter { $0.end < closed }
+            let late = week.drives.filter { $0.end >= closed }
+            if !early.isEmpty {
+                permitDrives.append(contentsOf: early)
+                before.append(V2LogbookPage(id: weekKey(week) + "-1", week: part(week, early),
+                                            volumeLabel: nil, volume: nil, hasLaterPages: false))
+            }
+            if !late.isEmpty {
+                after.append(part(week, late))
+            }
+        }
+        guard !permitDrives.isEmpty else { return plain }
+
+        let volume = V2LogbookVolume(title: "Volume 1: Permit",
+                                     closedOn: closed,
+                                     drives: permitDrives.count,
+                                     minutes: minutes(permitDrives),
+                                     nightMinutes: minutes(permitDrives.filter { isNight($0.start) }))
+        let closing = V2LogbookPage(id: "volume-1-permit", week: nil, volumeLabel: nil,
+                                    volume: volume, hasLaterPages: !after.isEmpty)
+        let licensed = after.enumerated().map { i, week in
+            V2LogbookPage(id: weekKey(week) + "-2", week: week,
+                          volumeLabel: i == 0 ? "Volume 2: License" : nil,
+                          volume: nil, hasLaterPages: false)
+        }
+        return before + [closing] + licensed
+    }
+
+    /// Night = a start between 20:00 and 05:59 (the same approximation of
+    /// civil dusk as V2Stats.nightMinutes).
+    static func isNight(_ start: Date) -> Bool {
+        let hour = Calendar.current.component(.hour, from: start)
+        return hour >= 20 || hour < 6
+    }
+
+    private static func weekKey(_ week: V2LogbookWeek) -> String {
+        "\(Int(week.id.timeIntervalSince1970))"
+    }
+
+    /// Same footer rule as the builder ("3 drives, 1 h 12 m").
+    private static func part(_ week: V2LogbookWeek, _ drives: [V2DriveFacts]) -> V2LogbookWeek {
+        guard drives.count != week.drives.count else { return week }
+        let m = minutes(drives)
+        let footer = "\(drives.count) drive\(drives.count == 1 ? "" : "s"), \(V2Format.hoursMinutes(totalMinutes: m))"
+        return V2LogbookWeek(id: week.id, title: week.title, drives: drives,
+                             footer: footer, stampsByDrive: week.stampsByDrive)
+    }
+
+    private static func minutes(_ drives: [V2DriveFacts]) -> Int {
+        Int(drives.reduce(0.0) { $0 + $1.session.duration } / 60)
     }
 }
 
@@ -137,24 +246,38 @@ fileprivate enum V2LogbookStamp {
 /// `rule` lines, a 1 pt `rule` margin line at x 56, footer "5 drives, 1 h 58 m".
 fileprivate struct V2LogbookWeekPage: View {
     let week: V2LogbookWeek
+    let volumeLabel: String?
     let atRest: Set<String>
     let reduceMotion: Bool
 
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 0) {
+                if let volumeLabel {
+                    Text(verbatim: volumeLabel)
+                        .font(V2Type.subheadSemibold)
+                        .foregroundStyle(V2.label2)
+                        .padding(.horizontal, 16)
+                        .padding(.top, 20)
+                        .accessibilityAddTraits(.isHeader)
+                }
                 Text(verbatim: week.title)
                     .font(V2Type.sectionHeader)
                     .foregroundStyle(V2.label)
                     .padding(.horizontal, 16)
-                    .padding(.top, 20)
+                    .padding(.top, volumeLabel == nil ? 20 : 4)
                     .padding(.bottom, 12)
                     .accessibilityAddTraits(.isHeader)
                 VStack(spacing: 0) {
                     V2LogbookRule()
+                    // Each row opens its drive's Report (in whichever stack shows the Logbook).
                     ForEach(week.drives) { drive in
-                        V2LogbookRow(drive: drive, stamps: week.stampsByDrive[drive.id] ?? [],
-                                     atRest: atRest, reduceMotion: reduceMotion)
+                        NavigationLink(value: V2Destination.report(drive.id)) {
+                            V2LogbookRow(drive: drive, stamps: week.stampsByDrive[drive.id] ?? [],
+                                         atRest: atRest, reduceMotion: reduceMotion)
+                        }
+                        .buttonStyle(V2RowButtonStyle())
+                        .accessibilityHint("Opens the drive report")
                         V2LogbookRule()
                     }
                 }
@@ -259,11 +382,8 @@ fileprivate struct V2LogbookRow: View {
         .accessibilityHidden(true)
     }
 
-    /// Night = a start between 20:00 and 05:59 (the same approximation of
-    /// civil dusk as V2Stats.nightMinutes).
     private var isNight: Bool {
-        let hour = Calendar.current.component(.hour, from: drive.start)
-        return hour >= 20 || hour < 6
+        V2LogbookPages.isNight(drive.start)
     }
 
     private var spoken: String {
@@ -388,6 +508,82 @@ fileprivate struct V2LogbookEndpaper: View {
                         .font(V2Type.headline)
                         .foregroundStyle(V2.label)
                 }
+            }
+            .padding(.horizontal, 16)
+            .frame(minHeight: 44)
+            .accessibilityElement(children: .combine)
+            V2LogbookRule()
+        }
+    }
+}
+
+// MARK: - Volume 1 closing page
+
+/// "Volume 1: Permit": the Permit logbook closes on graduation (§4.14) with
+/// its totals, the hours a state permit log asks for.
+fileprivate struct V2LogbookVolumePage: View {
+    let volume: V2LogbookVolume
+    let hasLaterPages: Bool
+
+    private static let closedFormat: DateFormatter = {
+        let f = DateFormatter()
+        f.setLocalizedDateFormatFromTemplate("MMMMdyyyy")
+        return f
+    }()
+
+    var body: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 0) {
+                Text(verbatim: volume.title)
+                    .font(V2Type.sectionHeader)
+                    .foregroundStyle(V2.label)
+                    .padding(.horizontal, 16)
+                    .padding(.top, 20)
+                    .accessibilityAddTraits(.isHeader)
+                Text(verbatim: "Closed \(Self.closedFormat.string(from: volume.closedOn))")
+                    .font(V2Type.subhead)
+                    .foregroundStyle(V2.label2)
+                    .padding(.horizontal, 16)
+                    .padding(.top, 4)
+                    .padding(.bottom, 12)
+                V2LogbookRule()
+                V2LogbookStatRow(label: "Drives", value: "\(volume.drives)")
+                V2LogbookStatRow(label: "Hours behind the wheel",
+                                 value: V2Format.hoursMinutes(totalMinutes: volume.minutes))
+                V2LogbookStatRow(label: "Night hours",
+                                 value: V2Format.hoursMinutes(totalMinutes: volume.nightMinutes))
+                Text(hasLaterPages
+                     ? "Volume 2: License starts on the next page."
+                     : "Drives from here on go in Volume 2: License.")
+                    .font(V2Type.subhead)
+                    .foregroundStyle(V2.label2)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .padding(.horizontal, 16)
+                    .padding(.top, 14)
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(.bottom, 32)
+        }
+    }
+}
+
+/// A ruled "label ........ value" row on the page.
+fileprivate struct V2LogbookStatRow: View {
+    let label: String
+    let value: String
+
+    var body: some View {
+        VStack(spacing: 0) {
+            HStack(spacing: 12) {
+                Text(verbatim: label)
+                    .font(V2Type.subhead)
+                    .foregroundStyle(V2.label)
+                Spacer(minLength: 8)
+                Text(verbatim: value)
+                    .font(V2Type.headline.monospacedDigit())
+                    .foregroundStyle(V2.label)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.8)
             }
             .padding(.horizontal, 16)
             .frame(minHeight: 44)

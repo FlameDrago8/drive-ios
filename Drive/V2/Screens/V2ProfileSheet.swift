@@ -8,8 +8,8 @@
 //  hook survives: name, photo (downsample → crop → saveAvatar), car, licence
 //  type, the preference toggles, school link / consent / leave, legal links,
 //  sign out, clear data and the delete-account re-auth state machine.
-//  SettingsView.swift stays compiled (it declares NameEditSheet, CarEditSheet
-//  and SchoolLinkSheet, reused here) but is no longer presented.
+//  The edit sheets are the v2 ones in V2ProfileSheets.swift; SettingsView.swift
+//  and SchoolViews.swift stay compiled but are no longer presented.
 //
 
 import SwiftUI
@@ -29,13 +29,9 @@ struct V2ProfileSheet: View {
     @ObservedObject private var schoolManager  = SchoolManager.shared
     @ObservedObject private var library        = V2Library.shared
 
-    // Name / car edit buffers, seeded from ProfileManager as each sheet opens.
+    // Name / car sheets seed themselves from ProfileManager as they open.
     @State private var showNameSheet = false
-    @State private var nameInput     = ""
     @State private var showCarSheet  = false
-    @State private var carMakeInput  = ""
-    @State private var carModelInput = ""
-    @State private var carYearInput  = ""
 
     // Avatar crop flow
     @State private var selectedPhotoItem: PhotosPickerItem? = nil
@@ -77,13 +73,8 @@ struct V2ProfileSheet: View {
                         Button("Done") { dismiss() }
                     }
                 }
-                .navigationDestination(for: V2Destination.self) { destination in
-                    switch destination {
-                    case .driverCard: V2DriverCardView()
-                    case .logbook:    V2LogbookView()
-                    default:          V2DestinationView(destination)
-                    }
-                }
+                // Driver Card → Logbook → a drive's Report (and its pushes) stay in the sheet.
+                .navigationDestination(for: V2Destination.self) { V2DestinationView($0) }
         }
         .tint(V2.tint)
 
@@ -148,7 +139,6 @@ struct V2ProfileSheet: View {
     private var profileSection: some View {
         Section {
             Button {
-                nameInput = profileManager.displayName
                 showNameSheet = true
             } label: {
                 V2ProfileValueRow(title: "Name", value: storedName.isEmpty ? "Not set" : storedName)
@@ -225,6 +215,12 @@ struct V2ProfileSheet: View {
             )) {
                 rowLabel("Dark Mode")
             }
+            // Alternate icons unlocked by badges (§4.15).
+            NavigationLink {
+                V2AppIconPicker()
+            } label: {
+                rowLabel("App Icon")
+            }
         } header: {
             Text("Appearance")
         }
@@ -240,18 +236,43 @@ struct V2ProfileSheet: View {
             }
             .accessibilityHint("Opens notification settings")
 
+            V2NotifyToggle("Parked summary",
+                           detail: "Your score a moment after you park.",
+                           keyName: NotificationManager.parkedKeyName,
+                           onChange: { on in notificationSwitched(on) })
+
+            // Default follows the licence type (Permit: off) until it's set.
             Toggle(isOn: $streakReminderOn) {
-                rowLabel("Streak reminder")
+                V2ProfileToggleLabel(title: "Streak reminder",
+                                     detail: "6 PM, only while a streak is going.")
             }
             .onChange(of: streakReminderOn) { _, on in
                 setStreakReminder(on)
             }
+
+            V2NotifyToggle("New badges",
+                           detail: "When a drive earns one.",
+                           keyName: NotificationManager.badgesKeyName,
+                           onChange: { on in notificationSwitched(on) })
+
+            V2NotifyToggle("Weekly recap",
+                           detail: "Sundays at 7 PM.",
+                           keyName: NotificationManager.weeklyKeyName,
+                           onChange: { on in
+                               notificationSwitched(on)
+                               NotificationManager.shared.scheduleWeeklyRecap()
+                           })
+
+            V2NotifyToggle("School goals",
+                           detail: "When your instructor sets a new one.",
+                           keyName: NotificationManager.schoolGoalsKeyName,
+                           onChange: { on in notificationSwitched(on) })
         } header: {
             Text("Notifications")
         } footer: {
             Text(notificationsAllowed == false
-                 ? "Notifications are off for Drive. Turn them on in Settings to get reminders."
-                 : "One reminder at 6 PM when a streak is going and you haven't driven yet.")
+                 ? "Notifications are off for Drive. Turn them on in Settings to get these."
+                 : "Reminders never arrive between 8 PM and 7 AM.")
         }
         .listRowBackground(V2.card)
     }
@@ -391,34 +412,17 @@ struct V2ProfileSheet: View {
 
     private func withSheets(_ content: some View) -> some View {
         content
-            // Name sheet
+            // Name sheet: prefilled; ProfileManager.save(displayName:) on Save.
             .sheet(isPresented: $showNameSheet) {
-                NameEditSheet(name: $nameInput, onSave: {
-                    profileManager.save(displayName: nameInput)
-                    showNameSheet = false
-                }, onCancel: { showNameSheet = false })
-                .v2AppScheme()
+                V2NameEditSheet()
             }
-            // Car sheet
+            // Car sheet: prefilled on appear; ProfileManager.saveCarInfo on Save.
             .sheet(isPresented: $showCarSheet) {
-                CarEditSheet(
-                    make: $carMakeInput, model: $carModelInput, year: $carYearInput,
-                    onSave: {
-                        profileManager.saveCarInfo(make: carMakeInput, model: carModelInput, year: carYearInput)
-                        showCarSheet = false
-                    },
-                    onCancel: { showCarSheet = false }
-                )
-                .onAppear {
-                    carMakeInput  = profileManager.carMake
-                    carModelInput = profileManager.carModel
-                    carYearInput  = profileManager.carYear
-                }
-                .v2AppScheme()
+                V2CarEditSheet()
             }
             // School link sheet
             .sheet(isPresented: $showSchoolSheet, onDismiss: { schoolSheetDismissed() }) {
-                SchoolLinkSheet(
+                V2SchoolLinkSheet(
                     codeInput: $schoolCodeInput,
                     manager: schoolManager,
                     onConsentNeeded: {
@@ -430,12 +434,11 @@ struct V2ProfileSheet: View {
                     },
                     onDismiss: { showSchoolSheet = false }
                 )
-                .v2AppScheme()
             }
             // Consent sheet (after the code validated). Nothing is written before Agree.
             .sheet(isPresented: $showConsentSheet) {
                 if let pending = schoolManager.pendingSchool {
-                    SchoolConsentSheet(
+                    V2SchoolConsentSheet(
                         school: pending,
                         onAgree: {
                             showConsentSheet = false
@@ -446,7 +449,6 @@ struct V2ProfileSheet: View {
                             showConsentSheet = false
                         }
                     )
-                    .v2AppScheme()
                 }
             }
             // Crop view. Clearing the picker item afterwards lets the same
@@ -681,12 +683,28 @@ struct V2ProfileSheet: View {
 
     // MARK: - Helpers
 
-    /// ProfileManager writes Firestore driverType + licenseStage and re-tunes scoring.
+    /// ProfileManager writes Firestore driverType + licenseStage and re-tunes
+    /// scoring. Permit → License here is a graduation too (the Logbook closes
+    /// its Permit volume); any switch back to Permit reopens it.
     private var driverTypeBinding: Binding<DriverType> {
         Binding(
             get: { profileManager.driverType },
-            set: { profileManager.save(driverType: $0) }
+            set: { newType in
+                guard newType != profileManager.driverType else { return }
+                if newType == .full {
+                    V2LicenseChange.graduate()
+                } else {
+                    V2LicenseChange.revert()
+                }
+            }
         )
+    }
+
+    /// Turning any switch on asks for permission once, if never asked.
+    private func notificationSwitched(_ on: Bool) {
+        if on && notificationsAllowed == nil {
+            NotificationManager.shared.requestPermission()
+        }
     }
 
     private var storedName: String {

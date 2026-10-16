@@ -156,6 +156,56 @@ struct V2ProfileChevron: View {
     }
 }
 
+/// A switch's label: the title over one footnote line saying when it fires.
+struct V2ProfileToggleLabel: View {
+    let title: String
+    let detail: String?
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 2) {
+            Text(verbatim: title)
+                .font(V2Type.body)
+                .foregroundStyle(V2.label)
+            if let detail {
+                Text(verbatim: detail)
+                    .font(V2Type.footnote)
+                    .foregroundStyle(V2.label2)
+            }
+        }
+    }
+}
+
+/// A per-user notification switch (`V2UserKey.scoped(keyName)`, absent = on)
+/// that NotificationManager / the Parked notifier read when they fire. Only a
+/// real flip writes the key, so an untouched switch keeps following the default.
+struct V2NotifyToggle: View {
+    let title: String
+    let detail: String
+    let keyName: String
+    /// Not named `onChange`, which would shadow the View modifier in `body`.
+    let switched: (Bool) -> Void
+    @State private var isOn: Bool
+
+    init(_ title: String, detail: String, keyName: String,
+         onChange: @escaping (Bool) -> Void = { _ in }) {
+        self.title = title
+        self.detail = detail
+        self.keyName = keyName
+        self.switched = onChange
+        _isOn = State(initialValue: NotificationManager.preference(keyName))
+    }
+
+    var body: some View {
+        Toggle(isOn: $isOn) {
+            V2ProfileToggleLabel(title: title, detail: detail)
+        }
+        .onChange(of: isOn) { _, on in
+            UserDefaults.standard.set(on, forKey: V2UserKey.scoped(keyName))
+            switched(on)
+        }
+    }
+}
+
 enum V2ProfileCopy {
     /// "No drives yet" / "1 drive" / "28 drives".
     static func drives(_ count: Int) -> String {

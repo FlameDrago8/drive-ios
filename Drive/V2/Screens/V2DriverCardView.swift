@@ -7,7 +7,8 @@
 //  sensors (the old holographic DriverLicenseView stays compiled but unused).
 //  Hold the card to see the route ink; "Got your license?" is the real
 //  driverType write (Firestore driverType + licenseStage, scoring tuning)
-//  followed by the LICENSED stamp and the switch to the landscape card.
+//  followed by the LICENSED stamp and the switch to the landscape card; for
+//  7 days after, "Switch back to Permit" undoes it (V2LicenseChange).
 //
 
 import SwiftUI
@@ -28,6 +29,7 @@ struct V2DriverCardView: View {
     @State private var openCounted = false
     @State private var shareImage: UIImage? = nil
     @State private var askingLicense = false
+    @State private var askingRevert = false
     @State private var phase: V2Graduation = .resting
     @State private var stampLanded = false
     @State private var graduationLine: String? = nil
@@ -205,11 +207,26 @@ struct V2DriverCardView: View {
                     rowLabel("Got your license?", color: V2.tint)
                 }
                 .buttonStyle(V2RowButtonStyle())
+            } else if !portrait && phase != .stamping && V2LicenseChange.canRevert() {
+                // §4.14: graduation is reversible for 7 days.
+                V2CardRowSeparator()
+                Button {
+                    askingRevert = true
+                } label: {
+                    rowLabel("Switch back to Permit", color: V2.tint)
+                }
+                .buttonStyle(V2RowButtonStyle())
             }
         }
         .background(V2.card, in: RoundedRectangle(cornerRadius: V2.radiusCard, style: .continuous))
         .clipShape(RoundedRectangle(cornerRadius: V2.radiusCard, style: .continuous))
         .padding(.horizontal, 16)
+        .alert("Switch back to Permit?", isPresented: $askingRevert) {
+            Button("Not now", role: .cancel) {}
+            Button("Switch back") { switchBack() }
+        } message: {
+            Text("We'll reopen your Permit logbook and switch scoring back to learner tuning.")
+        }
     }
 
     private func rowLabel(_ title: String, color: Color) -> some View {
@@ -330,7 +347,7 @@ struct V2DriverCardView: View {
         a11yInk = false
         if reduceMotion {
             withAnimation(.easeInOut(duration: 0.3)) {
-                ProfileManager.shared.save(driverType: .full)
+                V2LicenseChange.graduate()
                 graduationLine = line
                 phase = .licensed
             }
@@ -339,7 +356,7 @@ struct V2DriverCardView: View {
         // Hold the portrait card up (phase) before the type flips underneath it.
         stampLanded = false
         phase = .stamping
-        ProfileManager.shared.save(driverType: .full)
+        V2LicenseChange.graduate()
         Task { @MainActor in
             try? await Task.sleep(for: .milliseconds(150))
             withAnimation(V2Motion.stamp) { stampLanded = true }
@@ -349,6 +366,19 @@ struct V2DriverCardView: View {
                 graduationLine = line
                 phase = .licensed
             }
+        }
+    }
+
+    /// "Switch back": learner tuning again (the same ProfileManager write),
+    /// both licence-change keys cleared, a 300 ms crossfade to the portrait
+    /// card. A crossfade only, so it is the same under Reduce Motion.
+    private func switchBack() {
+        a11yInk = false
+        withAnimation(.easeInOut(duration: 0.3)) {
+            V2LicenseChange.revert()
+            graduationLine = nil
+            stampLanded = false
+            phase = .resting
         }
     }
 }

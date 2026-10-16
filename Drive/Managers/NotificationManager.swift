@@ -5,10 +5,12 @@
 //  Local notifications only (no push). Copy follows the v2 voice (spec §5):
 //  no emoji, no exclamation marks, no loss language. The identifiers are part
 //  of the contract: re-scheduling removes the pending request by id first.
+//  Each kind has a per-user switch in Profile (`V2UserKey.scoped(_:)`).
 //
 
 import UserNotifications
 import Foundation
+import Combine
 
 @MainActor
 final class NotificationManager: NSObject {
@@ -17,15 +19,35 @@ final class NotificationManager: NSObject {
     /// Per-user override for the streak reminder (`V2UserKey.scoped(_:)`).
     /// Absent = the default: on for License drivers, off for Permit holders.
     static let streakReminderKeyName = "streakReminderOn"
+    /// Per-user switches set in Profile. Absent = on.
+    static let parkedKeyName      = "notify.parked"
+    static let badgesKeyName      = "notify.badges"
+    static let weeklyKeyName      = "notify.weekly"
+    static let schoolGoalsKeyName = "notify.schoolGoals"
 
     private static let streakID = "com.drive.streak"
     private static let weeklyID = "com.drive.weekly"
+    private static let goalIDPrefix = "com.drive.goal."
     /// Spec §4.12: one reminder at 6:00 PM, never 8 PM – 7 AM.
     private static let streakHour = 18
+    /// Spec §5: the weekly recap lands Sundays at 7 PM (inside 7 AM – 8 PM).
+    private static let weeklyHour = 19
+    private static let quietStartHour = 20
+    private static let quietEndHour = 7
+
+    private var goalsCancellable: AnyCancellable?
+    private var goalSeedTask: Task<Void, Never>?
 
     private override init() {
         super.init()
         UNUserNotificationCenter.current().delegate = self
+    }
+
+    /// A per-user switch (`V2UserKey.scoped(name)`); absent = `defaultOn`.
+    nonisolated static func preference(_ name: String, defaultOn: Bool = true) -> Bool {
+        let key = V2UserKey.scoped(name)
+        if let explicit = UserDefaults.standard.object(forKey: key) as? Bool { return explicit }
+        return defaultOn
     }
 
     // MARK: - Permission
@@ -87,14 +109,13 @@ final class NotificationManager: NSObject {
     }
 
     private func streakReminderEnabled(isPermit: Bool) -> Bool {
-        let key = V2UserKey.scoped(Self.streakReminderKeyName)
-        if let explicit = UserDefaults.standard.object(forKey: key) as? Bool { return explicit }
-        return !isPermit
+        Self.preference(Self.streakReminderKeyName, defaultOn: !isPermit)
     }
 
     // MARK: - Badge Unlock Alert
 
     func notifyBadgeUnlocked(_ badge: Badge) {
+        guard Self.preference(Self.badgesKeyName) else { return }
         let content = UNMutableNotificationContent()
         var name = badge.title
         if !badge.isOneTime, let tier = badge.currentTier {
@@ -113,27 +134,169 @@ final class NotificationManager: NSObject {
         center.add(UNNotificationRequest(identifier: id, content: content, trigger: trigger))
     }
 
-    // MARK: - Weekly Summary (Sundays at 7 PM)
-    //
-    // A repeating trigger's content is fixed when scheduled, so it carries no
-    // numbers that would be stale by Sunday.
+    // MARK: - Weekly Recap (Sundays at 7 PM)
 
+    /// Kept for the sign-in call site: the recap replaced the old repeating,
+    /// number-free summary under the same id, so this is the recap (and it
+    /// cancels "com.drive.weekly" when the switch is off).
     func scheduleWeeklySummary() {
-        let center = UNUserNotificationCenter.current()
-        center.removePendingNotificationRequests(withIdentifiers: [Self.weeklyID])
+        scheduleWeeklyRecap()
+    }
 
+    /// ONE request for the next Sunday 7 PM, non-repeating, carrying the real
+    /// numbers for the 7 days that end then (V2Library's snapshot). The root
+    /// re-schedules whenever the drives change, so by Sunday the copy covers
+    /// every drive of the week. Cancels the pending recap when switched off.
+    func scheduleWeeklyRecap(now: Date = Date()) {
+        center.removePendingNotificationRequests(withIdentifiers: [Self.weeklyID])
+        guard Self.preference(Self.weeklyKeyName) else { return }
+        // The recap hour sits inside the 7 AM – 8 PM window by construction.
+        guard Self.weeklyHour >= Self.quietEndHour, Self.weeklyHour < Self.quietStartHour else { return }
+
+        let cal = Calendar.current
+        var match = DateComponents()
+        match.weekday = 1   // Sunday
+        match.hour = Self.weeklyHour
+        match.minute = 0
+        guard let fire = cal.nextDate(after: now, matching: match, matchingPolicy: .nextTime),
+              let weekStart = cal.date(byAdding: .day, value: -7, to: fire),
+              let previousStart = cal.date(byAdding: .day, value: -14, to: fire) else { return }
+
+        let copy = Self.weeklyRecapCopy(facts: V2Library.shared.snapshot.facts,
+                                        weekStart: weekStart, fire: fire, previousStart: previousStart)
         let content = UNMutableNotificationContent()
-        content.title = "Your week in Drive"
-        content.body = "See how your week went."
+        content.title = copy.title
+        content.body = copy.body
         content.sound = .default
 
-        var dc = DateComponents()
-        dc.weekday = 1  // Sunday
-        dc.hour = 19
-        dc.minute = 0
-
-        let trigger = UNCalendarNotificationTrigger(dateMatching: dc, repeats: true)
+        let dc = cal.dateComponents([.year, .month, .day, .hour, .minute], from: fire)
+        let trigger = UNCalendarNotificationTrigger(dateMatching: dc, repeats: false)
         center.add(UNNotificationRequest(identifier: Self.weeklyID, content: content, trigger: trigger))
+    }
+
+    /// "Your week: 87 (was 83)" / "5 drives, 1 h 58 m. Best was Thursday's 93."
+    /// Drives belong to the week they parked in (as the Logbook). Averages and
+    /// the best use counted drives only; "(was N)" needs counted drives in the
+    /// week before and a different number. Generic copy when nothing was driven.
+    private static func weeklyRecapCopy(facts: [V2DriveFacts], weekStart: Date, fire: Date,
+                                        previousStart: Date) -> (title: String, body: String) {
+        let week = facts.filter { $0.end > weekStart && $0.end <= fire }
+        guard !week.isEmpty else {
+            return ("Your week in Drive", "See how your week went.")
+        }
+        let minutes = Int(week.reduce(0.0) { $0 + $1.session.duration } / 60)
+        let lead = "\(week.count) drive\(week.count == 1 ? "" : "s"), \(V2Format.hoursMinutes(totalMinutes: minutes))."
+
+        let counted = week.filter { $0.isCounted }
+        guard let best = counted.max(by: { $0.score < $1.score }) else {
+            return ("Your week in Drive", "\(lead) See them in your Logbook.")
+        }
+        let average = counted.reduce(0.0) { $0 + $1.score } / Double(counted.count)
+        let averageText = V2Voice.scoreText(average)
+        var title = "Your week: \(averageText)"
+        let before = facts.filter { $0.isCounted && $0.end > previousStart && $0.end <= weekStart }
+        if !before.isEmpty {
+            let wasText = V2Voice.scoreText(before.reduce(0.0) { $0 + $1.score } / Double(before.count))
+            if wasText != averageText { title += " (was \(wasText))" }
+        }
+
+        let isToday = Calendar.current.isDate(best.start, inSameDayAs: fire)
+        let bestScore = V2Voice.scoreText(best.score)
+        let bestLine: String
+        if counted.count == 1 {
+            bestLine = "\(isToday ? "Today" : V2Format.weekday(best.start))'s drive scored \(bestScore)."
+        } else {
+            bestLine = "Best was \(isToday ? "today" : V2Format.weekday(best.start))'s \(bestScore)."
+        }
+        return (title, "\(lead) \(bestLine)")
+    }
+
+    // MARK: - School Goals
+
+    /// Watches the instructor goals SchoolManager streams from `users/{uid}.goals`
+    /// and posts "New goal from <school>" for ids this user hasn't seen on this
+    /// device. The first look per user and school seeds silently, so goals that
+    /// already existed never notify. Idempotent; the root starts it once.
+    func startSchoolGoalWatcher() {
+        guard goalsCancellable == nil else { return }
+        goalsCancellable = SchoolManager.shared.$instructorGoals
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] goals in
+                MainActor.assumeIsolated {
+                    guard let self else { return }
+                    self.schoolGoalsChanged(goals)
+                }
+            }
+    }
+
+    private func schoolGoalsChanged(_ goals: [SchoolManager.InstructorGoal]) {
+        let school = SchoolManager.shared
+        // Not linked, or mid account switch (the manager resets the list first).
+        guard let orgId = school.orgId, !orgId.isEmpty else { return }
+        let key = V2UserKey.scoped("schoolGoalsSeen.\(orgId)")
+        let ids = goals.map { $0.id }
+
+        guard let stored = UserDefaults.standard.stringArray(forKey: key) else {
+            goalSeedTask?.cancel()
+            if !ids.isEmpty {
+                UserDefaults.standard.set(ids, forKey: key)
+                return
+            }
+            // An empty list may be the reset before the listener lands: seed
+            // empty only if it is still empty a little later.
+            goalSeedTask = Task { @MainActor in
+                try? await Task.sleep(for: .seconds(15))
+                guard !Task.isCancelled,
+                      V2UserKey.scoped("schoolGoalsSeen.\(orgId)") == key,
+                      UserDefaults.standard.stringArray(forKey: key) == nil,
+                      SchoolManager.shared.instructorGoals.isEmpty else { return }
+                UserDefaults.standard.set([String](), forKey: key)
+            }
+            return
+        }
+
+        let seen = Set(stored)
+        let fresh = goals.filter { !seen.contains($0.id) }
+        guard !fresh.isEmpty else { return }
+        var list = stored + fresh.map { $0.id }
+        if list.count > 500 { list.removeFirst(list.count - 500) }
+        UserDefaults.standard.set(list, forKey: key)
+
+        // Seen either way, so switching it on later never replays old goals.
+        guard Self.preference(Self.schoolGoalsKeyName) else { return }
+        let name = (school.schoolName ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        for goal in fresh.prefix(3) {
+            postGoal(goal, schoolName: name)
+        }
+    }
+
+    private func postGoal(_ goal: SchoolManager.InstructorGoal, schoolName: String) {
+        let content = UNMutableNotificationContent()
+        content.title = schoolName.isEmpty ? "New goal from your instructor" : "New goal from \(schoolName)"
+        let title = goal.title.trimmingCharacters(in: .whitespacesAndNewlines)
+        content.body = title.isEmpty ? "It's on your Today screen." : title
+        content.sound = .default
+
+        // Quiet hours: hold it until 7 AM.
+        let trigger: UNNotificationTrigger
+        if let morning = Self.quietHoursEnd(after: Date()) {
+            let dc = Calendar.current.dateComponents([.year, .month, .day, .hour, .minute], from: morning)
+            trigger = UNCalendarNotificationTrigger(dateMatching: dc, repeats: false)
+        } else {
+            trigger = UNTimeIntervalNotificationTrigger(timeInterval: 1, repeats: false)
+        }
+        center.add(UNNotificationRequest(identifier: Self.goalIDPrefix + goal.id, content: content, trigger: trigger))
+    }
+
+    /// The next 7 AM when `now` falls between 8 PM and 7 AM, else nil.
+    private static func quietHoursEnd(after now: Date) -> Date? {
+        let cal = Calendar.current
+        let hour = cal.component(.hour, from: now)
+        guard hour >= quietStartHour || hour < quietEndHour else { return nil }
+        var match = DateComponents()
+        match.hour = quietEndHour
+        match.minute = 0
+        return cal.nextDate(after: now, matching: match, matchingPolicy: .nextTime)
     }
 
     // MARK: - Private
