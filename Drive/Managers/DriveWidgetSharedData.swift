@@ -25,7 +25,7 @@ let driveWidgetKey   = "drive.widget.summary"
 struct DriveWidgetSummary: Codable {
     let avgScore: Double
     let totalDrives: Int
-    let streak: Int
+    var streak: Int     // v2: writeV2 overwrites it with the counted-drive streak
     let lastScore: Double?
     let lastDate: Date?
 

@@ -77,6 +77,12 @@ struct DriveView: View {
     @State private var lastSavedSession: DriveSession?
     /// The first badge the post-save diff found: Parked's hook.
     @State private var newBadge: Badge?
+    /// A saved drive's Parked Live Activity end is waiting (≤ 1.5 s) for the
+    /// library rebuild. Leaving the HUD in that window must not dismiss the
+    /// activity early (the beta had already ended it, 30 s summary, by then).
+    @State private var parkedEndPending = false
+    /// The in-HUD "Discard this drive?" confirmation is showing.
+    @State private var showDiscardConfirm = false
 
     private var phase: HUDPhase {
         switch uploadStatus {
@@ -257,9 +263,12 @@ struct DriveView: View {
             // button, a recording error and a too-short drive all previously
             // exited without ending it, stranding it on the Lock Screen. The
             // normal finish path has already ended it by now and endAll on an
-            // empty list is a no-op, so this is safe to run unconditionally.
+            // empty list is a no-op. Skipped only while a saved drive's Parked
+            // end is pending: that Task ends every running activity itself.
             liveActivity = nil
-            Task { await DriveActivityAttributes.endAll() }
+            if !parkedEndPending {
+                Task { await DriveActivityAttributes.endAll() }
+            }
         }
     }
 
@@ -340,14 +349,72 @@ struct DriveView: View {
 
             // Close: Ready (nothing to lose) and Analysing (an escape if the
             // camera never delivers a file). The drive keeps saving if closed.
+            // While recording it discards the drive, as the launch beta's X
+            // did, but only after an in-HUD confirmation so a stray tap on a
+            // mounted phone can't throw a drive away.
             if phase == .ready || phase == .analysing {
                 V2HUDCloseButton { isDriving = false }
                     .offset(x: m.side, y: V2.hudTop)
+                    .transition(.opacity)
+            } else if phase == .recording, !showDiscardConfirm {
+                V2HUDCloseButton { showDiscardConfirm = true }
+                    .accessibilityLabel("Discard drive")
+                    .offset(x: m.side, y: V2.hudTop)
+                    .transition(.opacity)
+            }
+
+            if phase == .recording, showDiscardConfirm {
+                discardConfirm
+                    .frame(width: m.size.width, height: m.size.height)
                     .transition(.opacity)
             }
         }
         .frame(width: m.size.width, height: m.size.height, alignment: .topLeading)
         .animation(V2Motion.reduced(.smooth(duration: 0.35), reduceMotion: reduceMotion), value: phase)
+    }
+
+    /// "Discard this drive?" drawn inside the landscape HUD (a system dialog
+    /// would appear sideways under the portrait lock). Recording carries on
+    /// underneath until the driver chooses.
+    private var discardConfirm: some View {
+        ZStack {
+            V2.bg.opacity(0.72)
+                .onTapGesture { showDiscardConfirm = false }
+            VStack(alignment: .leading, spacing: 8) {
+                Text("Discard this drive?")
+                    .font(V2Type.sectionHeader)
+                    .foregroundStyle(V2.label)
+                Text("Nothing from it will be saved. Hold the end button instead to keep it.")
+                    .font(V2Type.body)
+                    .foregroundStyle(V2.label2)
+                    .fixedSize(horizontal: false, vertical: true)
+                HStack(spacing: 20) {
+                    Button { showDiscardConfirm = false } label: {
+                        Text("Keep driving")
+                            .font(V2Type.headline)
+                            .foregroundStyle(V2.fixed(0xFFFFFF))
+                            .padding(.horizontal, 24)
+                            .frame(height: 50)
+                            .background(V2.tintFill, in: Capsule())
+                    }
+                    .buttonStyle(.plain)
+                    Button {
+                        showDiscardConfirm = false
+                        isDriving = false
+                    } label: {
+                        Text("Discard")
+                            .font(V2Type.headline)
+                            .foregroundStyle(V2.label)
+                            .frame(height: 50)
+                    }
+                    .buttonStyle(.plain)
+                }
+                .padding(.top, 12)
+            }
+            .padding(24)
+            .frame(width: 420, alignment: .leading)
+            .background(V2.card, in: RoundedRectangle(cornerRadius: V2.radiusCard, style: .continuous))
+        }
     }
 
     /// Ready's left column under the job: road check, PERMIT line, Start.
@@ -418,6 +485,10 @@ struct DriveView: View {
     /// The beta's start sequence, in its order. Its heavy impact is now the
     /// `start` haptic V2StartDriveButton plays.
     private func startDrive() {
+        // The beta's single Start/Stop button could never start twice; this
+        // one can be tapped again mid slide-out, which would orphan the first
+        // Timer and request a second Live Activity.
+        guard !isRecording else { return }
         liveDrive.reset()
         awaitingFinish = false
         savedWhileMoving = false
@@ -436,6 +507,7 @@ struct DriveView: View {
     /// The beta's stop sequence (the old Stop tap), in its order; V2HoldToEnd
     /// runs it once the hold completes. Its medium impact is now the ratchet.
     private func stopDrive() {
+        guard isRecording else { return }
         // Read before stopping: the capture thread flushes the route right after.
         savedWhileMoving = V2LiveDrive.isMoving(route: locationManager.snapshot().route,
                                                 engineSpeedMS: aiEngine.currentSpeedMS)
@@ -500,7 +572,9 @@ struct DriveView: View {
     private func endLiveActivityParked(sessionID: UUID, finalScore: Int, fallbackName: String) {
         let activity = liveActivity
         liveActivity = nil
+        parkedEndPending = true
         Task { @MainActor in
+            defer { parkedEndPending = false }
             var facts = V2Library.shared.facts(sessionID)
             var tries = 0
             while facts == nil && tries < 15 {

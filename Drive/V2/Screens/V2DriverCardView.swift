@@ -42,22 +42,7 @@ struct V2DriverCardView: View {
         let portrait = showsPortrait
         let model = cardModel()
         ScrollView {
-            VStack(spacing: 0) {
-                card(model, portrait: portrait)
-                    .padding(.top, 14)
-                lineSlot
-                rows(portrait: portrait)
-                    .padding(.top, lineVisible ? 18 : 24)
-                Text("Drive app card. Not a government ID.")
-                    .font(V2Type.footnote)
-                    .foregroundStyle(V2.label2)
-                    .multilineTextAlignment(.center)
-                    .frame(maxWidth: .infinity)
-                    .padding(.horizontal, 16)
-                    .padding(.top, 32)
-                    .padding(.bottom, 24)
-            }
-            .frame(maxWidth: .infinity)
+            scrollContent(model, portrait: portrait)
         }
         .scrollBounceBehavior(.basedOnSize)
         .background(V2.bg.ignoresSafeArea())
@@ -88,6 +73,26 @@ struct V2DriverCardView: View {
             renderShare(model, portrait: portrait)
         }
         .task { countOpen() }
+    }
+
+    /// Card, hint line, rows and footer (split out to keep `body` cheap to type-check).
+    private func scrollContent(_ model: V2CardModel, portrait: Bool) -> some View {
+        VStack(spacing: 0) {
+            card(model, portrait: portrait)
+                .padding(.top, 14)
+            lineSlot
+            rows(portrait: portrait)
+                .padding(.top, lineVisible ? 18 : 24)
+            Text("Drive app card. Not a government ID.")
+                .font(V2Type.footnote)
+                .foregroundStyle(V2.label2)
+                .multilineTextAlignment(.center)
+                .frame(maxWidth: .infinity)
+                .padding(.horizontal, 16)
+                .padding(.top, 32)
+                .padding(.bottom, 24)
+        }
+        .frame(maxWidth: .infinity)
     }
 
     // MARK: Card
@@ -449,59 +454,7 @@ fileprivate struct V2DriverCardFace: View {
             inkLayer(width: w - 16, height: h - 60, routeBox: l.routeBox)
                 .offset(x: 8, y: 52)
 
-            V2CardField("NAME", width: l.nameWidth) {
-                Text(verbatim: model.name)
-                    .font(V2CardFont.value)
-                    .foregroundStyle(V2.label)
-                    .lineLimit(1)
-                    .minimumScaleFactor(0.6)
-            }
-            .offset(x: l.name.x, y: l.name.y)
-
-            V2CardField("CARD", width: l.numberWidth) {
-                Text(verbatim: model.number)
-                    .font(V2CardFont.number)
-                    .foregroundStyle(V2.label)
-                    .lineLimit(1)
-                    .minimumScaleFactor(0.7)
-            }
-            .offset(x: l.number.x, y: l.number.y)
-
-            V2CardField("AVG", width: l.leftWidth) {
-                if let avg = model.average {
-                    HStack(alignment: .firstTextBaseline, spacing: 4) {
-                        Text(verbatim: V2Voice.scoreText(avg))
-                            .font(V2CardFont.value)
-                            .foregroundStyle(V2.label)
-                        Text(verbatim: grade(for: avg))
-                            .font(V2Type.gradeLetter(15))
-                            .foregroundStyle(V2Band(score: avg).color)
-                    }
-                    .lineLimit(1)
-                } else {
-                    V2CardValue("\u{2014}", color: V2.label2)
-                }
-            }
-            .offset(x: l.avg.x, y: l.avg.y)
-
-            V2CardField("DRIVES", width: l.rightWidth) {
-                V2CardValue("\(model.drives)")
-            }
-            .offset(x: l.drives.x, y: l.drives.y)
-
-            V2CardField("BEST", width: l.leftWidth) {
-                if let best = model.best {
-                    V2CardValue(V2Voice.scoreText(best))
-                } else {
-                    V2CardValue("\u{2014}", color: V2.label2)
-                }
-            }
-            .offset(x: l.best.x, y: l.best.y)
-
-            V2CardField("SINCE", width: l.rightWidth) {
-                V2CardValue(model.since)
-            }
-            .offset(x: l.since.x, y: l.since.y)
+            fields(l)
 
             V2Car(.xl, color: V2.label, knockout: V2.card)
                 .offset(x: 20, y: l.carY)
@@ -526,6 +479,71 @@ fileprivate struct V2DriverCardFace: View {
                     .opacity(landed ? 1 : 0)
                     .offset(y: 24)
             }
+        }
+    }
+
+    /// NAME / CARD and the 2×2 stat grid at their card coordinates (a
+    /// separate builder so the face's ZStack stays small for the type checker).
+    @ViewBuilder
+    private func fields(_ l: V2CardLayout) -> some View {
+        V2CardField("NAME", width: l.nameWidth) {
+            Text(verbatim: model.name)
+                .font(V2CardFont.value)
+                .foregroundStyle(V2.label)
+                .lineLimit(1)
+                .minimumScaleFactor(0.6)
+        }
+        .offset(x: l.name.x, y: l.name.y)
+
+        V2CardField("CARD", width: l.numberWidth) {
+            Text(verbatim: model.number)
+                .font(V2CardFont.number)
+                .foregroundStyle(V2.label)
+                .lineLimit(1)
+                .minimumScaleFactor(0.7)
+        }
+        .offset(x: l.number.x, y: l.number.y)
+
+        V2CardField("AVG", width: l.leftWidth) { avgValue }
+            .offset(x: l.avg.x, y: l.avg.y)
+
+        V2CardField("DRIVES", width: l.rightWidth) {
+            V2CardValue("\(model.drives)")
+        }
+        .offset(x: l.drives.x, y: l.drives.y)
+
+        V2CardField("BEST", width: l.leftWidth) { bestValue }
+            .offset(x: l.best.x, y: l.best.y)
+
+        V2CardField("SINCE", width: l.rightWidth) {
+            V2CardValue(model.since)
+        }
+        .offset(x: l.since.x, y: l.since.y)
+    }
+
+    @ViewBuilder
+    private var avgValue: some View {
+        if let avg = model.average {
+            HStack(alignment: .firstTextBaseline, spacing: 4) {
+                Text(verbatim: V2Voice.scoreText(avg))
+                    .font(V2CardFont.value)
+                    .foregroundStyle(V2.label)
+                Text(verbatim: grade(for: avg))
+                    .font(V2Type.gradeLetter(15))
+                    .foregroundStyle(V2Band(score: avg).color)
+            }
+            .lineLimit(1)
+        } else {
+            V2CardValue("\u{2014}", color: V2.label2)
+        }
+    }
+
+    @ViewBuilder
+    private var bestValue: some View {
+        if let best = model.best {
+            V2CardValue(V2Voice.scoreText(best))
+        } else {
+            V2CardValue("\u{2014}", color: V2.label2)
         }
     }
 

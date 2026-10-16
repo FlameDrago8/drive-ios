@@ -259,6 +259,7 @@ struct V2WScoreSmall: View {
             let line = isThirtyDay ? V2WData.weekLine(pct: summary.weekChangePct, score: score) : nil
             let value = V2WScore.int(score)
             let grade = V2WScore.grade(score)
+            let spokenLine: String = line.map { " \($0)." } ?? ""
             VStack(alignment: .leading, spacing: 0) {
                 HStack(alignment: .lastTextBaseline, spacing: 4) {
                     Text(verbatim: "\(value)")
@@ -288,7 +289,7 @@ struct V2WScoreSmall: View {
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
             .accessibilityElement(children: .ignore)
-            .accessibilityLabel(Text(verbatim: "\(caption) \(value), \(V2WScore.spoken(grade))." + (line.map { " " + $0 + "." } ?? "")))
+            .accessibilityLabel(Text(verbatim: "\(caption) \(value), \(V2WScore.spoken(grade)).\(spokenLine)"))
         } else {
             V2WEmptyState(title: "No drives yet",
                           line: "Your 30-day score shows here after your first drive.")

@@ -314,7 +314,7 @@ fileprivate struct V2DrivesRow: View {
         facts.routeName == nil ? "Name this route" : "Rename route"
     }
 
-    /// "School run, Friday 3:28 PM, 24 minutes, 91 A, route best".
+    /// "School run, Friday 3:28 PM, 24 minutes, 91 A, best School run yet".
     private var spokenLabel: String {
         var parts = [facts.name,
                      "\(V2Format.weekday(facts.start)) \(V2Format.clock(facts.start))",
@@ -328,7 +328,7 @@ fileprivate struct V2DrivesRow: View {
             parts.append("not scored")
         }
         if let tab = facts.recordTab {
-            parts.append(tab == .pb ? "personal best" : "route best")
+            parts.append(tab == .pb ? "personal best" : "best \(facts.routeName ?? facts.name) yet")
         }
         return parts.joined(separator: ", ")
     }

@@ -95,6 +95,9 @@ extension WidgetDataStore {
 
         if let latest = snapshot.facts.first {
             let stats = snapshot.stats
+            // Same streak as Today (counted drives only), so a 7+ day run on
+            // the widget never reads longer than the app's.
+            summary.streak = stats.currentStreak
             summary.thirtyDayScore = stats.thirtyDay
             summary.weekChangePct = stats.weekChangePct
             summary.last7Driven = stats.last7.map { $0.state == .driven }

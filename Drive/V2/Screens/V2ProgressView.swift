@@ -479,63 +479,80 @@ fileprivate struct V2ProgressTrendChart: View {
 
     var body: some View {
         let slots = makeSlots()
-        let keys = slots.map { $0.id }
-        let byKey = Dictionary(uniqueKeysWithValues: slots.map { ($0.id, $0) })
-        let lo = floorValue(slots)
-        let width = barWidth(count: slots.count)
         if slots.isEmpty {
             Text("No scored drives yet.")
                 .font(V2Type.footnote)
                 .foregroundStyle(V2.label2)
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
         } else {
-            Chart {
-                ForEach(slots) { slot in
-                    if let score = slot.score {
-                        BarMark(x: .value("Period", slot.id),
-                                yStart: .value("Base", lo),
-                                yEnd: .value("Score", max(score, lo)),
-                                width: width)
-                            .foregroundStyle(Self.barColor(score))
-                            .clipShape(UnevenRoundedRectangle(topLeadingRadius: 4, topTrailingRadius: 4, style: .continuous))
-                            .annotation(position: .top, alignment: .center, spacing: 4) {
-                                if slot.isPB {
-                                    V2GuideTabView(.pb, height: 16)
-                                }
-                            }
+            chart(slots)
+        }
+    }
+
+    // Split into small pieces so the type checker never has to solve the
+    // whole Chart expression at once.
+    private func chart(_ slots: [Slot]) -> some View {
+        let keys = slots.map { $0.id }
+        let byKey = Dictionary(uniqueKeysWithValues: slots.map { ($0.id, $0) })
+        let lo = floorValue(slots)
+        let width = barWidth(count: slots.count)
+        return Chart {
+            ForEach(slots) { slot in
+                bar(slot, lo: lo, width: width)
+            }
+            if let average {
+                RuleMark(y: .value("Average", average))
+                    .foregroundStyle(V2.label2)
+                    .lineStyle(StrokeStyle(lineWidth: 1, dash: [4, 3]))
+            }
+        }
+        .chartXScale(domain: keys)
+        .chartYScale(domain: lo...100)
+        .chartXAxis { xAxis(keys, byKey) }
+        .chartYAxis { yAxis }
+        .chartLegend(.hidden)
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(spokenSummary(slots))
+    }
+
+    @ChartContentBuilder
+    private func bar(_ slot: Slot, lo: Double, width: MarkDimension) -> some ChartContent {
+        if let score = slot.score {
+            BarMark(x: .value("Period", slot.id),
+                    yStart: .value("Base", lo),
+                    yEnd: .value("Score", max(score, lo)),
+                    width: width)
+                .foregroundStyle(Self.barColor(score))
+                .clipShape(UnevenRoundedRectangle(topLeadingRadius: 4, topTrailingRadius: 4, style: .continuous))
+                .annotation(position: .top, alignment: .center, spacing: 4) {
+                    if slot.isPB {
+                        V2GuideTabView(.pb, height: 16)
                     }
                 }
-                if let average {
-                    RuleMark(y: .value("Average", average))
-                        .foregroundStyle(V2.label2)
-                        .lineStyle(StrokeStyle(lineWidth: 1, dash: [4, 3]))
-                }
+        }
+    }
+
+    private func xAxis(_ keys: [String], _ byKey: [String: Slot]) -> some AxisContent {
+        AxisMarks(values: keys) { value in
+            let key = value.as(String.self)
+            AxisValueLabel {
+                Text(verbatim: Self.axisLabel(key, byKey))
+                    .font(V2Type.caption2)
+                    .foregroundStyle(Self.isNow(key, byKey) ? V2.label : V2.label2)
             }
-            .chartXScale(domain: keys)
-            .chartYScale(domain: lo...100)
-            .chartXAxis {
-                AxisMarks(values: keys) { value in
-                    AxisValueLabel {
-                        Text(verbatim: Self.axisLabel(value.as(String.self), byKey))
-                            .font(V2Type.caption2)
-                            .foregroundStyle(Self.isNow(value.as(String.self), byKey) ? V2.label : V2.label2)
-                    }
-                }
+        }
+    }
+
+    private var yAxis: some AxisContent {
+        AxisMarks(position: .trailing, values: [70.0, 85.0]) { value in
+            let isA = (value.as(Double.self) ?? 0) >= 85
+            AxisGridLine(stroke: StrokeStyle(lineWidth: 1))
+                .foregroundStyle(V2.sep)
+            AxisValueLabel {
+                Text(verbatim: isA ? "A\u{2212}" : "B\u{2212}")
+                    .font(V2Type.caption2)
+                    .foregroundStyle(V2.label2)
             }
-            .chartYAxis {
-                AxisMarks(position: .trailing, values: [70.0, 85.0]) { value in
-                    AxisGridLine(stroke: StrokeStyle(lineWidth: 1))
-                        .foregroundStyle(V2.sep)
-                    AxisValueLabel {
-                        Text(verbatim: (value.as(Double.self) ?? 0) >= 85 ? "A\u{2212}" : "B\u{2212}")
-                            .font(V2Type.caption2)
-                            .foregroundStyle(V2.label2)
-                    }
-                }
-            }
-            .chartLegend(.hidden)
-            .accessibilityElement(children: .ignore)
-            .accessibilityLabel(spokenSummary(slots))
         }
     }
 

@@ -102,8 +102,11 @@ final class V2LiveDrive: ObservableObject {
         let r = 6_371_000.0
         let dLat = (b.lat - a.lat) * .pi / 180
         let dLng = (b.lng - a.lng) * .pi / 180
-        let h = sin(dLat / 2) * sin(dLat / 2)
-            + cos(a.lat * .pi / 180) * cos(b.lat * .pi / 180) * sin(dLng / 2) * sin(dLng / 2)
+        // Split so the type checker doesn't chew on one long sin/cos chain.
+        let sLat: Double = sin(dLat / 2)
+        let sLng: Double = sin(dLng / 2)
+        let cosLat: Double = cos(a.lat * .pi / 180) * cos(b.lat * .pi / 180)
+        let h: Double = sLat * sLat + cosLat * sLng * sLng
         return 2 * r * atan2(sqrt(h), sqrt(max(0, 1 - h)))
     }
 

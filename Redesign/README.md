@@ -14,7 +14,15 @@ import, modify or replace anything in `Drive/`, `DriveWidget/` or
 > Status: written on Linux without an Apple toolchain, so **it has not been
 > compiled**. Expect a few small fixes the first time Xcode builds it.
 
-## v2: Road Furniture (design only, not yet in code)
+## v2: Road Furniture (implemented in the app on this branch)
+
+The v2 design is now built into the real app under `Drive/V2/` (foundation,
+components, data layer, screens, HUD) and `DriveWidget/`, wired to the same
+backend as the launch beta. `Drive/DriveApp.swift` shows `V2Root` instead of
+`HomeView`. Read `v2-BUILD-NOTES.md` before the first Xcode build. The
+pre-redesign app is preserved on the `launch-beta` branch.
+
+The notes below describe the design.
 
 `v2-RoadFurniture-spec.md` is the design spec for v2. It keeps this
 skeleton's chassis and adds a road-furniture layer:
@@ -24,8 +32,8 @@ skeleton's chassis and adds a road-furniture layer:
 - a single car character, plus a Parked reveal, a Driver Card, a Logbook and
   a share card.
 
-The design canvas has v1 and v2 on separate pages. The SwiftUI code in
-`DriveUI/` is still v1; port the v2 components once the look is approved.
+The design canvas has v1 and v2 on separate pages. The SwiftUI package in
+`DriveUI/` is still the v1 skeleton; the shipped v2 code lives in `Drive/V2/`.
 
 ## The direction in one paragraph
 
