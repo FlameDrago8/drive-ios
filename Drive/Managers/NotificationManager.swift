@@ -37,10 +37,42 @@ final class NotificationManager: NSObject {
 
     private var goalsCancellable: AnyCancellable?
     private var goalSeedTask: Task<Void, Never>?
+    private var signOutCancellable: AnyCancellable?
 
     private override init() {
         super.init()
         UNUserNotificationCenter.current().delegate = self
+        watchSignOut()
+    }
+
+    /// Pending reminders carry the signed-in account's numbers (the recap,
+    /// the streak, held school goals), so they go when that account signs
+    /// out. The next account's root schedules its own.
+    private func watchSignOut() {
+        signOutCancellable = UserManager.shared.$user
+            .map { $0 == nil }
+            .removeDuplicates()
+            .filter { $0 }
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] _ in
+                MainActor.assumeIsolated {
+                    // Re-checked after the hop: a session restored meanwhile wins.
+                    guard let self, UserManager.shared.user == nil else { return }
+                    self.cancelAccountReminders()
+                }
+            }
+    }
+
+    private func cancelAccountReminders() {
+        goalSeedTask?.cancel()
+        let center = UNUserNotificationCenter.current()
+        center.removePendingNotificationRequests(withIdentifiers: [Self.streakID, Self.weeklyID])
+        let prefix = Self.goalIDPrefix
+        center.getPendingNotificationRequests { requests in
+            let ids = requests.map(\.identifier).filter { $0.hasPrefix(prefix) }
+            guard !ids.isEmpty else { return }
+            UNUserNotificationCenter.current().removePendingNotificationRequests(withIdentifiers: ids)
+        }
     }
 
     /// A per-user switch (`V2UserKey.scoped(name)`); absent = `defaultOn`.

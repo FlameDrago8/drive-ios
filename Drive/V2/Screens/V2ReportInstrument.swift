@@ -189,6 +189,12 @@ struct V2ReportFootage: View {
         .publisher(for: AVPlayerItem.timeJumpedNotification)
         .receive(on: DispatchQueue.main)
 
+    /// Any player starting or stopping; filtered to this footage's URL so a
+    /// play from AVKit's own button (before the poster loads) keeps it away.
+    private static let rateChanges = NotificationCenter.default
+        .publisher(for: AVPlayer.rateDidChangeNotification)
+        .receive(on: DispatchQueue.main)
+
     init(session: DriveSession, seek: V2FootageSeek?, posterMoment: V2Moment? = nil,
          onPlayPoster: @escaping () -> Void = {}) {
         self.session = session
@@ -249,6 +255,7 @@ struct V2ReportFootage: View {
             }
             .task(id: posterKey(url)) { await loadPoster(url) }
             .onReceive(Self.timeJumps) { note in noteJump(note, url: url) }
+            .onReceive(Self.rateChanges) { note in notePlay(note, url: url) }
             // Pushed away (All events, maneuvers): VideoPlayerView pauses and
             // rebuilds its AVPlayer on return, so hold any seek until then
             // rather than restarting the paused player off screen.
@@ -306,7 +313,8 @@ struct V2ReportFootage: View {
     private func loadPoster(_ url: URL) async {
         guard let t = posterMoment?.timeOffset, !posterDismissed else { return }
         let image = await Self.posterFrame(of: url, at: t)
-        guard !Task.isCancelled else { return }
+        // Already playing (or seeked) while the frame decoded: no poster.
+        guard !Task.isCancelled, !posterDismissed else { return }
         poster = image
     }
 
@@ -328,6 +336,14 @@ struct V2ReportFootage: View {
         guard posterArmed, !posterDismissed, poster != nil else { return }
         guard let item = note.object as? AVPlayerItem,
               let asset = item.asset as? AVURLAsset,
+              asset.url == url else { return }
+        dismissPoster()
+    }
+
+    private func notePlay(_ note: Notification, url: URL) {
+        guard !posterDismissed,
+              let player = note.object as? AVPlayer, player.rate != 0,
+              let asset = player.currentItem?.asset as? AVURLAsset,
               asset.url == url else { return }
         dismissPoster()
     }

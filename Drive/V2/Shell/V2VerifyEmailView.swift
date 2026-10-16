@@ -240,6 +240,7 @@ struct V2VerifyEmailView: View {
 }
 
 /// Status lines appear without moving focus, so read them out.
+@MainActor
 private func v2veAnnounce(_ text: String) {
     guard !text.isEmpty else { return }
     UIAccessibility.post(notification: .announcement, argument: text)

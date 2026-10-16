@@ -485,6 +485,7 @@ private struct V2SIButtonLabel<Icon: View>: View {
 }
 
 /// Errors and confirmations appear without moving focus, so read them out.
+@MainActor
 private func v2siAnnounce(_ text: String) {
     guard !text.isEmpty else { return }
     UIAccessibility.post(notification: .announcement, argument: text)

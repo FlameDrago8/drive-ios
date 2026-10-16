@@ -700,7 +700,11 @@ private struct V2ReportContent: View {
     }
 
     private func scrubStarted() {
-        if !scrubbed { scrubbed = true }
+        if !scrubbed {
+            scrubbed = true
+            // Found the drag on their own: nothing left to teach (§4.3 "retired after the first drag").
+            UserDefaults.standard.set(true, forKey: V2UserKey.scoped("scrubTaught"))
+        }
         guard tipShown else { return }
         tipShown = false
         V2ScrubTip.current.invalidate(reason: .actionPerformed)

@@ -516,7 +516,7 @@ fileprivate struct V2BadgeSheetPage: View {
                 .frame(height: 120)
             VStack(spacing: 6) {
                 Text(verbatim: V2BadgeCopy.titleLine(badge))
-                    .font(V2Type.collectible(28, weight: .bold, relativeTo: .title))
+                    .font(V2Type.collectible(28, weight: .bold, relativeTo: .title1))
                     .foregroundStyle(V2.label)
                     .multilineTextAlignment(.center)
                     .lineLimit(2)
