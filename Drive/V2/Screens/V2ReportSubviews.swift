@@ -820,7 +820,8 @@ enum V2RouteOutline {
             let ex = p.x - a.x, ey = p.y - a.y
             return (ex * ex + ey * ey).squareRoot()
         }
-        let t = max(0, min(1, ((p.x - a.x) * dx + (p.y - a.y) * dy) / len2))
+        let dot: CGFloat = (p.x - a.x) * dx + (p.y - a.y) * dy
+        let t: CGFloat = max(0, min(1, dot / len2))
         let ex = p.x - (a.x + t * dx), ey = p.y - (a.y + t * dy)
         return (ex * ex + ey * ey).squareRoot()
     }

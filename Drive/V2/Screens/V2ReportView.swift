@@ -186,18 +186,22 @@ private struct V2ReportContent: View {
         let onOffset: (TimeInterval) -> Void = { offset in
             jumpToOffset(offset, proxy: proxy)
         }
-        let insight = insightText()
-        let check = m.facts.focusCheck
-        let tips = V2Tips.tips(for: m.session).filter { !(m.focusJob != nil && $0.isFocus) }
-        // The cluster after the points card: 32 above the first, tighter after.
-        let checkTop: CGFloat = insight == nil ? 32 : 16
-        let focusTop: CGFloat = check != nil ? 12 : (insight != nil ? 16 : 32)
-        let tipsTop: CGFloat = (insight != nil || check != nil || m.focusJob != nil) ? 16 : 32
+        // Split in three so the type checker never sees one huge builder.
+        return VStack(alignment: .leading, spacing: 0) {
+            headSections(m, onMoment: onMoment, onOffset: onOffset)
+            coachingSections(m, onMoment: onMoment, onOffset: onOffset)
+            detailSections(m, onMoment: onMoment, onOffset: onOffset)
+        }
+    }
 
+    /// Title band, "Before the score", timetable hero, score.
+    private func headSections(_ m: V2ReportModel, onMoment: @escaping (V2Moment) -> Void,
+                              onOffset: @escaping (TimeInterval) -> Void) -> some View {
+        let danger = dangerousFault(m)
         return VStack(alignment: .leading, spacing: 0) {
             titleBand(m.facts)
 
-            if let danger = dangerousFault(m) {
+            if let danger {
                 V2ReportBeforeScoreCard(fault: danger.fault,
                                         start: m.facts.start,
                                         moment: danger.moment,
@@ -215,7 +219,22 @@ private struct V2ReportContent: View {
 
             scoreSection(m.facts)
                 .padding(.top, 24)
+        }
+    }
 
+    /// Points, insight, job check, Focus module, tips.
+    private func coachingSections(_ m: V2ReportModel, onMoment: @escaping (V2Moment) -> Void,
+                                  onOffset: @escaping (TimeInterval) -> Void) -> some View {
+        let insight = insightText()
+        let check = m.facts.focusCheck
+        let tips = V2Tips.tips(for: m.session).filter { !(m.focusJob != nil && $0.isFocus) }
+        // The cluster after the points card: 32 above the first, tighter after.
+        let checkTop: CGFloat = insight == nil ? 32 : 16
+        let focusTop: CGFloat = check != nil ? 12 : (insight != nil ? 16 : 32)
+        let tipsTop: CGFloat = (insight != nil || check != nil || m.focusJob != nil) ? 16 : 32
+        let focusMoments = Array(m.moments.filter { $0.isFocus }.prefix(2))
+
+        return VStack(alignment: .leading, spacing: 0) {
             header("Where the points went")
             points(m.session)
 
@@ -236,7 +255,7 @@ private struct V2ReportContent: View {
 
             if let job = m.focusJob {
                 V2FocusModule(job: job,
-                              moments: Array(m.moments.filter { $0.isFocus }.prefix(2)),
+                              moments: focusMoments,
                               strip: m.strip,
                               footnote: nil,
                               onMoment: onMoment)
@@ -253,7 +272,17 @@ private struct V2ReportContent: View {
                                  onOffset: onOffset)
                     .padding(.top, tipsTop)
             }
+        }
+    }
 
+    /// Instrument, examiner, maneuvers, timetable, route, trip meter.
+    private func detailSections(_ m: V2ReportModel, onMoment: @escaping (V2Moment) -> Void,
+                                onOffset: @escaping (TimeInterval) -> Void) -> some View {
+        let showSpeeds = (m.session.metrics?.avgSpeedMS ?? 0) > 0
+        let table = library.timetable(for: sessionID, trace: trace)
+        let outlineKey = "\(sessionID.uuidString)-\(m.session.route.count)"
+
+        return VStack(alignment: .leading, spacing: 0) {
             if m.strip.count > 0 {
                 header("What happened")
                 instrument(m)
@@ -263,13 +292,12 @@ private struct V2ReportContent: View {
             maneuvers(m)
 
             header("Timetable")
-            V2ReportTimetableCard(table: library.timetable(for: sessionID, trace: trace),
-                                  showSpeeds: (m.session.metrics?.avgSpeedMS ?? 0) > 0)
+            V2ReportTimetableCard(table: table, showSpeeds: showSpeeds)
 
             if m.session.route.count >= 2 {
                 header("The route")
                 V2ReportRouteCard(route: m.session.route,
-                                  outlineKey: "\(sessionID.uuidString)-\(m.session.route.count)",
+                                  outlineKey: outlineKey,
                                   start: m.facts.start,
                                   end: m.facts.end,
                                   onOpenMap: { showingMap = true })

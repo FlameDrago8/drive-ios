@@ -189,7 +189,7 @@ struct V2TodayView: View {
 
     /// D: the 30-day score with its plate and one sentence.
     private func thirtyDayHero(score: Double, line: String) -> some View {
-        VStack(alignment: .leading, spacing: 10) {
+        VStack(alignment: .leading, spacing: 8) {
             V2HeroScore(score: score, size: 88, plateHeight: 40)
             Text(verbatim: line)
                 .font(V2Type.headline)
@@ -392,40 +392,26 @@ struct V2TodayView: View {
 
     @ViewBuilder
     private var instructorSection: some View {
-        let goal = school.instructorGoals.first
+        // Every goal the instructor set, as v1's InstructorGoalsCard showed them.
+        let goals = school.instructorGoals
+        let firstGoalID = goals.first?.id
         let schoolName = school.schoolName?.trimmingCharacters(in: .whitespacesAndNewlines)
         let named: String? = (schoolName?.isEmpty ?? true) ? nil : schoolName
         // B2B lapsed subscription: the only path back for the learner (v1 banner copy).
         let lapsedName: String? = school.subscriptionActive ? nil : named
-        if goal != nil || lapsedName != nil {
+        if !goals.isEmpty || lapsedName != nil {
             V2SectionHeader("From your instructor")
                 .padding(.top, V2.headerAbove)
                 .padding(.bottom, V2.headerBelow)
             VStack(alignment: .leading, spacing: 8) {
-                if let goal {
-                    Text(verbatim: goal.title)
-                        .font(V2Type.headline)
-                        .foregroundStyle(V2.label)
-                        .fixedSize(horizontal: false, vertical: true)
-                    if let note = goal.body?.trimmingCharacters(in: .whitespacesAndNewlines), !note.isEmpty {
-                        HStack(alignment: .top, spacing: 12) {
-                            RoundedRectangle(cornerRadius: 1.5, style: .continuous)
-                                .fill(V2.paint)
-                                .frame(width: 3)
-                                .accessibilityHidden(true)
-                            Text(verbatim: "\u{201C}\(note)\u{201D}")
-                                .font(V2Type.body)
-                                .foregroundStyle(V2.label)
-                                .fixedSize(horizontal: false, vertical: true)
-                                .frame(maxWidth: .infinity, alignment: .leading)
-                        }
-                        .fixedSize(horizontal: false, vertical: true)
-                    }
-                    if let named {
-                        Text(verbatim: named)
-                            .font(V2Type.footnote)
-                            .foregroundStyle(V2.label2)
-                    }
+                ForEach(goals) { goal in
+                    instructorGoal(goal)
+                        .padding(.top, goal.id == firstGoalID ? 0 : 8)
+                }
+                if !goals.isEmpty, let named {
+                    Text(verbatim: named)
+                        .font(V2Type.footnote)
+                        .foregroundStyle(V2.label2)
                 }
                 if let lapsedName {
                     Text(verbatim: "Contact \(lapsedName) to reactivate access.")
@@ -436,6 +422,30 @@ struct V2TodayView: View {
             }
             .v2Card()
             .accessibilityElement(children: .combine)
+        }
+    }
+
+    /// One goal: title, then the instructor's note behind a paint rule.
+    private func instructorGoal(_ goal: SchoolManager.InstructorGoal) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text(verbatim: goal.title)
+                .font(V2Type.headline)
+                .foregroundStyle(V2.label)
+                .fixedSize(horizontal: false, vertical: true)
+            if let note = goal.body?.trimmingCharacters(in: .whitespacesAndNewlines), !note.isEmpty {
+                HStack(alignment: .top, spacing: 12) {
+                    RoundedRectangle(cornerRadius: 1.5, style: .continuous)
+                        .fill(V2.paint)
+                        .frame(width: 3)
+                        .accessibilityHidden(true)
+                    Text(verbatim: "\u{201C}\(note)\u{201D}")
+                        .font(V2Type.body)
+                        .foregroundStyle(V2.label)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                }
+                .fixedSize(horizontal: false, vertical: true)
+            }
         }
     }
 

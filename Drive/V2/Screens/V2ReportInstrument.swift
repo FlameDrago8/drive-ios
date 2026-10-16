@@ -141,6 +141,10 @@ struct V2ReportFootage: View {
                     playerSeek = pending
                 }
             }
+            // Pushed away (All events, maneuvers): VideoPlayerView pauses and
+            // rebuilds its AVPlayer on return, so hold any seek until then
+            // rather than restarting the paused player off screen.
+            .onDisappear { playerReady = false }
     }
 
     private func apply(_ request: V2FootageSeek?) {
@@ -206,6 +210,7 @@ struct V2ReportScrubDeck: View {
     @State private var curbSide: Int = 0
     @State private var bubbleShown = false
     @Environment(\.displayScale) private var displayScale
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     init(strip: V2Strip, moments: [V2Moment], start: Date, duration: TimeInterval, car: V2ReportCar,
          drawProgress: Double, onMoment: @escaping (V2Moment) -> Void,
@@ -341,7 +346,9 @@ struct V2ReportScrubDeck: View {
         let laneTop = m.markerSpace + Self.zone
         let playheadHeight = max(0, m.carTopY - m.markerSpace)
         let progress = CGFloat(min(1, max(0, drawProgress)))
-        let maskWidth = progress >= 1 ? W + 80 : 40 + W * progress
+        let maskWidth: CGFloat = progress >= 1 ? W + 80 : 40 + W * progress
+        let bubbleX: CGFloat = min(max(cx, 24), max(24, W - 24))
+        let bubbleY: CGFloat = m.markerSpace - 18
         return ZStack(alignment: .topLeading) {
             Color.clear
                 .contentShape(Rectangle())
@@ -356,7 +363,8 @@ struct V2ReportScrubDeck: View {
             ForEach(strip.markers) { marker in
                 let mx = g.centerX(bucket: marker.bucket)
                 let q: Double? = strip.buckets.indices.contains(marker.bucket) ? strip.buckets[marker.bucket] : nil
-                let top = laneTop - (V2Strip.barHeight(q: q, zone: Self.zone) ?? 0) - 4 - 18
+                let bar: CGFloat = V2Strip.barHeight(q: q, zone: Self.zone) ?? 0
+                let top: CGFloat = laneTop - bar - 22
                 ZStack {
                     V2MarkerDisc(number: marker.number, band: marker.band, size: 18)
                     if marker.isFocus {
@@ -381,7 +389,7 @@ struct V2ReportScrubDeck: View {
                 .padding(.horizontal, 8)
                 .frame(height: 24)
                 .background(RoundedRectangle(cornerRadius: 6, style: .continuous).fill(V2.label))
-                .position(x: min(max(cx, 24), max(24, W - 24)), y: m.markerSpace - 6 - 12)
+                .position(x: bubbleX, y: bubbleY)
                 .opacity(bubbleShown ? 1 : 0)
                 .allowsHitTesting(false)
         }
@@ -413,8 +421,9 @@ struct V2ReportScrubDeck: View {
         case .parked:
             return duration
         case .bucket(let b):
-            let n = max(1, strip.count)
-            return max(0, min(duration, (b + 0.5) / Double(n) * duration))
+            let n = Double(max(1, strip.count))
+            let t: TimeInterval = (b + 0.5) / n * duration
+            return max(0, min(duration, t))
         }
     }
 
@@ -426,7 +435,7 @@ struct V2ReportScrubDeck: View {
         if liveCar == nil {
             // First frame of the drag.
             lastBucket = g.bucket(atX: carX(car, g: g, width: W))
-            withAnimation(.easeOut(duration: 0.12)) { bubbleShown = true }
+            withAnimation(V2Motion.reduced(.easeOut(duration: 0.12), reduceMotion: reduceMotion)) { bubbleShown = true }
         }
 
         // The curb at either end.
@@ -476,7 +485,7 @@ struct V2ReportScrubDeck: View {
         snapped = nil
         lastBucket = nil
         curbSide = 0
-        withAnimation(.easeOut(duration: 0.6)) { bubbleShown = false }
+        withAnimation(V2Motion.reduced(.easeOut(duration: 0.6), reduceMotion: reduceMotion)) { bubbleShown = false }
     }
 
     // MARK: VoiceOver
