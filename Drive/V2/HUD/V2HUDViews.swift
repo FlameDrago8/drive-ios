@@ -209,15 +209,27 @@ struct V2HUDJobBlock: View {
 }
 
 /// `road.lanes` + "Road in view", or slashed + "Point the camera at the road."
+/// `.instruction` is Ready's honest default: the road model only sees frames
+/// while recording, so before Start the line asks rather than claims.
 struct V2HUDRoadCheck: View {
-    let onRoad: Bool
+    enum Mode: Equatable { case inView, blocked, instruction }
+
+    let mode: Mode
+
+    init(mode: Mode) {
+        self.mode = mode
+    }
+
+    init(onRoad: Bool) {
+        self.mode = onRoad ? .inView : .blocked
+    }
 
     var body: some View {
         HStack(spacing: 8) {
             ZStack {
                 Image(systemName: "road.lanes")
                     .font(V2Type.fixedSize(19, weight: .semibold))
-                if !onRoad {
+                if mode == .blocked {
                     Canvas { ctx, size in
                         var slash = Path()
                         slash.move(to: CGPoint(x: size.width * 0.15, y: size.height * 0.15))
@@ -229,7 +241,7 @@ struct V2HUDRoadCheck: View {
             }
             .frame(width: 22, height: 22)
             .accessibilityHidden(true)
-            Text(onRoad ? "Road in view" : "Point the camera at the road.")
+            Text(mode == .inView ? "Road in view" : "Point the camera at the road.")
                 .font(V2Type.headline)
                 .lineLimit(1)
                 .minimumScaleFactor(0.8)
@@ -563,7 +575,7 @@ struct V2HUDMessage: View {
                         .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
-                .padding(.top, 8)
+                .padding(.top, 12)      // board: Done box at y 188
             }
         }
         .frame(maxWidth: 560, alignment: .leading)

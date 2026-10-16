@@ -1,0 +1,4 @@
+#!/bin/sh
+# Blocks a commit that breaks the v2 design rules (scripts/v2-lint.sh).
+# Not active by default. Enable once per clone with: git config core.hooksPath .githooks
+exec "$(git rev-parse --show-toplevel)/scripts/v2-lint.sh"

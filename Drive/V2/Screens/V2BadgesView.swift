@@ -391,23 +391,20 @@ struct V2BadgeEarnedSheet: View {
     }
 
     var body: some View {
-        NavigationStack {
-            VStack(spacing: 0) {
-                pages
-                if badges.count > 1 {
-                    V2SheetPageDots(count: badges.count, current: page)
-                        .padding(.top, 8)
-                }
-                if let badge = currentBadge {
-                    V2BadgeSheetButtons(badge: badge, onDone: onDone)
-                }
+        V2BadgeSheetChrome(onClose: onDone) {
+            pages
+            if badges.count > 1 {
+                V2SheetPageDots(count: badges.count, current: page)
+                    .padding(.top, 8)
             }
-            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbar {
-                ToolbarItem(placement: .topBarTrailing) {
-                    V2SheetCloseButton(action: onDone)
-                }
+            // Optional row (§4.13): the app icon this badge unlocks.
+            if let badge = currentBadge, let icon = V2AppIcons.option(unlockedBy: badge) {
+                V2BadgeIconUnlockRow(icon: icon)
+                    .padding(.top, 12)
+                    .opacity(settled.contains(page) ? 1 : 0)
+            }
+            if let badge = currentBadge {
+                V2BadgeSheetButtons(badge: badge, onDone: onDone)
             }
         }
         .task(id: page) {
@@ -467,19 +464,36 @@ fileprivate struct V2BadgeDetailSheet: View {
     let onClose: () -> Void
 
     var body: some View {
-        NavigationStack {
+        V2BadgeSheetChrome(onClose: onClose) {
+            V2BadgeSheetPage(badge: badge, earnedOn: earnedOn, stamped: true, settled: true,
+                             reduceMotion: true, showProgress: true)
+            V2BadgeSheetButtons(badge: badge, onDone: onClose)
+        }
+    }
+}
+
+// MARK: - Sheet chrome
+
+/// The plate sits 32 pt from the sheet's top edge (§4.13), so there is no
+/// navigation bar: the close button floats top-trailing, beside the plate.
+fileprivate struct V2BadgeSheetChrome<Content: View>: View {
+    private let onClose: () -> Void
+    private let content: Content
+
+    init(onClose: @escaping () -> Void, @ViewBuilder content: () -> Content) {
+        self.onClose = onClose
+        self.content = content()
+    }
+
+    var body: some View {
+        ZStack(alignment: .topTrailing) {
             VStack(spacing: 0) {
-                V2BadgeSheetPage(badge: badge, earnedOn: earnedOn, stamped: true, settled: true,
-                                 reduceMotion: true, showProgress: true)
-                V2BadgeSheetButtons(badge: badge, onDone: onClose)
+                content
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbar {
-                ToolbarItem(placement: .topBarTrailing) {
-                    V2SheetCloseButton(action: onClose)
-                }
-            }
+            V2SheetCloseButton(action: onClose)
+                .padding(.top, 12)
+                .padding(.trailing, 12)
         }
     }
 }
@@ -498,9 +512,7 @@ fileprivate struct V2BadgeSheetPage: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            V2Plate.badge(badge, size: 120)
-                .scaleEffect(stamped || reduceMotion ? 1 : 1.25)
-                .opacity(stamped ? 1 : 0)
+            plate
                 .frame(height: 120)
             VStack(spacing: 6) {
                 Text(verbatim: V2BadgeCopy.titleLine(badge))
@@ -532,9 +544,37 @@ fileprivate struct V2BadgeSheetPage: View {
             .opacity(settled ? 1 : 0)
             Spacer(minLength: 0)
         }
+        .padding(.top, 32)
         .padding(.horizontal, 24)
         .frame(maxWidth: .infinity)
         .accessibilityElement(children: .combine)
+    }
+
+    /// First earn: the plate STAMPs. Tier-up (§4.13): the tier below rests
+    /// there, then the new fill and its extra dot crossfade in over 300 ms.
+    @ViewBuilder private var plate: some View {
+        if let below = Self.tierBelow(badge) {
+            ZStack {
+                V2Plate.badge(below, size: 120)
+                    .opacity(stamped ? 0 : 1)
+                V2Plate.badge(badge, size: 120)
+                    .opacity(stamped ? 1 : 0)
+            }
+            .animation(.easeInOut(duration: 0.3), value: stamped)
+        } else {
+            V2Plate.badge(badge, size: 120)
+                .scaleEffect(stamped || reduceMotion ? 1 : 1.25)
+                .opacity(stamped ? 1 : 0)
+        }
+    }
+
+    /// The same badge one tier down, for a Silver or Gold landing.
+    private static func tierBelow(_ badge: Badge) -> Badge? {
+        guard !badge.isOneTime, let tier = badge.currentTier,
+              let below = BadgeTier(rawValue: tier.rawValue - 1) else { return nil }
+        return Badge(id: badge.id, icon: badge.icon, title: badge.title, description: badge.description,
+                     baseColor: badge.baseColor, progress: 0, currentTier: below, nextTier: tier,
+                     isOneTime: false, count: badge.count, nextThreshold: badge.nextThreshold)
     }
 }
 
@@ -568,6 +608,60 @@ fileprivate struct V2BadgeSheetButtons: View {
     }
 }
 
+/// "Unlocks the Night Owl app icon": 40 pt preview + `tint` "Use icon" (§4.13).
+/// Once the icon is in use the button gives way to "In use".
+fileprivate struct V2BadgeIconUnlockRow: View {
+    let icon: V2AppIconOption
+
+    @State private var inUse = false
+    @State private var busy = false
+
+    var body: some View {
+        HStack(spacing: 12) {
+            V2AppIconTile(icon: icon, size: 40)
+            Text(verbatim: "Unlocks the \(icon.displayName) app icon")
+                .font(V2Type.subhead)
+                .foregroundStyle(V2.label)
+                .lineLimit(2)
+                .minimumScaleFactor(0.85)
+                .fixedSize(horizontal: false, vertical: true)
+            Spacer(minLength: 8)
+            if inUse {
+                Text("In use")
+                    .font(V2Type.subhead)
+                    .foregroundStyle(V2.label2)
+            } else if V2AppIcons.isSupported {
+                Button(action: use) {
+                    Text("Use icon")
+                        .font(V2Type.subheadSemibold)
+                        .frame(minHeight: V2.rowMin)
+                }
+                .buttonStyle(.borderless)
+                .tint(V2.tint)
+                .disabled(busy)
+                .accessibilityHint("Sets the \(icon.displayName) icon on the Home Screen")
+            }
+        }
+        .padding(.horizontal, 24)
+        .onAppear {
+            inUse = V2AppIcons.current == icon
+        }
+        .onChange(of: icon) { _, newIcon in
+            inUse = V2AppIcons.current == newIcon
+        }
+    }
+
+    private func use() {
+        busy = true
+        Task { @MainActor in
+            let ok = await V2AppIcons.apply(icon)
+            busy = false
+            inUse = ok
+        }
+    }
+}
+
+/// The system-style close button: glass on iOS 26, a `fill` disc before.
 fileprivate struct V2SheetCloseButton: View {
     let action: () -> Void
 
@@ -575,8 +669,27 @@ fileprivate struct V2SheetCloseButton: View {
         Button(action: action) {
             Image(systemName: "xmark")
                 .font(V2Type.subheadSemibold)
+                .foregroundStyle(V2.label)
+                .frame(width: 44, height: 44)
+                .modifier(V2SheetCloseBackground())
+                .contentShape(Circle())
         }
+        .buttonStyle(.plain)
         .accessibilityLabel("Close")
+    }
+}
+
+fileprivate struct V2SheetCloseBackground: ViewModifier {
+    func body(content: Content) -> some View {
+        if #available(iOS 26.0, *) {
+            content.glassEffect(.regular.interactive(), in: Circle())
+        } else {
+            content.background {
+                Circle()
+                    .fill(V2.fill)
+                    .frame(width: 30, height: 30)
+            }
+        }
     }
 }
 

@@ -11,6 +11,9 @@
 //
 
 import SwiftUI
+import UIKit
+import CoreLocation
+import MapLibre
 
 // MARK: - Seek hand-off from the pushed lists
 
@@ -907,7 +910,8 @@ struct V2ReportRouteCard: View {
     }
 }
 
-/// "Open map": the existing MapLibre route view, full size (OSM attribution kept).
+/// "Open map": the drive on the same keyless vector basemap as v1, but
+/// interactive (pan and zoom), with the OSM attribution kept.
 struct V2RouteMapSheet: View {
     let route: [RoutePoint]
     let title: String
@@ -921,9 +925,10 @@ struct V2RouteMapSheet: View {
 
     var body: some View {
         NavigationStack {
-            MapLibreRouteRepresentable(route: route, colorScheme: colorScheme)
+            V2InteractiveRouteMap(route: route, colorScheme: colorScheme)
                 .background(V2.card)
                 .ignoresSafeArea(edges: .bottom)
+                .accessibilityLabel("Map of this drive's route")
                 .navigationTitle(title)
                 .navigationBarTitleDisplayMode(.inline)
                 .toolbar {
@@ -935,11 +940,178 @@ struct V2RouteMapSheet: View {
     }
 }
 
+/// `MapLibreRouteRepresentable` is a read-only instrument (every gesture off),
+/// so the full map gets its own: the same `TelemetryMap` style URLs and the
+/// same `lineDistanceMetrics` source + `$lineProgress` shading for direction of
+/// travel, drawn flat (no glow layer) in `label`, a start dot and the INK P
+/// plate at the end. Fitted once; after that the camera is the user's.
+private struct V2InteractiveRouteMap: UIViewRepresentable {
+    let route: [RoutePoint]
+    let colorScheme: ColorScheme
+
+    func makeCoordinator() -> Coordinator {
+        Coordinator(coords: Self.coordinates(route), scheme: colorScheme)
+    }
+
+    func makeUIView(context: Context) -> MLNMapView {
+        let mapView = MLNMapView(frame: .zero, styleURL: TelemetryMap.styleURL(for: colorScheme))
+        mapView.delegate = context.coordinator
+        mapView.backgroundColor = UIColor(V2.card)
+
+        // Pan and pinch; no rotation or tilt (flat, north up), no user dot.
+        mapView.allowsScrolling = true
+        mapView.allowsZooming = true
+        mapView.allowsRotating = false
+        mapView.allowsTilting = false
+        mapView.compassView.isHidden = true
+        mapView.showsUserLocation = false
+
+        // OSM/provider attribution stays visible for license compliance.
+        mapView.attributionButtonPosition = .bottomRight
+        mapView.logoView.isHidden = true
+
+        context.coordinator.plate = Self.plateImage(colorScheme, scale: context.environment.displayScale)
+        return mapView
+    }
+
+    func updateUIView(_ mapView: MLNMapView, context: Context) {
+        // Only an appearance flip changes anything: reload the basemap, and
+        // didFinishLoading redraws the route on the fresh style.
+        guard context.coordinator.scheme != colorScheme else { return }
+        context.coordinator.scheme = colorScheme
+        context.coordinator.plate = Self.plateImage(colorScheme, scale: context.environment.displayScale)
+        mapView.styleURL = TelemetryMap.styleURL(for: colorScheme)
+    }
+
+    private static func coordinates(_ route: [RoutePoint]) -> [CLLocationCoordinate2D] {
+        route
+            .filter { $0.lat.isFinite && $0.lng.isFinite && abs($0.lat) <= 90 && abs($0.lng) <= 180 && !($0.lat == 0 && $0.lng == 0) }
+            .map { CLLocationCoordinate2D(latitude: $0.lat, longitude: $0.lng) }
+    }
+
+    /// The P plate as a map image, in the map's appearance.
+    @MainActor
+    private static func plateImage(_ scheme: ColorScheme, scale: CGFloat) -> UIImage? {
+        let renderer = ImageRenderer(content: V2PPlate(size: 16).environment(\.colorScheme, scheme))
+        renderer.scale = max(1, scale)
+        return renderer.uiImage
+    }
+
+    final class Coordinator: NSObject, MLNMapViewDelegate {
+        let coords: [CLLocationCoordinate2D]
+        var scheme: ColorScheme
+        var plate: UIImage?
+        private var fitted = false
+
+        init(coords: [CLLocationCoordinate2D], scheme: ColorScheme) {
+            self.coords = coords
+            self.scheme = scheme
+        }
+
+        func mapView(_ mapView: MLNMapView, didFinishLoading style: MLNStyle) {
+            draw(on: style)
+            fitOnce(mapView)
+        }
+
+        private func draw(on style: MLNStyle) {
+            guard coords.count >= 2, style.source(withIdentifier: "v2-route-src") == nil else { return }
+            let traits = UITraitCollection(userInterfaceStyle: scheme == .dark ? .dark : .light)
+            let ink = UIColor(V2.label).resolvedColor(with: traits)
+            let paper = UIColor(V2.card).resolvedColor(with: traits)
+
+            var line = coords
+            let polyline = MLNPolylineFeature(coordinates: &line, count: UInt(line.count))
+            // lineDistanceMetrics is what lets $lineProgress shade start → end.
+            let source = MLNShapeSource(identifier: "v2-route-src", shape: polyline,
+                                        options: [.lineDistanceMetrics: true])
+            style.addSource(source)
+
+            let routeLine = MLNLineStyleLayer(identifier: "v2-route-line", source: source)
+            let dim = MapLibreRouteRepresentable.Coordinator.blend(ink, toward: paper, 0.6)
+            let stops: [NSNumber: UIColor] = [0.0: dim, 1.0: ink]
+            routeLine.lineGradient = NSExpression(
+                format: "mgl_interpolate:withCurveType:parameters:stops:($lineProgress, 'linear', nil, %@)",
+                stops)
+            routeLine.lineWidth = NSExpression(forConstantValue: 4)
+            routeLine.lineCap = NSExpression(forConstantValue: "round")
+            routeLine.lineJoin = NSExpression(forConstantValue: "round")
+            style.addLayer(routeLine)
+
+            if let first = coords.first {
+                let startSource = MLNShapeSource(identifier: "v2-start-src", shape: Self.point(first), options: nil)
+                style.addSource(startSource)
+                let dot = MLNCircleStyleLayer(identifier: "v2-start-dot", source: startSource)
+                dot.circleRadius = NSExpression(forConstantValue: 5)
+                dot.circleColor = NSExpression(forConstantValue: ink)
+                dot.circleStrokeWidth = NSExpression(forConstantValue: 2)
+                dot.circleStrokeColor = NSExpression(forConstantValue: paper)
+                style.addLayer(dot)
+            }
+
+            if let last = coords.last {
+                let endSource = MLNShapeSource(identifier: "v2-end-src", shape: Self.point(last), options: nil)
+                style.addSource(endSource)
+                if let plate {
+                    style.setImage(plate, forName: "v2-p-plate")
+                    let symbol = MLNSymbolStyleLayer(identifier: "v2-end-plate", source: endSource)
+                    symbol.iconImageName = NSExpression(forConstantValue: "v2-p-plate")
+                    symbol.iconAllowsOverlap = NSExpression(forConstantValue: true)
+                    style.addLayer(symbol)
+                } else {
+                    let dot = MLNCircleStyleLayer(identifier: "v2-end-dot", source: endSource)
+                    dot.circleRadius = NSExpression(forConstantValue: 6)
+                    dot.circleColor = NSExpression(forConstantValue: ink)
+                    style.addLayer(dot)
+                }
+            }
+        }
+
+        /// Frame the whole drive once the view has a size; never again, so a
+        /// pan or zoom (or an appearance flip) keeps the user's camera.
+        private func fitOnce(_ mapView: MLNMapView) {
+            guard !fitted, coords.count >= 2 else { return }
+            guard mapView.bounds.width > 0, mapView.bounds.height > 0 else {
+                DispatchQueue.main.async { [weak self, weak mapView] in
+                    guard let self, let mapView, mapView.bounds.width > 0, mapView.bounds.height > 0 else { return }
+                    self.fitOnce(mapView)
+                }
+                return
+            }
+            fitted = true
+            let lats = coords.map(\.latitude)
+            let lngs = coords.map(\.longitude)
+            guard let minLat = lats.min(), let maxLat = lats.max(),
+                  let minLng = lngs.min(), let maxLng = lngs.max() else { return }
+            let bounds = MLNCoordinateBounds(
+                sw: CLLocationCoordinate2D(latitude: minLat, longitude: minLng),
+                ne: CLLocationCoordinate2D(latitude: maxLat, longitude: maxLng)
+            )
+            mapView.setVisibleCoordinateBounds(
+                bounds,
+                edgePadding: UIEdgeInsets(top: 48, left: 32, bottom: 48, right: 32),
+                animated: false
+            )
+        }
+
+        private static func point(_ coordinate: CLLocationCoordinate2D) -> MLNPointFeature {
+            let feature = MLNPointFeature()
+            feature.coordinate = coordinate
+            return feature
+        }
+    }
+}
+
 // MARK: - Trip meter (§6.2)
 
+/// "Measured on this iPhone: 28,800 motion samples at 20 Hz and 412 GPS
+/// points." The camera-coverage sentence is left out: no drive stores how much
+/// of it the camera saw the road (the vision gate is motion-led and its
+/// on-road share is only ever printed in debug builds).
 struct V2ReportTripMeterCard: View {
     let samples: Int?
     let gpsPoints: Int?
+    /// Drive length, for the measured sample rate.
+    let duration: TimeInterval
     /// The drive's record is on this device (it was recorded here).
     let onThisDevice: Bool
     let cleanMinutes: Int?
@@ -949,9 +1121,28 @@ struct V2ReportTripMeterCard: View {
         (samples ?? 0) <= 0 && (gpsPoints ?? 0) <= 0 && cleanMinutes == nil
     }
 
+    /// Samples over the drive's length, in whole Hz. Within 2 Hz of a
+    /// nominal rate (the 20 Hz scoring stream, or the capture rate) it reads
+    /// as that rate; otherwise the measured number, never an assumed one.
+    static func sampleRate(samples: Int, duration: TimeInterval) -> Int? {
+        guard samples > 0, duration >= 1 else { return nil }
+        let hz = Double(samples) / duration
+        guard hz.isFinite, hz >= 1 else { return nil }
+        for nominal in [20.0, LocationManager.captureHz] where abs(hz - nominal) <= 2 {
+            return Int(nominal.rounded())
+        }
+        return Int(hz.rounded())
+    }
+
     private var sentence: String? {
         var parts: [String] = []
-        if let samples, samples > 0 { parts.append("\(samples.formatted()) motion samples") }
+        if let samples, samples > 0 {
+            if let hz = Self.sampleRate(samples: samples, duration: duration) {
+                parts.append("\(samples.formatted()) motion samples at \(hz) Hz")
+            } else {
+                parts.append("\(samples.formatted()) motion samples")
+            }
+        }
         if let gpsPoints, gpsPoints > 0 { parts.append("\(gpsPoints.formatted()) GPS points") }
         guard !parts.isEmpty else { return nil }
         let lead = onThisDevice ? "Measured on this iPhone: " : "Measured on the iPhone that recorded it: "

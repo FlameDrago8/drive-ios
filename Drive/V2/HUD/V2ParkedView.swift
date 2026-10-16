@@ -269,13 +269,27 @@ private struct V2ParkedReveal: View {
                 .opacity(plateIn ? 1 : 0)
                 .alignmentGuide(.lastTextBaseline) { d in d[.bottom] }
                 .accessibilityHidden(true)
-            if content.badge == nil, content.recordTab == .pb {
+            if showsPB {
+                // Board: 8 from the plate (the stack's 10 less 2).
                 V2GuideTabView(.pb, height: 20)
                     .scaleEffect(hookIn || reduceMotion ? 1 : 1.25)
                     .opacity(hookIn ? 1 : 0)
+                    .padding(.leading, -2)
                     .alignmentGuide(.lastTextBaseline) { d in d[.bottom] }
             }
         }
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(heroSpoken)
+    }
+
+    /// The PB tab is the hook unless a badge outranks it.
+    private var showsPB: Bool { content.badge == nil && content.recordTab == .pb }
+
+    /// "Score 98, grade A plus, personal best" (board heroAria).
+    private var heroSpoken: String {
+        let letter = V2HUDSpeech.grade(grade(for: content.score))
+        let pb = showsPB ? ", personal best" : ""
+        return "Score \(V2Voice.scoreText(content.score)), grade \(letter)\(pb)"
     }
 
     @ViewBuilder private var caption: some View {
@@ -381,7 +395,7 @@ private struct V2ParkedReveal: View {
     /// "(was 86)" in label2 on its own line (board v2-Parked).
     private var verdictLines: [String] {
         guard let text = content.verdictText, !text.isEmpty else { return [] }
-        return Self.sentences(text)
+        return V2ParkedSentences.split(text)
     }
 
     private var verdictBlock: some View {
@@ -612,26 +626,7 @@ private struct V2ParkedReveal: View {
         routeInput = ""
         guard !tag.isEmpty else { return }
         DriveStorage.shared.updateRouteTag(id: content.id, tag: tag)
-    }
-
-    // MARK: Helpers
-
-    /// Splits a verdict into sentences at ". " (decimals like "0.42" stay whole).
-    static func sentences(_ text: String) -> [String] {
-        var out: [String] = []
-        var current = ""
-        let chars = Array(text)
-        for (i, ch) in chars.enumerated() {
-            current.append(ch)
-            let atEnd = i + 1 == chars.count
-            if ch == ".", atEnd || chars[i + 1] == " " {
-                let s = current.trimmingCharacters(in: .whitespaces)
-                if !s.isEmpty { out.append(s) }
-                current = ""
-            }
-        }
-        let rest = current.trimmingCharacters(in: .whitespaces)
-        if !rest.isEmpty { out.append(rest) }
-        return out
+        // The Report header STAMPs the new shield once, then clears this.
+        UserDefaults.standard.set(content.id.uuidString, forKey: V2UserKey.scoped("routeJustNamed"))
     }
 }

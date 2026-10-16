@@ -16,6 +16,7 @@
 
 import SwiftUI
 import UIKit
+import TipKit
 
 struct V2ReportView: View {
     let sessionID: UUID
@@ -101,6 +102,15 @@ private struct V2ReportContent: View {
     @State private var draftName = ""
     @State private var showingMap = false
     @State private var deepLinkDone = false
+    // Teach once (§4.3): the nudge request and the popover.
+    @State private var teachToken = 0
+    @State private var tipShown = false
+    @State private var scrubbed = false
+    @State private var stripVisible = false
+    @State private var teachPending = false
+    // Name-route STAMP on the header shield.
+    @State private var shieldScale: CGFloat = 1
+    @State private var shieldOpacity: Double = 1
 
     private static let instrumentID = "v2-report-instrument"
 
@@ -175,6 +185,7 @@ private struct V2ReportContent: View {
                 .v2AppScheme()
         }
         .task(id: shareKey(m)) { renderShare(m) }
+        .task(id: m.facts.routeNumber ?? -1) { await stampShieldIfJustNamed(m.facts.routeNumber) }
     }
 
     // MARK: Sections (§6.2 order)
@@ -319,6 +330,8 @@ private struct V2ReportContent: View {
             HStack(alignment: .center, spacing: 8) {
                 if let n = f.routeNumber {
                     V2Plate.route(n, size: 28)
+                        .scaleEffect(shieldScale)
+                        .opacity(shieldOpacity)
                 }
                 Text(verbatim: f.name)
                     .font(V2Type.largeTitle)
@@ -433,9 +446,16 @@ private struct V2ReportContent: View {
                            car: m.car,
                            footageSeek: footageSeek,
                            drawProgress: drawProgress,
+                           teachToken: teachToken,
+                           showsTip: tipShown,
                            onMoment: { moment in jump(to: moment.timeOffset, moment: moment, proxy: nil) },
                            onRelease: { dropped, t, snapped in release(dropped, at: t, snapped: snapped, duration: m.session.duration) },
-                           onHome: { home() })
+                           onHome: { home() },
+                           onScrubStart: { scrubStarted() },
+                           onStripVisible: { visible in
+                               stripVisible = visible
+                               if visible { teachScrubIfNeeded() }
+                           })
             .padding(.horizontal, -V2.margin)
             .id(Self.instrumentID)
             .onScrollVisibilityChange(threshold: 0.3) { visible in
@@ -488,6 +508,7 @@ private struct V2ReportContent: View {
         if !V2ReportTripMeterCard.isEmpty(samples: samples, gpsPoints: gps, cleanMinutes: clean) {
             V2ReportTripMeterCard(samples: samples,
                                   gpsPoints: gps,
+                                  duration: m.session.duration,
                                   onThisDevice: m.session.hasRecord == true,
                                   cleanMinutes: clean)
                 .padding(.top, 32)
@@ -545,7 +566,43 @@ private struct V2ReportContent: View {
     private func saveRouteName() {
         let trimmed = draftName.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return }
+        // First name for this drive: its new shield STAMPs in, as after Parked.
+        if library.facts(sessionID)?.routeName == nil {
+            UserDefaults.standard.set(sessionID.uuidString, forKey: V2UserKey.scoped("routeJustNamed"))
+        }
         DriveStorage.shared.updateRouteTag(id: sessionID, tag: trimmed)
+    }
+
+    /// Named on Parked (or just now): STAMP the header shield once, `stamp`
+    /// haptic at contact, then forget the key. Waits for the shield to exist.
+    private func stampShieldIfJustNamed(_ number: Int?) async {
+        guard number != nil else { return }
+        let key = V2UserKey.scoped("routeJustNamed")
+        guard UserDefaults.standard.string(forKey: key) == sessionID.uuidString else { return }
+        UserDefaults.standard.removeObject(forKey: key)
+        var still = Transaction()
+        still.disablesAnimations = true
+        withTransaction(still) {
+            shieldScale = reduceMotion ? 1 : 1.25
+            shieldOpacity = 0
+        }
+        // After the push (and, on a first open, the score reveal) settles.
+        try? await Task.sleep(for: .milliseconds(heroRevealed ? 350 : 1000))
+        guard !Task.isCancelled else {
+            withTransaction(still) {
+                shieldScale = 1
+                shieldOpacity = 1
+            }
+            return
+        }
+        if reduceMotion {
+            withAnimation(.easeOut(duration: 0.15)) { shieldOpacity = 1 }
+        } else {
+            withAnimation(V2Motion.stamp) { shieldScale = 1 }
+            withAnimation(.linear(duration: 0.06)) { shieldOpacity = 1 }
+        }
+        try? await Task.sleep(for: .milliseconds(120))
+        V2Haptics.play(.stamp)
     }
 
     // MARK: Share card
@@ -603,13 +660,50 @@ private struct V2ReportContent: View {
         pointsSweep = true
     }
 
+    /// The instrument scrolled into view: DRAW once, then teach once.
     private func drawStrip(buckets: Int) {
-        guard drawProgress < 1 else { return }
-        if reduceMotion {
-            drawProgress = 1
+        guard drawProgress < 1 else {
+            teachScrubIfNeeded()
             return
         }
-        withAnimation(V2Motion.draw(buckets: buckets)) { drawProgress = 1 }
+        if reduceMotion {
+            drawProgress = 1
+            teachScrubIfNeeded()
+            return
+        }
+        withAnimation(V2Motion.draw(buckets: buckets)) {
+            drawProgress = 1
+        } completion: {
+            teachScrubIfNeeded()
+        }
+    }
+
+    /// The first strip this user ever sees (§4.3): once it is drawn and on
+    /// screen, the car nudges back one pitch and returns, and the TipKit
+    /// popover explains the drag. Retired by the first drag (or the tip's own
+    /// close button). Marked taught only when it actually showed.
+    private func teachScrubIfNeeded() {
+        let key = V2UserKey.scoped("scrubTaught")
+        guard stripVisible, drawProgress >= 1, !teachPending, !tipShown, !scrubbed,
+              !UserDefaults.standard.bool(forKey: key) else { return }
+        teachPending = true
+        V2TipKit.configureOnce()
+        Task { @MainActor in
+            // Let the reveal settle before the car moves on its own.
+            try? await Task.sleep(for: .milliseconds(400))
+            teachPending = false
+            guard stripVisible, !scrubbed else { return }
+            UserDefaults.standard.set(true, forKey: key)
+            teachToken += 1
+            tipShown = true
+        }
+    }
+
+    private func scrubStarted() {
+        if !scrubbed { scrubbed = true }
+        guard tipShown else { return }
+        tipShown = false
+        V2ScrubTip.current.invalidate(reason: .actionPerformed)
     }
 
     // MARK: Car + footage

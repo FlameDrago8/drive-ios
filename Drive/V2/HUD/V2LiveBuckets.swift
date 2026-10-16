@@ -111,14 +111,71 @@ final class V2LiveDrive: ObservableObject {
     }
 
     /// Saved vs Parked (§6.5): moving if a GPS fix in the last 10 s read over
-    /// 5 mph, or the engine's median of the last fixes still does.
-    static func isMoving(route: [RoutePoint], engineSpeedMS: Double, now: Date = Date()) -> Bool {
-        if engineSpeedMS > movingSpeedMS { return true }
+    /// 5 mph, or the IMU says the car is still rolling. Only fresh fixes count:
+    /// with the 10 m distance filter a parked phone gets no new fixes, so the
+    /// engine's median of the last five (the approach to the space) would read
+    /// "moving" long after the car stopped. The IMU covers lost GPS (tunnels,
+    /// garages). `ignoringLast` skips the hold-to-end touch itself.
+    static func isMoving(route: [RoutePoint], samples: [SensorSample], now: Date = Date()) -> Bool {
         for point in route.reversed() {
             guard now.timeIntervalSince(point.timestamp) <= 10 else { break }
             if point.speed > movingSpeedMS { return true }
         }
-        return false
+        return imuSaysMoving(samples: samples, ignoringLast: 1.5)
+    }
+
+    /// Parked detection (§6.5 Saved): under 2 mph.
+    static let parkedSpeedMS: Double = 2 * 0.44704
+    /// Seconds continuously under `parkedSpeedMS` before Saved becomes Parked.
+    static let parkedAfterSeconds: TimeInterval = 30
+
+    /// RMS (g) of the sample-to-sample change in gravity-axis acceleration that
+    /// reads as road vibration. The difference keeps tyre/road texture (high
+    /// frequency) and drops slow hand movement; an idling engine in a mount sits
+    /// well under it. Tunable: no labelled data was available to calibrate it.
+    static let vibrationMovingG: Double = 0.04
+    /// Seconds of motion the IMU check looks at.
+    private static let imuWindowSeconds: Double = 7
+
+    /// The IMU half of the speed gate: sustained vertical road vibration in at
+    /// least 80 % of the 1 s slices of the last `imuWindowSeconds` (ending
+    /// `ignoringLast` seconds before the newest sample). Too little data → false,
+    /// so GPS decides. Reads the existing LocationManager stream; no new sensor.
+    static func imuSaysMoving(samples: [SensorSample], ignoringLast skip: TimeInterval = 0) -> Bool {
+        guard let newest = samples.last else { return false }
+        let end = newest.timestamp.addingTimeInterval(-skip)
+        let start = end.addingTimeInterval(-imuWindowSeconds)
+        let hz = LocationManager.captureHz
+        let tail = samples.suffix(Int((imuWindowSeconds + skip + 1) * hz))
+        var vertical: [Double] = []
+        vertical.reserveCapacity(tail.count)
+        for s in tail where s.timestamp >= start && s.timestamp <= end {
+            vertical.append(verticalAccel(s))
+        }
+        let per = max(10, Int(hz))
+        let slices = vertical.count / per
+        guard slices >= 3 else { return false }
+        var shaking = 0
+        for c in 0..<slices {
+            let lo = c * per
+            var sum: Double = 0
+            for i in (lo + 1)..<(lo + per) {
+                let d: Double = vertical[i] - vertical[i - 1]
+                sum += d * d
+            }
+            let rms: Double = (sum / Double(per - 1)).squareRoot()
+            if rms >= vibrationMovingG { shaking += 1 }
+        }
+        return Double(shaking) >= 0.8 * Double(slices)
+    }
+
+    /// User acceleration along gravity (g); raw Z for pre-v2 samples.
+    private static func verticalAccel(_ s: SensorSample) -> Double {
+        let gx = s.gravityX, gy = s.gravityY, gz = s.gravityZ
+        let gmag: Double = (gx * gx + gy * gy + gz * gz).squareRoot()
+        guard gmag > 0.1 else { return s.userAccelZ }
+        let dot: Double = s.userAccelX * gx + s.userAccelY * gy + s.userAccelZ * gz
+        return dot / gmag
     }
 
     // MARK: Buckets

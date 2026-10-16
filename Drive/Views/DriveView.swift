@@ -5,7 +5,8 @@
 //  Created by Shiv g on 10/31/25.
 //
 //  v2 "Road Furniture" HUD (§6.5, §6.6): Ready → Recording → Analysing →
-//  Saved / Parked / Too short / Not scored / Save failed. The recording,
+//  Saved / Parked / Too short / Not scored / Save failed (Saved turns into
+//  Parked after 30 s under 2 mph; see watchForParking). The recording,
 //  scoring and saving logic below is the launch beta's, unchanged in order;
 //  the UI is drawn in one fake-landscape container (V2HUDLandscape) over the
 //  single full-bleed CameraView.
@@ -56,7 +57,9 @@ struct DriveView: View {
     // Badge snapshot before a drive — used to detect newly unlocked badges
     @State private var prevBadgeSnapshot: [String: (Bool, BadgeTier?)] = [:]
 
-    // Road detection — true once the model confirms the camera sees a road
+    // Road detection — true once the model confirms the camera sees a road.
+    // Recording only: CameraView hands frames to the model only while
+    // recording, so Ready shows the road check as an instruction instead.
     @State private var isOnRoad: Bool = true
 
     @Environment(\.requestReview) private var requestReview
@@ -83,6 +86,11 @@ struct DriveView: View {
     @State private var parkedEndPending = false
     /// The in-HUD "Discard this drive?" confirmation is showing.
     @State private var showDiscardConfirm = false
+    /// Saved's parking watch found the car parked while the app was not in
+    /// front: the notification posted, and the Parked reveal waits for the
+    /// driver to come back (so it isn't spent unseen).
+    @State private var parkedRevealPending = false
+    @Environment(\.scenePhase) private var scenePhase
 
     private var phase: HUDPhase {
         switch uploadStatus {
@@ -237,6 +245,15 @@ struct DriveView: View {
         .onChange(of: Int(currentScore)) { _, _ in pushLiveActivity() }
         .onChange(of: uploadStatus) { _, status in
             if status != .idle { awaitingFinish = false }
+        }
+        // Saved → Parked (§6.5): the parking watch runs only while Saved is
+        // up; leaving Saved (Parked, Done, disappear) cancels it.
+        .task(id: phase == .saved) {
+            guard phase == .saved else { return }
+            await watchForParking()
+        }
+        .onChange(of: scenePhase) { _, newPhase in
+            scenePhaseChanged(newPhase)
         }
         .onAppear {
             locationManager.requestPermission()
@@ -420,7 +437,7 @@ struct DriveView: View {
     /// Ready's left column under the job: road check, PERMIT line, Start.
     private func readyPanel(_ m: V2HUDMetrics) -> some View {
         ZStack(alignment: .topLeading) {
-            V2HUDRoadCheck(onRoad: isOnRoad)
+            V2HUDRoadCheck(mode: .instruction)
                 .frame(height: 22)
                 .offset(x: m.side, y: 200 + m.dy)
             if ProfileManager.shared.driverType == .learner {
@@ -492,6 +509,7 @@ struct DriveView: View {
         liveDrive.reset()
         awaitingFinish = false
         savedWhileMoving = false
+        parkedRevealPending = false
         newBadge = nil
         driveStartDate = Date()
         isRecording = true
@@ -509,8 +527,8 @@ struct DriveView: View {
     private func stopDrive() {
         guard isRecording else { return }
         // Read before stopping: the capture thread flushes the route right after.
-        savedWhileMoving = V2LiveDrive.isMoving(route: locationManager.snapshot().route,
-                                                engineSpeedMS: aiEngine.currentSpeedMS)
+        let moving = locationManager.snapshot()
+        savedWhileMoving = V2LiveDrive.isMoving(route: moving.route, samples: moving.samples)
         awaitingFinish = true
         isRecording = false
         stopTicker()
@@ -518,6 +536,88 @@ struct DriveView: View {
         isOnRoad = true
         UIApplication.shared.isIdleTimerDisabled = false
         pauseLiveActivity()
+    }
+
+    // MARK: – Saved → Parked
+
+    /// While Saved is up, GPS and motion restart on the drive's own
+    /// LocationManager (the drive was flushed and saved before Saved showed,
+    /// so this touches nothing the save reads) and are polled once a second.
+    /// After 30 s with no sign of moving at 2 mph or more (no fresh fix that
+    /// fast, no road vibration), the car is parked.
+    @MainActor
+    private func watchForParking() async {
+        guard !isRecording else { return }
+        locationManager.startTracking()
+        defer {
+            if !isRecording { locationManager.stopSensors() }
+            V2ParkedNotifier.endBackgroundTime()
+        }
+        var lastMoving = Date()
+        var newestFix = Date.distantPast
+        var restartedAt = Date()
+        var lastTick = Date()
+        while !Task.isCancelled {
+            try? await Task.sleep(for: .seconds(1))
+            guard !Task.isCancelled, phase == .saved, !parkedRevealPending else { return }
+            let now = Date()
+            // The app was suspended in between: nothing was measured, so the
+            // gap can't count as standing still.
+            if now.timeIntervalSince(lastTick) > 5 { lastMoving = now }
+            lastTick = now
+            let snap = locationManager.snapshot()
+            for point in snap.route where point.timestamp > newestFix {
+                newestFix = point.timestamp
+                if point.speed >= V2LiveDrive.parkedSpeedMS {
+                    lastMoving = max(lastMoving, point.timestamp)
+                }
+            }
+            if V2LiveDrive.imuSaysMoving(samples: snap.samples) { lastMoving = now }
+            if now.timeIntervalSince(lastMoving) >= V2LiveDrive.parkedAfterSeconds {
+                carParked()
+                return
+            }
+            // A long Saved stretch: restarting clears the buffers (the watch
+            // keeps its own evidence above).
+            if now.timeIntervalSince(restartedAt) >= 120 {
+                locationManager.startTracking()
+                restartedAt = now
+            }
+        }
+    }
+
+    /// Still for 30 s on the Saved screen. In front: the Parked reveal plays
+    /// now (spending the reveal). Not in front: the Parked notification posts
+    /// and the reveal waits until the app is active again.
+    @MainActor
+    private func carParked() {
+        guard phase == .saved, let id = lastSavedSessionID else { return }
+        // Asked of UIApplication, not `scenePhase`: this runs on the copy of
+        // the view the watch task captured, whose environment is a snapshot.
+        if UIApplication.shared.applicationState == .active {
+            savedWhileMoving = false
+        } else {
+            V2ParkedNotifier.post(sessionID: id, fallback: lastSavedSession)
+            parkedRevealPending = true
+        }
+    }
+
+    @MainActor
+    private func scenePhaseChanged(_ newPhase: ScenePhase) {
+        switch newPhase {
+        case .active:
+            V2ParkedNotifier.endBackgroundTime()
+            if parkedRevealPending, phase == .saved {
+                parkedRevealPending = false
+                savedWhileMoving = false
+            }
+        case .background:
+            // No background modes: ask for the short grace period so the
+            // watch can finish (and post) after the phone locks.
+            if phase == .saved, !parkedRevealPending { V2ParkedNotifier.beginBackgroundTime() }
+        default:
+            break
+        }
     }
 
     // MARK: – Live Activity

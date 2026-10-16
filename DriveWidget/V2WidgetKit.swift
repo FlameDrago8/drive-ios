@@ -64,6 +64,11 @@ enum V2W {
         scheme == .dark ? fixed(0x000000) : fixed(0xF2F2F7)
     }
 
+    /// CarPlay / Smart Stack card (Surfaces board): `card`, resolved the same way.
+    static func activityCard(_ scheme: ColorScheme) -> Color {
+        scheme == .dark ? fixed(0x1C1C1E) : fixed(0xFFFFFF)
+    }
+
     /// The Dynamic Island is always black, so it always uses the dark values.
     enum Island {
         static let label  = V2W.fixed(0xFFFFFF)

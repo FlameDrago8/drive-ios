@@ -152,11 +152,19 @@ struct V2ProgressView: View {
                     .accessibilityHidden(true)
                 }
             }
-            V2ProgressTrendChart(points: points, average: average, period: period, now: now)
+            V2ProgressTrendChart(points: points, average: average, period: period, now: now,
+                                 licenseChangedAt: period == .allTime ? Self.licenseChangedAt() : nil)
                 .frame(height: 162)
         }
         .v2Card()
         .padding(.top, 32)
+    }
+
+    /// When this user moved from Permit to License (the Driver Card writes
+    /// it). Read on every render: Profile publishes the new driver type, so
+    /// the chart picks it up as soon as it changes.
+    private static func licenseChangedAt() -> Date? {
+        UserDefaults.standard.object(forKey: V2UserKey.scoped("licenseChangedAt")) as? Date
     }
 
     /// "Oct 12–18" · "Since Sep 14, by week" · "Since June, by month".
@@ -460,12 +468,16 @@ struct V2ProgressView: View {
 /// Swift Charts bars 28 wide with r4 tops (okay/poor below 85, `paint` above),
 /// empty slots drawn as nothing, y 60–100 (lower when data is), the dashed
 /// average, the 85 / 70 thresholds labelled "A−" / "B−" at the trailing edge,
-/// slot initials in Caption 2 (now in `label`), and PB tabs on All Time.
+/// slot initials in Caption 2 (now in `label`), and on All Time the GUIDE PB
+/// tabs over personal-best bars plus an INK "LICENSE" tab on the x-axis at
+/// the month the licence changed.
 fileprivate struct V2ProgressTrendChart: View {
     let points: [V2TrendPoint]
     let average: Double?
     let period: V2Period
     let now: Date
+    /// All Time only: the Permit → License date.
+    let licenseChangedAt: Date?
 
     private struct Slot: Identifiable {
         let id: String
@@ -475,7 +487,11 @@ fileprivate struct V2ProgressTrendChart: View {
         let isPB: Bool
         let isNow: Bool
         let showLabel: Bool
+        let isLicense: Bool
     }
+
+    /// The LICENSE tab (§6.4): 46 × 16 INK, in the x-axis label row.
+    private static let licenseTabWidth: CGFloat = 46
 
     var body: some View {
         let slots = makeSlots()
@@ -495,6 +511,7 @@ fileprivate struct V2ProgressTrendChart: View {
         let keys = slots.map { $0.id }
         let byKey = Dictionary(uniqueKeysWithValues: slots.map { ($0.id, $0) })
         let lo = floorValue(slots)
+        let hi = ceilingValue(slots, lo: lo)
         let width = barWidth(count: slots.count)
         return Chart {
             ForEach(slots) { slot in
@@ -507,7 +524,7 @@ fileprivate struct V2ProgressTrendChart: View {
             }
         }
         .chartXScale(domain: keys)
-        .chartYScale(domain: lo...100)
+        .chartYScale(domain: lo...hi)
         .chartXAxis { xAxis(keys, byKey) }
         .chartYAxis { yAxis }
         .chartLegend(.hidden)
@@ -534,12 +551,21 @@ fileprivate struct V2ProgressTrendChart: View {
 
     private func xAxis(_ keys: [String], _ byKey: [String: Slot]) -> some AxisContent {
         AxisMarks(values: keys) { value in
-            let key = value.as(String.self)
+            // Labels are thinned by hand (stride, room around LICENSE).
             AxisValueLabel {
-                Text(verbatim: Self.axisLabel(key, byKey))
-                    .font(V2Type.caption2)
-                    .foregroundStyle(Self.isNow(key, byKey) ? V2.label : V2.label2)
+                Self.axisLabelView(value.as(String.self), byKey)
             }
+        }
+    }
+
+    @ViewBuilder
+    private static func axisLabelView(_ key: String?, _ byKey: [String: Slot]) -> some View {
+        if let key, let slot = byKey[key], slot.isLicense {
+            V2InkTab("LICENSE", width: licenseTabWidth, height: 16)
+        } else {
+            Text(verbatim: axisLabel(key, byKey))
+                .font(V2Type.caption2)
+                .foregroundStyle(isNow(key, byKey) ? V2.label : V2.label2)
         }
     }
 
@@ -561,17 +587,38 @@ fileprivate struct V2ProgressTrendChart: View {
         // Long All Time ranges: label every n-th month, always including the latest.
         let stride = points.count > 8 ? Int((Double(points.count) / 8).rounded(.up)) : 1
         let last = points.count - 1
+        let license = licenseIndex()
+        // Month labels within ~35 pt of the LICENSE tab's centre (half the tab
+        // plus half a label) give way to it, on a ~300 pt plot.
+        let slotWidth = 300.0 / Double(max(1, points.count))
+        let clearance = max(0, Int((35.0 / slotWidth).rounded(.up)) - 1)
         return points.enumerated().map { i, p in
-            Slot(id: "\(i)", label: p.label, spoken: spokenName(p.id), score: p.score, isPB: p.isPB,
-                 isNow: i == nowIndex,
-                 showLabel: stride == 1 || (last - i) % stride == 0)
+            let isLicense = i == license
+            let nearLicense = license.map { abs($0 - i) <= clearance } ?? false
+            return Slot(id: "\(i)", label: p.label, spoken: spokenName(p.id), score: p.score, isPB: p.isPB,
+                        isNow: i == nowIndex,
+                        showLabel: !nearLicense && (stride == 1 || (last - i) % stride == 0),
+                        isLicense: isLicense)
         }
+    }
+
+    /// The All Time month that holds the licence change, if it's on the chart.
+    private func licenseIndex() -> Int? {
+        guard period == .allTime, let changed = licenseChangedAt else { return nil }
+        let cal = Calendar.current
+        return points.firstIndex { cal.isDate($0.id, equalTo: changed, toGranularity: .month) }
     }
 
     private func floorValue(_ slots: [Slot]) -> Double {
         let lowest = min(slots.compactMap { $0.score }.min() ?? 100, average ?? 100)
         guard lowest < 60 else { return 60 }
         return max(0, ((lowest - 5) / 10).rounded(.down) * 10)
+    }
+
+    /// 100, plus room for a PB tab (16 pt + 4) over a bar near the top.
+    private func ceilingValue(_ slots: [Slot], lo: Double) -> Double {
+        let hasPB = slots.contains { $0.isPB && $0.score != nil }
+        return hasPB ? 100 + (100 - lo) * 0.18 : 100
     }
 
     private func barWidth(count: Int) -> MarkDimension {
@@ -615,6 +662,7 @@ fileprivate struct V2ProgressTrendChart: View {
         var text = head + ": " + (said.isEmpty ? "no scored drives" : said.joined(separator: ", ")) + "."
         if let average { text += " Average \(V2Voice.scoreText(average))." }
         if let pb = slots.last(where: { $0.isPB }) { text += " \(pb.spoken) has your personal best." }
+        if let license = slots.first(where: { $0.isLicense }) { text += " License from \(license.spoken)." }
         return text
     }
 }

@@ -6,6 +6,8 @@
 //  Parked states, and the Dynamic Island. Live surfaces stay neutral — the
 //  band colour is a verdict and arrives once parked. No ticking seconds:
 //  minutes come from the state (bucket commits), never a running timer.
+//  The `.small` family (CarPlay Dashboard, Smart Stack) is the car and the
+//  minutes only: never a score.
 //
 
 import ActivityKit
@@ -76,8 +78,12 @@ struct V2WActivityModel {
         hasScore ? "\(score), \(V2WScore.spoken(grade))" : "Not scored"
     }
 
+    var spokenMinutes: String {
+        minutes == 1 ? "1 minute" : "\(minutes) minutes"
+    }
+
     var spokenTrip: String {
-        var s = minutes == 1 ? "1 minute" : "\(minutes) minutes"
+        var s = spokenMinutes
         if let miles { s += ", \(miles) miles" }
         return s
     }
@@ -133,6 +139,8 @@ struct DriveWidgetLiveActivity: Widget {
             .widgetURL(URL(string: "drive://open"))
             .keylineTint(V2W.Island.keyline)
         }
+        // CarPlay Dashboard and the Smart Stack (§6.9). The widget target is iOS 26.1.
+        .supplementalActivityFamilies([.small])
     }
 }
 
@@ -141,12 +149,22 @@ struct DriveWidgetLiveActivity: Widget {
 struct V2WActivityLockScreen: View {
     let state: DriveActivityAttributes.ContentState
 
+    @Environment(\.activityFamily) private var family
     @Environment(\.colorScheme) private var scheme
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
+        switch family {
+        case .small:
+            V2WActivitySmall(state: state)
+        default:
+            lockScreen
+        }
+    }
+
+    private var lockScreen: some View {
         let m = V2WActivityModel(state: state, now: Date())
-        VStack(alignment: .leading, spacing: 0) {
+        return VStack(alignment: .leading, spacing: 0) {
             header(m)
                 .frame(height: 20)
             scoreRow(m)
@@ -276,6 +294,63 @@ struct V2WActivityLockScreen: View {
     }
 }
 
+// MARK: - CarPlay / Smart Stack (.small)
+
+/// CarPlay Dashboard (§6.9, Surfaces board 260×56, r16, `card`): car S +
+/// "Recording · 12 min" while recording, "Parked 3:52 PM" after. No score,
+/// no strip, and the minutes only move on bucket commits.
+struct V2WActivitySmall: View {
+    let state: DriveActivityAttributes.ContentState
+
+    @Environment(\.colorScheme) private var scheme
+
+    var body: some View {
+        let m = V2WActivityModel(state: state, now: Date())
+        let spoken = m.isLive ? "Recording, \(m.spokenMinutes)" : "Parked \(m.parkedClock)"
+        HStack(spacing: 10) {
+            V2WCar(size: .s, color: V2W.label)
+            line(m)
+                .lineLimit(1)
+                .minimumScaleFactor(0.8)
+            Spacer(minLength: 0)
+        }
+        .padding(.horizontal, 16)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
+        .activityBackgroundTint(V2W.activityCard(scheme))
+        .activitySystemActionForegroundColor(V2W.label)
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(Text(verbatim: spoken))
+    }
+
+    @ViewBuilder private func line(_ m: V2WActivityModel) -> some View {
+        if m.isLive {
+            HStack(alignment: .firstTextBaseline, spacing: 0) {
+                Text(verbatim: "Recording")
+                    .font(V2WType.text(15, .semibold))
+                    .foregroundStyle(V2W.label)
+                Text(verbatim: " \u{00B7} ")
+                    .font(V2WType.text(15))
+                    .foregroundStyle(V2W.label2)
+                Text(verbatim: "\(m.minutes)")
+                    .font(V2WType.measured(15))
+                    .foregroundStyle(V2W.label)
+                Text(verbatim: " min")
+                    .font(V2WType.text(15))
+                    .foregroundStyle(V2W.label2)
+            }
+        } else {
+            HStack(alignment: .firstTextBaseline, spacing: 4) {
+                Text(verbatim: "Parked")
+                    .font(V2WType.text(15, .semibold))
+                    .foregroundStyle(V2W.label)
+                Text(verbatim: m.parkedClock)
+                    .font(V2WType.measured(15))
+                    .foregroundStyle(V2W.label2)
+            }
+        }
+    }
+}
+
 // MARK: - Dynamic Island (always dark; never shows the Focus)
 
 /// Expanded leading: "89" 34 bold + letter 17.
@@ -334,7 +409,13 @@ struct V2WIslandTrip: View {
         .fixedSize()
         .padding(.trailing, 6)
         .accessibilityElement(children: .ignore)
-        .accessibilityLabel(m.spokenTrip)
+        .accessibilityLabel(Text(verbatim: spoken(m)))
+    }
+
+    /// Read in the order drawn: "4.2 miles, 12 minutes".
+    private func spoken(_ m: V2WActivityModel) -> String {
+        guard let miles = m.miles else { return m.spokenMinutes }
+        return "\(miles) miles, \(m.spokenMinutes)"
     }
 }
 
@@ -387,7 +468,13 @@ struct V2WIslandCompactScore: View {
             }
         }
         .accessibilityElement(children: .ignore)
-        .accessibilityLabel(Text(verbatim: m.hasScore ? "Score \(m.score)" : "Drive"))
+        .accessibilityLabel(Text(verbatim: spoken(m)))
+    }
+
+    /// Board: "Recording. Score 89."
+    private func spoken(_ m: V2WActivityModel) -> String {
+        let status = m.isLive ? "Recording" : "Parked"
+        return m.hasScore ? "\(status). Score \(m.score)." : "Drive \(status.lowercased())"
     }
 }
 
@@ -397,7 +484,8 @@ struct V2WIslandMinimal: View {
     let driverName: String
 
     var body: some View {
-        let label: String = state.isRecording ? "\(driverName)'s drive, recording" : "\(driverName)'s drive, parked"
+        // Board: "Drive recording" (the Island is the app's, not the driver's).
+        let label: String = state.isRecording ? "Drive recording" : "Drive parked"
         ZStack {
             V2WCar(size: .s, color: V2W.Island.label)
         }
