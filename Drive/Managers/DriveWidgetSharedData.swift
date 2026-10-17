@@ -56,6 +56,8 @@ struct DriveWidgetSummary: Codable {
     var focusShortTitle: String? = nil
     /// "learner" or "full" (DriverType raw value), for Permit voice.
     var driverType: String? = nil
+    /// Latest drive's id (uuidString), so a widget tap can open its Report.
+    var lastDriveID: String? = nil
 
     static let empty = DriveWidgetSummary(
         avgScore: 0, totalDrives: 0, streak: 0, lastScore: nil, lastDate: nil

@@ -60,6 +60,9 @@ struct DriveActivityAttributes: ActivityAttributes {
         /// the static monochrome sign on the Lock Screen. Never shown in the
         /// Dynamic Island.
         var focusCategory: String? = nil
+        /// Parked state: the saved drive's id (uuidString), so a tap can open
+        /// its Report via drive://report/<id>.
+        var driveID: String? = nil
     }
 
     /// Static data set once when the activity is created.

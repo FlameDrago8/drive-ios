@@ -345,6 +345,14 @@ final class V2Router: ObservableObject {
     /// Set when the HUD dismisses after Parked, so the root can show the Badge
     /// Earned sheet "the first time the app is foregrounded after Parked".
     @Published var parkedDismissedAt: Date? = nil
+    /// Drives tab search text, so other screens can open Drives filtered to a
+    /// route (Progress route cards).
+    @Published var drivesSearch: String = ""
+    /// A just-parked, unnamed drive to ask "Name this route?" about once the HUD
+    /// cover has closed (asking over the rotated HUD shows the alert sideways).
+    @Published var pendingRouteNaming: UUID? = nil
+    /// Ask for an App Store review once the HUD cover has closed.
+    @Published var pendingReviewPrompt = false
 
     private init() {}
 
@@ -368,6 +376,13 @@ final class V2Router: ObservableObject {
         todayPath = [.report(id, at: offset)]
     }
 
+    /// Opens the Drives tab filtered to a route name.
+    func showDrives(route: String) {
+        drivesSearch = route
+        drivesPath = []
+        tab = .drives
+    }
+
     func reset() {
         tab = .today
         todayPath = []
@@ -376,6 +391,9 @@ final class V2Router: ObservableObject {
         isDriving = false
         showingProfile = false
         parkedDismissedAt = nil
+        drivesSearch = ""
+        pendingRouteNaming = nil
+        pendingReviewPrompt = false
     }
 }
 

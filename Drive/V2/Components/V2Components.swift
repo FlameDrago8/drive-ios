@@ -1066,3 +1066,33 @@ extension View {
             .background(V2.card, in: RoundedRectangle(cornerRadius: radius, style: .continuous))
     }
 }
+
+// MARK: - STAMP
+
+/// The STAMP token (§3.5) as one modifier, so every plate lands the same way:
+/// scale 1.25 → 1 on `V2Motion.stamp`, opacity 0 → 1 over the first 60 ms.
+/// Under Reduce Motion there is no scale, only a 150 ms fade.
+///
+/// Flip `landed` without `withAnimation`; the modifier carries its own
+/// animations. Haptics stay with the caller: contact is ~120 ms after the flip.
+struct V2StampModifier: ViewModifier {
+    let landed: Bool
+    var delay: Double = 0
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    func body(content: Content) -> some View {
+        let fade: Animation = reduceMotion ? .linear(duration: 0.15) : .linear(duration: 0.06)
+        content
+            .scaleEffect(landed || reduceMotion ? 1 : 1.25)
+            .animation(reduceMotion ? nil : V2Motion.stamp.delay(delay), value: landed)
+            .opacity(landed ? 1 : 0)
+            .animation(fade.delay(delay), value: landed)
+    }
+}
+
+extension View {
+    /// STAMP this view in when `landed` flips to true (see `V2StampModifier`).
+    func v2Stamp(_ landed: Bool, delay: Double = 0) -> some View {
+        modifier(V2StampModifier(landed: landed, delay: delay))
+    }
+}
