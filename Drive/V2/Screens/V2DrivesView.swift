@@ -15,6 +15,7 @@ import UniformTypeIdentifiers
 
 struct V2DrivesView: View {
     @ObservedObject private var library = V2Library.shared
+    @ObservedObject private var router = V2Router.shared
     @Environment(\.colorScheme) private var colorScheme
 
     @State private var searchText = ""
@@ -44,13 +45,25 @@ struct V2DrivesView: View {
         .background(V2.bg.ignoresSafeArea())
         .navigationTitle("Drives")
         .navigationBarTitleDisplayMode(.large)
+        .onAppear { applyRouterSearch() }
+        .onChange(of: router.drivesSearch) { old, new in
+            if !new.isEmpty {
+                applyRouterSearch()
+            } else if showsRouterSearch(old) {
+                // Cleared by the router (account switch): drop the filter it set.
+                tokens = []
+                searchText = ""
+            }
+        }
+        .onChange(of: searchText) { _, _ in endRouterSearchIfEdited() }
+        .onChange(of: tokens) { _, _ in endRouterSearchIfEdited() }
         .alert(renameTitle, isPresented: $showingRename) {
             TextField("Route name", text: $draftName)
                 .textInputAutocapitalization(.sentences)
             Button("Save") { saveRename() }
-            Button("Cancel", role: .cancel) { renamingID = nil }
+            Button("Cancel", role: .cancel) {}
         } message: {
-            Text("Drives with the same name share a route number.")
+            Text(verbatim: renameMessage)
         }
     }
 
@@ -100,6 +113,45 @@ struct V2DrivesView: View {
             .sorted { $0.id < $1.id }
     }
 
+    // MARK: Route hand-off (V2Router.drivesSearch, set by Progress route cards)
+
+    /// The search a route hand-off stands for: the route's shield as a token
+    /// when it has a number (exact, unlike the name's words), else the name.
+    private func routerSearch(_ route: String) -> (tokens: [V2DrivesRouteToken], text: String) {
+        guard let clean = V2DriveFacts.cleanRouteName(route) else { return ([], "") }
+        let numbers = library.snapshot.routeNumbers
+        if let number = numbers[clean] {
+            return ([V2DrivesRouteToken(id: number, name: clean)], "")
+        }
+        let key = V2DriveFacts.routeKey(clean)
+        if let match = numbers.first(where: { V2DriveFacts.routeKey($0.key) == key }) {
+            return ([V2DrivesRouteToken(id: match.value, name: match.key)], "")
+        }
+        return ([], clean)
+    }
+
+    /// True while the field still shows exactly what the hand-off for `route` put there.
+    private func showsRouterSearch(_ route: String) -> Bool {
+        guard !route.isEmpty else { return false }
+        let search = routerSearch(route)
+        return tokens == search.tokens && searchText == search.text
+    }
+
+    private func applyRouterSearch() {
+        let search = routerSearch(router.drivesSearch)
+        guard !search.tokens.isEmpty || !search.text.isEmpty else { return }
+        tokens = search.tokens
+        searchText = search.text
+    }
+
+    /// Clearing (or otherwise editing) the search ends the hand-off, so the
+    /// next tap on the same route card filters again.
+    private func endRouterSearchIfEdited() {
+        let route = router.drivesSearch
+        guard !route.isEmpty, !showsRouterSearch(route) else { return }
+        router.drivesSearch = ""
+    }
+
     // MARK: Rename (DriveStorage.updateRouteTag, same as the Report)
 
     private var renameTitle: String {
@@ -114,12 +166,23 @@ struct V2DrivesView: View {
         showingRename = true
     }
 
+    /// "That's Route 1." when the name is (or folds to) a route that already
+    /// has a shield, "It'll be Route 4." when it would get a new one.
+    private var renameMessage: String {
+        guard let id = renamingID else { return "Drives with the same name share a route number." }
+        let route = library.resolveRoute(draftName, renaming: id)
+        return route.isNew ? "It'll be Route \(route.number)." : "That's Route \(route.number)."
+    }
+
+    /// Saves the existing route's spelling when the typed name matches one
+    /// ignoring case, spacing and accents, so "school run" joins "School run".
+    /// `renamingID` stays set until the next rename so the message doesn't
+    /// change while the alert animates out.
     private func saveRename() {
         guard let id = renamingID else { return }
-        renamingID = nil
-        let trimmed = draftName.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty else { return }
-        DriveStorage.shared.updateRouteTag(id: id, tag: trimmed)
+        let name = library.resolveRoute(draftName, renaming: id).name
+        guard !name.isEmpty else { return }
+        DriveStorage.shared.updateRouteTag(id: id, tag: name)
     }
 }
 

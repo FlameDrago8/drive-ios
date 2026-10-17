@@ -167,11 +167,13 @@ struct V2TodayView: View {
         .accessibilityHint("Opens the report.")
     }
 
-    /// C: a badge is one counted drive away.
+    /// C: a badge is one counted drive away. The plate is the tier being
+    /// worked toward, still LOCKED: a filled plate would read as already earned.
     private func badgeHero(_ badge: Badge, line: String) -> some View {
-        NavigationLink(value: V2Destination.badges) {
+        let plate = badge.isOneTime ? badge : V2BadgeCopy.nextTierPreview(badge)
+        return NavigationLink(value: V2Destination.badges) {
             HStack(alignment: .center, spacing: 16) {
-                V2Plate.badge(badge, size: 64)
+                V2Plate.badge(plate, size: 64)
                 Text(verbatim: line)
                     .font(V2Type.headline)
                     .foregroundStyle(V2.label)
