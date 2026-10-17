@@ -16,6 +16,7 @@
 import Foundation
 import Combine
 import UIKit
+import FirebaseAuth
 
 struct V2TraceStrip: Equatable { let strip: V2Strip; let moments: [V2Moment] }
 
@@ -53,6 +54,11 @@ final class V2Library: ObservableObject {
     private let traceCacheLimit = 24
     private var noTrace: Set<UUID> = []
     private var inFlight: [UUID: Task<[DriveTraceSecond]?, Never>] = [:]
+
+    /// Route identity as of the last rebuild: route key → display spelling
+    /// (earliest used) for routes in use, and the user's number registry.
+    private var routeDisplay: [String: String] = [:]
+    private var routeRegistry = V2RouteRegistry()
 
     /// Stats for a later calendar day than the snapshot's (Today after midnight).
     private var statsCache: (day: Date, stats: V2Stats)?
@@ -228,7 +234,7 @@ final class V2Library: ObservableObject {
         // Route average stopped time, from other drives on the route whose
         // traces are already in memory. Never reads a file here.
         var routeAvg: Int? = nil
-        if let route = f?.routeName ?? V2DriveFacts.routeName(for: s) {
+        if let route = f?.routeName ?? V2DriveFacts.routeName(for: s).map({ routeDisplay[V2DriveFacts.routeKey($0)] ?? $0 }) {
             var total = 0.0, n = 0
             for other in snapshot.facts where other.id != id && other.routeName == route {
                 if let d = digests[other.id], let m = d.stoppedMinutes(duration: other.session.duration) {
@@ -260,6 +266,72 @@ final class V2Library: ObservableObject {
                            miles: f?.miles ?? V2Format.miles(km: s.distanceKilometers),
                            avgMph: avgMph,
                            topMph: topMph)
+    }
+
+    // MARK: - Route naming
+
+    /// What saving `typed` as a route name means: the spelling to store
+    /// (an existing route's spelling when the names match ignoring case,
+    /// spacing and accents), its shield number, and whether that number is
+    /// new ("It'll be Route 4.") or already the route's ("That's Route 1.").
+    /// Blank input returns ("", next number, true). Doesn't save anything:
+    /// the registry takes the number when the renamed drive is rebuilt.
+    @MainActor
+    func resolveRoute(_ typed: String) -> (name: String, number: Int, isNew: Bool) {
+        resolveRoute(typed, spellingFrom: nil)
+    }
+
+    /// `resolveRoute(_:)` for renaming drive `id`: its own saved spelling
+    /// doesn't count, so the only drive on "school run" can become "School run".
+    func resolveRoute(_ typed: String, renaming id: UUID) -> (name: String, number: Int, isNew: Bool) {
+        resolveRoute(typed, spellingFrom: id)
+    }
+
+    private func resolveRoute(_ typed: String, spellingFrom excluded: UUID?) -> (name: String, number: Int, isNew: Bool) {
+        guard let clean = V2DriveFacts.cleanRouteName(typed) else { return ("", routeRegistry.next, true) }
+        let key = V2DriveFacts.routeKey(clean)
+        let name: String
+        if let excluded {
+            name = earliestSpelling(forKey: key, excluding: excluded) ?? clean
+        } else {
+            name = routeDisplay[key] ?? clean
+        }
+        if let number = routeRegistry.number(forKey: key) { return (name, number, false) }
+        return (name, routeRegistry.next, true)
+    }
+
+    /// The saved spelling of the earliest drive on `key`, other than `excluded`
+    /// (same order as the rebuild: oldest first, DriveStorage order breaks ties).
+    private func earliestSpelling(forKey key: String, excluding excluded: UUID) -> String? {
+        var best: (date: Date, name: String)? = nil
+        for f in snapshot.facts where f.id != excluded {
+            guard let saved = V2DriveFacts.routeName(for: f.session),
+                  V2DriveFacts.routeKey(saved) == key else { continue }
+            if let current = best, f.session.date > current.date { continue }
+            best = (f.session.date, saved)
+        }
+        return best?.name
+    }
+
+    /// Adds this user's new routes to the persisted registry and returns it.
+    /// `names` are saved spellings, oldest drive first.
+    private func registerRoutes(chronological names: [String]) -> V2RouteRegistry {
+        // UserManager (which scopes the key) and DriveStorage hear about an
+        // account switch separately; never file one account's routes under
+        // the other's key. A mismatch is momentary, so number from the data alone.
+        guard UserManager.shared.user?.uid == Auth.auth().currentUser?.uid else {
+            var transient = V2RouteRegistry()
+            transient.register(chronological: names)
+            return transient
+        }
+        let key = V2UserKey.scoped("routeNumbers")
+        let defaults = UserDefaults.standard
+        let stored = (defaults.dictionary(forKey: key) ?? [:]).compactMapValues { $0 as? Int }
+        var registry = V2RouteRegistry(numbers: stored)
+        if registry.register(chronological: names) {
+            defaults.set(registry.numbers, forKey: key)
+        }
+        return registry
     }
 
     // MARK: - Drives tab
@@ -405,10 +477,12 @@ final class V2Library: ObservableObject {
         // Per-drive basics, in DriveStorage order (newest first).
         var unnamedMemo: [String: String] = [:]
         var names: [UUID: String] = [:]
-        var routeNames: [String?] = []
+        var savedRoutes: [String?] = []      // the spelling each drive was saved with
+        var routeKeys: [String?] = []
         var counted: [Bool] = []
         var miles: [Double] = []
-        routeNames.reserveCapacity(sessions.count)
+        savedRoutes.reserveCapacity(sessions.count)
+        routeKeys.reserveCapacity(sessions.count)
         counted.reserveCapacity(sessions.count)
         miles.reserveCapacity(sessions.count)
         var newSessionIndex: [UUID: Int] = [:]
@@ -416,24 +490,22 @@ final class V2Library: ObservableObject {
         for (i, s) in sessions.enumerated() {
             newSessionIndex[s.id] = i
             let route = routeInfo(s)
-            let routeName = V2DriveFacts.routeName(for: s)
-            let start = s.date.addingTimeInterval(-s.duration)
-            let name: String
-            if let routeName {
-                name = routeName
-            } else {
+            let saved = V2DriveFacts.routeName(for: s)
+            savedRoutes.append(saved)
+            routeKeys.append(saved.map { V2DriveFacts.routeKey($0) })
+            if saved == nil {
                 // The unnamed name only depends on weekday + part of day, so
                 // format each pair once instead of once per drive.
+                let start = s.date.addingTimeInterval(-s.duration)
                 let key = "\(cal.component(.weekday, from: start))|\(V2Format.partOfDay(start))"
                 if let memo = unnamedMemo[key] {
-                    name = memo
+                    names[s.id] = memo
                 } else {
-                    name = V2Format.unnamedDriveName(start)
+                    let name = V2Format.unnamedDriveName(start)
                     unnamedMemo[key] = name
+                    names[s.id] = name
                 }
             }
-            names[s.id] = name
-            routeNames.append(routeName)
             counted.append(route.valid && s.duration >= 120 && s.metrics != nil)
             miles.append(route.miles)
         }
@@ -444,10 +516,29 @@ final class V2Library: ObservableObject {
             return da != db ? da < db : a > b
         }
 
-        // Route numbers by order of first use; never reused.
-        var routeNumbers: [String: Int] = [:]
+        // Route identity: drives whose names fold to the same key are one
+        // route, shown with its earliest spelling. Numbers come from the
+        // persisted registry, so naming or renaming never renumbers a route.
+        var display: [String: String] = [:]
+        var registryNames: [String] = []     // trimmed only: the pre-key identity the seed reproduces
         for i in chrono {
-            if let r = routeNames[i], routeNumbers[r] == nil { routeNumbers[r] = routeNumbers.count + 1 }
+            guard let key = routeKeys[i], let saved = savedRoutes[i] else { continue }
+            if display[key] == nil { display[key] = saved }
+            let trimmed = sessions[i].routeTag?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            registryNames.append(trimmed.isEmpty ? saved : trimmed)
+        }
+        let registry = registerRoutes(chronological: registryNames)
+
+        var routeNames: [String?] = []
+        routeNames.reserveCapacity(sessions.count)
+        for (i, s) in sessions.enumerated() {
+            let routeName = routeKeys[i].flatMap { display[$0] }
+            routeNames.append(routeName)
+            if let routeName { names[s.id] = routeName }
+        }
+        var routeNumbers: [String: Int] = [:]
+        for (key, name) in display {
+            if let number = registry.number(forKey: key) { routeNumbers[name] = number }
         }
 
         let countedChrono = chrono.filter { counted[$0] }.map { sessions[$0] }
@@ -462,7 +553,7 @@ final class V2Library: ObservableObject {
             var isRouteBest = false
             var isFirst = false
             var firstCondition: String? = nil
-            var previousID: UUID? = nil
+            var verdict = V2Verdict(kind: .unscored, text: "", was: nil)
         }
         var asOf = [AsOf](repeating: AsOf(), count: sessions.count)
         var priorDates: [Date] = []          // counted drives so far, chronological
@@ -472,7 +563,7 @@ final class V2Library: ObservableObject {
         var routeBest: [String: Double] = [:]
         var routeCount: [String: Int] = [:]
         var hadNightDrive = false
-        var previousID: UUID? = nil
+        var verdictHistory = V2VerdictHistory()
         let window: TimeInterval = 30 * 86_400
 
         for i in chrono {
@@ -486,8 +577,6 @@ final class V2Library: ObservableObject {
                 a.averageBefore = (prefix[priorDates.count] - prefix[windowStart]) / Double(inWindow)
             }
             a.previousBest = bestSoFar
-            a.previousID = previousID
-            previousID = s.id
             let route = routeNames[i]
             if let route { a.previousRouteBest = routeBest[route] }
 
@@ -512,6 +601,23 @@ final class V2Library: ObservableObject {
                     routeCount[route, default: 0] += 1
                 }
             }
+
+            // Verdicts walk forward too, so the phrasing can skip the ones
+            // the last two drives of the same kind used.
+            a.verdict = V2Voice.verdict(id: s.id,
+                                        score: s.score,
+                                        isScored: s.metrics != nil,
+                                        isPersonalBest: a.isPB,
+                                        previousBest: a.previousBest,
+                                        routeName: route,
+                                        isRouteBest: a.isRouteBest,
+                                        previousRouteBest: a.previousRouteBest,
+                                        focusCheck: focus.checks[s.id],
+                                        averageBefore: a.averageBefore,
+                                        isFirstDrive: a.isFirst,
+                                        hasDangerousFault: (s.faults ?? []).contains { $0.severity == .dangerous },
+                                        firstCondition: a.firstCondition,
+                                        history: &verdictHistory)
             asOf[i] = a
         }
 
@@ -539,20 +645,6 @@ final class V2Library: ObservableObject {
             let recordTab: V2RecordTab? = a.isPB ? .pb : (a.isRouteBest ? .best : nil)
             let delta: Int? = isCounted ? a.averageBefore.map { Int((s.score - $0).rounded()) } : nil
             let check = focus.checks[s.id]
-            let verdict = V2Voice.verdict(id: s.id,
-                                          score: s.score,
-                                          isScored: isScored,
-                                          isPersonalBest: a.isPB,
-                                          previousBest: a.previousBest,
-                                          routeName: routeName,
-                                          isRouteBest: a.isRouteBest,
-                                          previousRouteBest: a.previousRouteBest,
-                                          focusCheck: check,
-                                          averageBefore: a.averageBefore,
-                                          isFirstDrive: a.isFirst,
-                                          hasDangerousFault: (s.faults ?? []).contains { $0.severity == .dangerous },
-                                          firstCondition: a.firstCondition,
-                                          previousID: a.previousID)
 
             newFactsIndex[s.id] = facts.count
             facts.append(V2DriveFacts(id: s.id,
@@ -576,7 +668,7 @@ final class V2Library: ObservableObject {
                                       deltaVsAverage: delta,
                                       previousRouteBest: a.previousRouteBest,
                                       previousBest: a.previousBest,
-                                      verdict: verdict,
+                                      verdict: a.verdict,
                                       focusCheck: check,
                                       setJob: focus.setBy[s.id]))
         }
@@ -589,6 +681,8 @@ final class V2Library: ObservableObject {
 
         factsIndex = newFactsIndex
         sessionIndex = newSessionIndex
+        routeDisplay = display
+        routeRegistry = registry
         statsCache = nil
         builtAt = now
         snapshot = V2Snapshot(facts: facts, routeNumbers: routeNumbers, focus: focus,

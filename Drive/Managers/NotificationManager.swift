@@ -6,11 +6,14 @@
 //  no emoji, no exclamation marks, no loss language. The identifiers are part
 //  of the contract: re-scheduling removes the pending request by id first.
 //  Each kind has a per-user switch in Profile (`V2UserKey.scoped(_:)`).
+//  Nothing posts 8 PM – 7 AM: anything due then is held until 7 AM. A tap
+//  opens the screen the copy points at (`V2NotificationLink`).
 //
 
 import UserNotifications
 import Foundation
 import Combine
+import UIKit
 
 @MainActor
 final class NotificationManager: NSObject {
@@ -38,11 +41,59 @@ final class NotificationManager: NSObject {
     private var goalsCancellable: AnyCancellable?
     private var goalSeedTask: Task<Void, Never>?
     private var signOutCancellable: AnyCancellable?
+    private var activeCancellable: AnyCancellable?
+    private var backgroundCancellable: AnyCancellable?
+    /// A tap that arrived before the root was up (the root resets the router
+    /// on its first appear, then starts the goal watcher): it lands then.
+    private var pendingLanding: V2NotificationLink.Landing?
 
     private override init() {
         super.init()
         UNUserNotificationCenter.current().delegate = self
         watchSignOut()
+        watchForeground()
+    }
+
+    /// Badge and Parked notifications held overnight say what the Badge Earned
+    /// sheet and the Parked reveal / Report already show once the app is open,
+    /// so opening it drops them instead of repeating them at 7 AM.
+    private func watchForeground() {
+        let events = NotificationCenter.default
+        activeCancellable = events
+            .publisher(for: UIApplication.didBecomeActiveNotification)
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] _ in
+                MainActor.assumeIsolated {
+                    guard let self else { return }
+                    self.dropHeldInAppNotifications(includingParked: true)
+                }
+            }
+        // A badge earned at night is scheduled while the app is in front, so
+        // it is still held when the user leaves: drop it then if the Badge
+        // Earned sheet has already shown every earned badge.
+        backgroundCancellable = events
+            .publisher(for: UIApplication.didEnterBackgroundNotification)
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] _ in
+                MainActor.assumeIsolated {
+                    guard let self,
+                          V2BadgeTracker.shared.unseen(V2Library.shared.snapshot.badges).isEmpty else { return }
+                    self.dropHeldInAppNotifications(includingParked: false)
+                }
+            }
+        if UIApplication.shared.applicationState == .active {
+            dropHeldInAppNotifications(includingParked: true)
+        }
+    }
+
+    private func dropHeldInAppNotifications(includingParked: Bool) {
+        let parkedID: String? = includingParked ? V2ParkedNotifier.notificationID : nil
+        let badgePrefix = V2NotificationLink.badgeIDPrefix
+        center.getPendingNotificationRequests { requests in
+            let ids = requests.map(\.identifier).filter { $0 == parkedID || $0.hasPrefix(badgePrefix) }
+            guard !ids.isEmpty else { return }
+            UNUserNotificationCenter.current().removePendingNotificationRequests(withIdentifiers: ids)
+        }
     }
 
     /// Pending reminders carry the signed-in account's numbers (the recap,
@@ -118,6 +169,7 @@ final class NotificationManager: NSObject {
             ? "Any 2-minute drive with your supervisor makes it \(next). Not a driving day? That's fine."
             : "Any 2-minute drive today makes it \(next). Not a driving day? That's fine."
         content.sound = .default
+        content.userInfo = V2NotificationLink.payload(.today)
 
         let dc = Calendar.current.dateComponents([.year, .month, .day, .hour, .minute], from: fireDate)
         let trigger = UNCalendarNotificationTrigger(dateMatching: dc, repeats: false)
@@ -159,10 +211,18 @@ final class NotificationManager: NSObject {
             .trimmingCharacters(in: CharacterSet(charactersIn: ".!"))
         content.body = why.isEmpty ? "It's in your Logbook." : "\(why). It's in your Logbook."
         content.sound = .default
+        content.userInfo = V2NotificationLink.payload(.badges)
 
         // Unique ID so multiple unlocks don't collide
-        let id = "com.drive.badge.\(badge.id).\(Int(Date().timeIntervalSince1970))"
-        let trigger = UNTimeIntervalNotificationTrigger(timeInterval: 1.5, repeats: false)
+        let id = "\(V2NotificationLink.badgeIDPrefix)\(badge.id).\(Int(Date().timeIntervalSince1970))"
+        // Quiet hours: hold it until 7 AM. In front, the delegate drops the
+        // banner (the Badge Earned sheet shows it instead).
+        let trigger: UNNotificationTrigger
+        if let held = Self.quietHoursTrigger() {
+            trigger = held
+        } else {
+            trigger = UNTimeIntervalNotificationTrigger(timeInterval: 1.5, repeats: false)
+        }
         center.add(UNNotificationRequest(identifier: id, content: content, trigger: trigger))
     }
 
@@ -200,6 +260,7 @@ final class NotificationManager: NSObject {
         content.title = copy.title
         content.body = copy.body
         content.sound = .default
+        content.userInfo = V2NotificationLink.payload(.progress)
 
         let dc = cal.dateComponents([.year, .month, .day, .hour, .minute], from: fire)
         let trigger = UNCalendarNotificationTrigger(dateMatching: dc, repeats: false)
@@ -259,6 +320,11 @@ final class NotificationManager: NSObject {
                     self.schoolGoalsChanged(goals)
                 }
             }
+        // The root calls this right after its first-appear reset.
+        if let landing = pendingLanding {
+            pendingLanding = nil
+            land(landing)
+        }
     }
 
     private func schoolGoalsChanged(_ goals: [SchoolManager.InstructorGoal]) {
@@ -308,16 +374,25 @@ final class NotificationManager: NSObject {
         let title = goal.title.trimmingCharacters(in: .whitespacesAndNewlines)
         content.body = title.isEmpty ? "It's on your Today screen." : title
         content.sound = .default
+        content.userInfo = V2NotificationLink.payload(.today)
 
         // Quiet hours: hold it until 7 AM.
         let trigger: UNNotificationTrigger
-        if let morning = Self.quietHoursEnd(after: Date()) {
-            let dc = Calendar.current.dateComponents([.year, .month, .day, .hour, .minute], from: morning)
-            trigger = UNCalendarNotificationTrigger(dateMatching: dc, repeats: false)
+        if let held = Self.quietHoursTrigger() {
+            trigger = held
         } else {
             trigger = UNTimeIntervalNotificationTrigger(timeInterval: 1, repeats: false)
         }
         center.add(UNNotificationRequest(identifier: Self.goalIDPrefix + goal.id, content: content, trigger: trigger))
+    }
+
+    /// Spec DON'Ts: no notifications 8 PM – 7 AM. For a request that would
+    /// post now: a one-shot trigger at the next 7 AM inside that window, else
+    /// nil (post now). Parked uses it too.
+    static func quietHoursTrigger(now: Date = Date()) -> UNNotificationTrigger? {
+        guard let morning = quietHoursEnd(after: now) else { return nil }
+        let dc = Calendar.current.dateComponents([.year, .month, .day, .hour, .minute], from: morning)
+        return UNCalendarNotificationTrigger(dateMatching: dc, repeats: false)
     }
 
     /// The next 7 AM when `now` falls between 8 PM and 7 AM, else nil.
@@ -331,12 +406,77 @@ final class NotificationManager: NSObject {
         return cal.nextDate(after: now, matching: match, matchingPolicy: .nextTime)
     }
 
+    // MARK: - Taps
+
+    /// Lands a tapped notification: Parked → that drive's Report, a badge →
+    /// Badges, the recap → Progress, streak and school goals → Today. Ignored
+    /// mid-drive (the HUD owns the screen) and when signed out.
+    fileprivate func land(_ landing: V2NotificationLink.Landing) {
+        guard goalsCancellable != nil else {
+            pendingLanding = landing
+            return
+        }
+        let router = V2Router.shared
+        guard UserManager.shared.user != nil, !router.isDriving else { return }
+        router.showingProfile = false
+        switch landing {
+        case .report(let id):
+            router.openReport(id)
+        case .screen(.badges):
+            router.tab = .progress
+            router.progressPath = [.badges]
+        case .screen(.progress):
+            router.tab = .progress
+            router.progressPath = []
+        case .screen(.today):
+            router.tab = .today
+            router.todayPath = []
+        }
+    }
+
     // MARK: - Private
 
     private var center: UNUserNotificationCenter { UNUserNotificationCenter.current() }
 }
 
-// MARK: - Delegate (show notifications while app is foregrounded)
+/// What a notification request carries in `userInfo` so a tap can open the
+/// screen its copy points at. Requests without a payload (scheduled by an
+/// older build) fall back on their identifier.
+enum V2NotificationLink {
+    /// Parked: the drive's UUID string.
+    static let driveKey = "drive"
+    static let screenKey = "screen"
+    static let badgeIDPrefix = "com.drive.badge."
+
+    enum Screen: String { case today, progress, badges }
+
+    enum Landing: Equatable {
+        case report(UUID)
+        case screen(Screen)
+    }
+
+    static func payload(_ screen: Screen) -> [AnyHashable: Any] {
+        [screenKey: screen.rawValue]
+    }
+
+    static func landing(identifier: String, userInfo: [AnyHashable: Any]) -> Landing? {
+        if let raw = userInfo[driveKey] as? String, let id = UUID(uuidString: raw) {
+            return .report(id)
+        }
+        if let raw = userInfo[screenKey] as? String, let screen = Screen(rawValue: raw) {
+            return .screen(screen)
+        }
+        if identifier.hasPrefix(badgeIDPrefix) { return .screen(.badges) }
+        if identifier == "com.drive.weekly" { return .screen(.progress) }
+        if identifier == "com.drive.streak" || identifier == "com.drive.parked"
+            || identifier.hasPrefix("com.drive.goal.") {
+            return .screen(.today)
+        }
+        return nil
+    }
+}
+
+// MARK: - Delegate (foreground presentation and taps)
 
 extension NotificationManager: UNUserNotificationCenterDelegate {
     nonisolated func userNotificationCenter(
@@ -344,6 +484,40 @@ extension NotificationManager: UNUserNotificationCenterDelegate {
         willPresent notification: UNNotification,
         withCompletionHandler completionHandler: @escaping (UNNotificationPresentationOptions) -> Void
     ) {
-        completionHandler([.banner, .sound])
+        // §4.13: a new badge never banners over the HUD or the app; the
+        // Badge Earned sheet shows it. In the background it still banners.
+        if notification.request.identifier.hasPrefix(V2NotificationLink.badgeIDPrefix) {
+            completionHandler([])
+            return
+        }
+        // Mid-drive nothing banners; it waits in Notification Center. The
+        // center usually calls this off the main thread: read the router on main.
+        guard !Thread.isMainThread else {
+            let driving = MainActor.assumeIsolated { V2Router.shared.isDriving }
+            completionHandler(driving ? [.list] : [.banner, .sound])
+            return
+        }
+        DispatchQueue.main.async {
+            let driving = MainActor.assumeIsolated { V2Router.shared.isDriving }
+            completionHandler(driving ? [.list] : [.banner, .sound])
+        }
+    }
+
+    nonisolated func userNotificationCenter(
+        _ center: UNUserNotificationCenter,
+        didReceive response: UNNotificationResponse,
+        withCompletionHandler completionHandler: @escaping () -> Void
+    ) {
+        let request = response.notification.request
+        if response.actionIdentifier == UNNotificationDefaultActionIdentifier,
+           let landing = V2NotificationLink.landing(identifier: request.identifier,
+                                                    userInfo: request.content.userInfo) {
+            DispatchQueue.main.async {
+                MainActor.assumeIsolated {
+                    NotificationManager.shared.land(landing)
+                }
+            }
+        }
+        completionHandler()
     }
 }

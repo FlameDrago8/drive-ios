@@ -19,6 +19,10 @@ class AppDelegate: NSObject, UIApplicationDelegate {
                      didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]? = nil) -> Bool {
         FirebaseApp.configure()
 
+        // Become the notification delegate before launch finishes, so a tap
+        // that cold-launches the app is delivered and routed.
+        _ = NotificationManager.shared
+
         // Clear any Live Activity stranded by a crash or force-quit mid-drive.
         // The in-app teardown can't cover those — the process died holding the
         // only handle — so the activity would keep counting on the Lock Screen

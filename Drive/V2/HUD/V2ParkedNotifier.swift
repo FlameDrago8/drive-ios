@@ -48,8 +48,10 @@ enum V2ParkedNotifier {
         content.title = message.title
         content.body = message.body
         content.sound = .default
+        content.userInfo = [V2NotificationLink.driveKey: sessionID.uuidString]
         // Same id every time: a newer drive's summary replaces an older one.
-        let request = UNNotificationRequest(identifier: notificationID, content: content, trigger: nil)
+        let request = UNNotificationRequest(identifier: notificationID, content: content,
+                                            trigger: NotificationManager.quietHoursTrigger())
         UNUserNotificationCenter.current().add(request)
     }
 

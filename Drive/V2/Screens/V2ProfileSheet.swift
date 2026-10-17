@@ -462,7 +462,8 @@ struct V2ProfileSheet: View {
                         profileManager.saveAvatar(data)
                         showCropView = false
                     }, onCancel: { showCropView = false })
-                    .v2AppScheme()
+                    // Dark in either appearance, like the system photo editors.
+                    .preferredColorScheme(.dark)
                 }
             }
             // Demo drive forces dark itself, like the HUD.
@@ -492,6 +493,26 @@ struct V2ProfileSheet: View {
 
     // MARK: - Dialogs and alerts
 
+    /// "Clear all drives" starts the per-user v2 ledgers over with the drives:
+    /// with `badgesSeen` absent the tracker seeds empty on the next first
+    /// drive, so re-earned badges get their Badge Earned sheet again; stamps,
+    /// the daily streak animation and route numbers restart too. Notification
+    /// switches, school goals seen and licence history stay. Queued behind
+    /// `clearAll()`'s own main-queue hop, so no rebuild re-seeds from the old drives.
+    private func resetDriveLedgers() {
+        Task { @MainActor in
+            let defaults = UserDefaults.standard
+            for name in ["badgesSeen", "logbookStamps", "streakAnimatedDay", "routeNumbers"] {
+                defaults.removeObject(forKey: V2UserKey.scoped(name))
+            }
+            // The alternate icon is device-wide and every alternate is unlocked
+            // by a badge; with no drives none is earned any more.
+            if V2AppIcons.current != .standard {
+                _ = await V2AppIcons.apply(.standard)
+            }
+        }
+    }
+
     private func withDialogs(_ content: some View) -> some View {
         content
             // Leave school confirmation
@@ -515,6 +536,7 @@ struct V2ProfileSheet: View {
             ) {
                 Button("Clear All Data", role: .destructive) {
                     driveStorage.clearAll()
+                    resetDriveLedgers()
                 }
                 Button("Cancel", role: .cancel) {}
             } message: {

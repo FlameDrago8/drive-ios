@@ -245,15 +245,16 @@ enum V2StatsBuilder {
         }
     }
 
-    /// Named routes (AchievementEngine.routeStats grouping), by route number.
-    /// Average and best use counted drives where there are any; improving =
-    /// late-half average − early-half average ≥ 3 with at least 2 drives.
+    /// Named routes, one per route key (case, spacing and accents folded),
+    /// by route number. Average and best use counted drives where there are
+    /// any; improving = late-half average − early-half average ≥ 3 with at
+    /// least 2 drives.
     static func routes(facts: [V2DriveFacts], numbers: [String: Int]) -> [V2RouteSummary] {
         let named = facts.filter { $0.routeName != nil }
-        let grouped = Dictionary(grouping: named) { $0.routeName ?? "" }
+        let grouped = Dictionary(grouping: named) { V2DriveFacts.routeKey($0.routeName ?? "") }
         let summaries: [V2RouteSummary] = grouped.compactMap { entry -> V2RouteSummary? in
-            let name = entry.key
             let chrono = entry.value.sorted { $0.end < $1.end }
+            guard let name = chrono.first?.routeName else { return nil }
             let countedChrono = chrono.filter { $0.isCounted }
             let scored = countedChrono.isEmpty ? chrono : countedChrono
             let scores = scored.map(\.score)
@@ -433,9 +434,11 @@ enum V2StatsBuilder {
 
     /// The named route driven most; ties go to the lower route number.
     private static func mostDriven(_ facts: [V2DriveFacts]) -> (name: String, number: Int?)? {
-        let grouped = Dictionary(grouping: facts.filter { $0.routeName != nil }) { $0.routeName ?? "" }
-        let ranked = grouped.map { entry in
-            (name: entry.key, count: entry.value.count, number: entry.value.compactMap(\.routeNumber).first)
+        let named = facts.filter { $0.routeName != nil }
+        let grouped = Dictionary(grouping: named) { V2DriveFacts.routeKey($0.routeName ?? "") }
+        let ranked: [(name: String, count: Int, number: Int?)] = grouped.map { entry in
+            (name: entry.value.first?.routeName ?? entry.key, count: entry.value.count,
+             number: entry.value.compactMap(\.routeNumber).first)
         }
         .sorted { a, b in
             if a.count != b.count { return a.count > b.count }

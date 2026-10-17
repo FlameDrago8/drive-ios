@@ -29,104 +29,150 @@ enum V2Voice {
                         hasDangerousFault: Bool,
                         firstCondition: String? = nil, previousID: UUID? = nil) -> V2Verdict {
         let i = phrasing(id: id, previousID: previousID)
+        return composeVerdict(score: score, isScored: isScored, isPersonalBest: isPersonalBest,
+                              previousBest: previousBest, routeName: routeName, isRouteBest: isRouteBest,
+                              previousRouteBest: previousRouteBest, focusCheck: focusCheck,
+                              averageBefore: averageBefore, isFirstDrive: isFirstDrive,
+                              hasDangerousFault: hasDangerousFault, firstCondition: firstCondition,
+                              pick: { _ in i }).verdict
+    }
+
+    /// The same verdict for drives walked oldest first: the phrasing skips
+    /// the ones the last two drives with the same template used (with three
+    /// phrasings, the one left), then records its own in `history`.
+    static func verdict(id: UUID, score: Double, isScored: Bool, isPersonalBest: Bool, previousBest: Double?,
+                        routeName: String?, isRouteBest: Bool, previousRouteBest: Double?,
+                        focusCheck: V2FocusCheck?, averageBefore: Double?, isFirstDrive: Bool,
+                        hasDangerousFault: Bool, firstCondition: String? = nil,
+                        history: inout V2VerdictHistory) -> V2Verdict {
+        let recent = history
+        let composed = composeVerdict(score: score, isScored: isScored, isPersonalBest: isPersonalBest,
+                                      previousBest: previousBest, routeName: routeName, isRouteBest: isRouteBest,
+                                      previousRouteBest: previousRouteBest, focusCheck: focusCheck,
+                                      averageBefore: averageBefore, isFirstDrive: isFirstDrive,
+                                      hasDangerousFault: hasDangerousFault, firstCondition: firstCondition,
+                                      pick: { template in phrasing(id: id, avoiding: recent.used(template)) })
+        history.record(composed.template, composed.phrasing)
+        return composed.verdict
+    }
+
+    /// The verdict ladder. `pick` gets the template's name and returns the
+    /// phrasing index (0–2); the result says which template and index won.
+    private static func composeVerdict(score: Double, isScored: Bool, isPersonalBest: Bool, previousBest: Double?,
+                                       routeName: String?, isRouteBest: Bool, previousRouteBest: Double?,
+                                       focusCheck: V2FocusCheck?, averageBefore: Double?, isFirstDrive: Bool,
+                                       hasDangerousFault: Bool, firstCondition: String?,
+                                       pick: (String) -> Int) -> (verdict: V2Verdict, template: String, phrasing: Int) {
         let s = scoreText(score)
 
         guard isScored else {
-            return V2Verdict(kind: .unscored, text: [
+            let i = pick("unscored")
+            return (V2Verdict(kind: .unscored, text: [
                 "Scoring is still in development for this drive.",
                 "Saved. Scoring for this drive is still in development.",
                 "This drive is saved. Its score is still in development.",
-            ][i], was: nil)
+            ][i], was: nil), "unscored", i)
         }
 
         if hasDangerousFault {
-            return V2Verdict(kind: .dangerous, text: [
+            let i = pick("dangerous")
+            return (V2Verdict(kind: .dangerous, text: [
                 "One moment needs a look before the score.",
                 "Before the score, one moment is worth watching.",
                 "One moment on this drive matters more than the score.",
-            ][i], was: nil)
+            ][i], was: nil), "dangerous", i)
         }
 
         if isFirstDrive {
-            return V2Verdict(kind: .firstDrive, text: [
+            let i = pick("firstDrive")
+            return (V2Verdict(kind: .firstDrive, text: [
                 "Your first drive: \(s). Every drive builds on this one.",
                 "First drive logged at \(s).",
                 "\(s) on your first drive. Your baseline starts here.",
-            ][i], was: nil)
+            ][i], was: nil), "firstDrive", i)
         }
 
         if isPersonalBest {
-            return V2Verdict(kind: .personalBest, text: [
+            let i = pick("personalBest")
+            return (V2Verdict(kind: .personalBest, text: [
                 "Your best drive ever.",
                 "A new personal best.",
                 "Your highest score yet.",
-            ][i], was: previousBest.map { "(was \(scoreText($0)))" })
+            ][i], was: previousBest.map { "(was \(scoreText($0)))" }), "personalBest", i)
         }
 
         if isRouteBest, let route = trimmed(routeName) {
-            return V2Verdict(kind: .routeBest, text: [
+            let i = pick("routeBest")
+            return (V2Verdict(kind: .routeBest, text: [
                 "Best \(route) yet.",
                 "Your best \(route) so far.",
                 "A new best on \(route).",
-            ][i], was: previousRouteBest.map { "(was \(scoreText($0)))" })
+            ][i], was: previousRouteBest.map { "(was \(scoreText($0)))" }), "routeBest", i)
         }
 
         if let check = focusCheck {
             let none = "0 \(jobEventNoun(check.job, count: 0))"
             if check.outcome == .retired {
-                return V2Verdict(kind: .jobRetired, text: [
+                let i = pick("jobRetired")
+                return (V2Verdict(kind: .jobRetired, text: [
                     "Job retired: \(none) two drives running.",
                     "Two drives with \(none). Job retired.",
                     "\(capitalizedFirst(none)) again. That job is retired.",
-                ][i], was: nil)
+                ][i], was: nil), "jobRetired", i)
             }
             if check.outcome == .cleared {
-                return V2Verdict(kind: .jobCleared, text: [
+                let i = pick("jobCleared")
+                return (V2Verdict(kind: .jobCleared, text: [
                     "Job cleared: \(none) this drive.",
                     "\(capitalizedFirst(none)) this drive. Job cleared.",
                     "You cleared your job with \(none).",
-                ][i], was: nil)
+                ][i], was: nil), "jobCleared", i)
             }
         }
 
         if let condition = trimmed(firstCondition) {
-            return V2Verdict(kind: .firstConditions, text: [
+            let i = pick("firstConditions")
+            return (V2Verdict(kind: .firstConditions, text: [
                 "Your first \(condition). \(s) to start.",
                 "First \(condition) logged at \(s).",
                 "\(s) on your first \(condition).",
-            ][i], was: nil)
+            ][i], was: nil), "firstConditions", i)
         }
 
         guard let avg = averageBefore else {
             // Nothing counted in the 30 days before this drive.
-            return V2Verdict(kind: .onAverage, text: [
+            let i = pick("restart")
+            return (V2Verdict(kind: .onAverage, text: [
                 "\(s) restarts your 30-day average.",
                 "First drive in 30 days: \(s).",
                 "Back on the road at \(s).",
-            ][i], was: nil)
+            ][i], was: nil), "restart", i)
         }
 
         let delta = Int((score - avg).rounded())
         if delta >= 3 {
-            return V2Verdict(kind: .aboveAverage, text: [
+            let i = pick("aboveAverage")
+            return (V2Verdict(kind: .aboveAverage, text: [
                 "\(numberWord(delta)) points over your average.",
                 "Up \(delta) on your \(scoreText(avg)) average.",
                 "\(s), \(delta) better than your average.",
-            ][i], was: nil)
+            ][i], was: nil), "aboveAverage", i)
         }
         if delta <= -3 {
             let d = -delta
-            return V2Verdict(kind: .belowAverage, text: [
+            let i = pick("belowAverage")
+            return (V2Verdict(kind: .belowAverage, text: [
                 "A rougher one. \(s), \(d) under your average.",
                 "\(numberWord(d)) points under your average this time.",
                 "\(s) this drive, \(d) below your average.",
-            ][i], was: nil)
+            ][i], was: nil), "belowAverage", i)
         }
-        return V2Verdict(kind: .onAverage, text: [
+        let i = pick("onAverage")
+        return (V2Verdict(kind: .onAverage, text: [
             "Right on your \(scoreText(avg)) average.",
             "\(s), right in line with your average.",
             "Steady at \(s), right where you usually land.",
-        ][i], was: nil)
+        ][i], was: nil), "onAverage", i)
     }
 
     // MARK: - Score context
@@ -484,6 +530,15 @@ enum V2Voice {
         return h
     }
 
+    /// The id's hashed phrasing, or the next one along that `used` doesn't hold.
+    private static func phrasing(id: UUID, avoiding used: [Int], count: Int = 3) -> Int {
+        let start = Int(fnv1a(id.uuidString) % UInt64(count))
+        for step in 0..<count where !used.contains((start + step) % count) {
+            return (start + step) % count
+        }
+        return start
+    }
+
     private static func phrasing(id: UUID, previousID: UUID?, count: Int = 3) -> Int {
         let n = UInt64(count)
         var i = Int(fnv1a(id.uuidString) % n)
@@ -544,5 +599,24 @@ enum V2Voice {
     private static func trimmed(_ s: String?) -> String? {
         guard let t = s?.trimmingCharacters(in: .whitespacesAndNewlines), !t.isEmpty else { return nil }
         return t
+    }
+}
+
+/// Phrasings the most recent verdicts used, per template, for
+/// `V2Voice.verdict(…, history:)`. Walk drives oldest first.
+struct V2VerdictHistory {
+    private var recent: [String: [Int]] = [:]
+    /// How many of the latest phrasings per template to avoid.
+    private let depth = 2
+
+    init() {}
+
+    func used(_ template: String) -> [Int] { recent[template] ?? [] }
+
+    mutating func record(_ template: String, _ phrasing: Int) {
+        var list = recent[template] ?? []
+        list.append(phrasing)
+        if list.count > depth { list.removeFirst(list.count - depth) }
+        recent[template] = list
     }
 }

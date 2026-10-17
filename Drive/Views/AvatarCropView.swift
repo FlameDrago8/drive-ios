@@ -2,7 +2,11 @@
 //  AvatarCropView.swift
 //  Drive
 //
+//  Profile photo crop (Profile → photo). v2 styling: flat 2 pt rim, V2 type
+//  and tokens, always dark like the system's own photo editors.
+//
 import SwiftUI
+import UIKit
 
 struct AvatarCropView: View {
     let image: UIImage
@@ -30,30 +34,46 @@ struct AvatarCropView: View {
 
     var body: some View {
         ZStack {
-            Color.black.ignoresSafeArea()
+            // A photo editor is dark in either appearance, like the system's.
+            V2.fixed(0x000000).ignoresSafeArea()
 
             VStack(spacing: 0) {
                 // ── Nav bar
-                HStack {
-                    Button("Cancel") { onCancel() }
-                        .font(.system(size: 16, weight: .medium))
-                        .foregroundColor(.white)
-                    Spacer()
-                    Text("Move & Scale")
-                        .font(.system(size: 16, weight: .semibold))
-                        .foregroundColor(.white)
-                    Spacer()
-                    Button("Use Photo") { saveImage() }
-                        .font(.system(size: 16, weight: .semibold))
-                        .foregroundColor(DS.Colors.accent)
+                HStack(spacing: 12) {
+                    Button { onCancel() } label: {
+                        Text("Cancel")
+                            .font(V2Type.body)
+                            .foregroundStyle(V2.label)
+                            .frame(minWidth: 44, minHeight: 44, alignment: .leading)
+                            .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                    .layoutPriority(1)
+                    Spacer(minLength: 0)
+                    Text("Move and Scale")
+                        .font(V2Type.headline)
+                        .foregroundStyle(V2.label)
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.8)
+                        .accessibilityAddTraits(.isHeader)
+                    Spacer(minLength: 0)
+                    Button { saveImage() } label: {
+                        Text("Choose")
+                            .font(V2Type.headline)
+                            .foregroundStyle(V2.tint)
+                            .frame(minWidth: 44, minHeight: 44, alignment: .trailing)
+                            .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                    .layoutPriority(1)
                 }
-                .padding(.horizontal, 24)
-                .padding(.top, 20)
-                .padding(.bottom, 16)
+                .padding(.horizontal, V2.margin)
+                .padding(.top, 8)
+                .padding(.bottom, 8)
 
                 Spacer()
 
-                // ── Crop circle
+                // ── Crop circle: flat 2 pt rim, no glow
                 ZStack {
                     Image(uiImage: image)
                         .resizable()
@@ -64,9 +84,9 @@ struct AvatarCropView: View {
                 .clipShape(Circle())
                 .overlay(
                     Circle()
-                        .stroke(DS.Colors.accent.opacity(0.85), lineWidth: 2)
-                        .shadow(color: DS.Colors.accent.opacity(0.5), radius: 10)
+                        .stroke(V2.label, lineWidth: 2)
                 )
+                .contentShape(Circle())
                 .gesture(
                     SimultaneousGesture(
                         DragGesture()
@@ -88,15 +108,23 @@ struct AvatarCropView: View {
                             }
                     )
                 )
+                .accessibilityElement()
+                .accessibilityLabel("Photo preview")
+                .accessibilityHint("Drag to move it, pinch to zoom.")
 
                 Spacer()
 
                 Text("Drag and pinch to adjust")
-                    .font(.system(size: 13, weight: .medium))
-                    .foregroundColor(Color.white.opacity(0.45))
+                    .font(V2Type.footnote)
+                    .foregroundStyle(V2.label2)
+                    .multilineTextAlignment(.center)
+                    .padding(.horizontal, V2.margin)
                     .padding(.bottom, 44)
+                    .accessibilityHidden(true)
             }
         }
+        // Tokens resolve dark over the black backdrop whatever the app's appearance.
+        .environment(\.colorScheme, .dark)
     }
 
     // Clamp pan so image edges never expose background inside the circle
