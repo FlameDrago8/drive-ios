@@ -181,10 +181,10 @@ struct V2Root: View {
 
     /// A different account than last time on this device: re-check the icon.
     private func noteSignedInAccount() {
-        guard let uid = userManager.user?.uid else { return }
-        let defaults = UserDefaults.standard
-        guard defaults.string(forKey: Self.iconAccountKey) != uid else { return }
-        defaults.set(uid, forKey: Self.iconAccountKey)
+        guard let uid = userManager.user?.uid,
+              UserDefaults.standard.string(forKey: Self.iconAccountKey) != uid else { return }
+        // Recorded once the check has run (recheckAppIcon), so an app closed
+        // inside the settle wait checks again next launch.
         iconCheckPending = true
     }
 
@@ -201,7 +201,8 @@ struct V2Root: View {
     private func recheckAppIcon() async {
         guard iconCheckPending else { return }
         try? await Task.sleep(for: .seconds(4))
-        guard !Task.isCancelled, iconCheckPending, userManager.user?.uid != nil else { return }
+        guard !Task.isCancelled, iconCheckPending, let uid = userManager.user?.uid else { return }
+        UserDefaults.standard.set(uid, forKey: Self.iconAccountKey)
         iconCheckPending = false
         let icon = V2AppIcons.current
         guard icon != .standard, !V2AppIcons.isUnlocked(icon, badges: library.snapshot.badges) else { return }

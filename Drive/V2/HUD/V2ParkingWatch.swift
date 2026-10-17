@@ -15,6 +15,7 @@
 
 import SwiftUI
 import UIKit
+import FirebaseAuth
 
 @MainActor
 final class V2ParkingWatch: ObservableObject {
@@ -31,6 +32,9 @@ final class V2ParkingWatch: ObservableObject {
 
     /// The saved drive being watched; nil when idle.
     private(set) var sessionID: UUID?
+    /// The account that saved it. Signing out removes V2Root without its
+    /// account-change hook, so the loop checks this itself.
+    private var ownerUID: String?
     private var fallback: DriveSession?
     /// When the HUD stopped showing Saved for this drive (the 10 min cap).
     private var hudClosedAt: Date?
@@ -53,6 +57,7 @@ final class V2ParkingWatch: ObservableObject {
         let gen = generation
         sessionID = id
         self.fallback = fallback
+        ownerUID = UserManager.shared.user?.uid
         hudClosedAt = nil
         observeAppState()
         // Saved after Drive had already left the screen (an interrupted
@@ -102,6 +107,8 @@ final class V2ParkingWatch: ObservableObject {
         while !Task.isCancelled {
             try? await Task.sleep(for: .seconds(1))
             guard !Task.isCancelled, gen == generation else { return }
+            // Signed out (or switched) since the save: stop without posting.
+            guard UserManager.shared.user?.uid == ownerUID else { return }
             let now = Date()
             if let closed = hudClosedAt, now.timeIntervalSince(closed) >= Self.maxSecondsAfterHUD { return }
             // The app was suspended in between: nothing was measured, so the
@@ -142,6 +149,7 @@ final class V2ParkingWatch: ObservableObject {
     private func tearDown() {
         sessionID = nil
         fallback = nil
+        ownerUID = nil
         hudClosedAt = nil
         location?.stopSensors()
         for observer in observers { NotificationCenter.default.removeObserver(observer) }

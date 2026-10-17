@@ -706,7 +706,10 @@ struct DriveView: View {
     @MainActor
     private func watchFoundParked(_ parked: V2ParkingWatch.Parked?) {
         guard let parked, parked.sessionID == lastSavedSessionID, phase == .saved else { return }
-        if parked.appWasActive {
+        // Also when the app is in front by the time this runs: the change can
+        // land in the same update as (or after) the return to .active, whose
+        // handler has then already looked for a pending reveal.
+        if parked.appWasActive || scenePhase == .active {
             savedWhileMoving = false
         } else {
             parkedRevealPending = true
