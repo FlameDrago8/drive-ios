@@ -259,21 +259,60 @@ struct V2FriendRowsSkeleton: View {
     }
 }
 
-/// "Connect Game Center to compare with friends." + tint "Sign in".
+/// "Connect Game Center to compare with friends." + tint "Sign in". Once
+/// GameKit has refused to show its sheet (a sign-in was cancelled earlier this
+/// launch), the row sends the user to Settings instead of doing nothing.
 struct V2GameCenterConnectRow: View {
+    @ObservedObject private var status = V2GameCenterStatus.shared
+
     init() {}
 
     var body: some View {
         HStack(spacing: 12) {
-            Text("Connect Game Center to compare with friends.")
+            Text(verbatim: status.signInBlocked
+                 ? "Sign in to Game Center in Settings."
+                 : "Connect Game Center to compare with friends.")
                 .font(V2Type.body)
                 .foregroundStyle(V2.label)
                 .fixedSize(horizontal: false, vertical: true)
                 .frame(maxWidth: .infinity, alignment: .leading)
             Button {
-                GameCenterManager.shared.authenticate()
+                status.signIn()
             } label: {
-                Text("Sign in")
+                Text(verbatim: status.signInBlocked ? "Settings" : "Sign in")
+                    .font(V2Type.body)
+                    .foregroundStyle(V2.tint)
+                    .frame(minHeight: 44)
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .disabled(status.signingIn)
+            .accessibilityHint(status.signInBlocked ? "Opens Settings" : "Signs in to Game Center")
+        }
+        .padding(.horizontal, 16)
+        .padding(.vertical, 6)
+        .frame(minHeight: 56)
+    }
+}
+
+/// In place of the empty-board copy when the friends fetch failed:
+/// "Couldn't reach Game Center." + tint "Try again".
+struct V2GameCenterUnreachableRow: View {
+    private let retry: () -> Void
+
+    init(retry: @escaping () -> Void) {
+        self.retry = retry
+    }
+
+    var body: some View {
+        HStack(spacing: 12) {
+            Text("Couldn't reach Game Center.")
+                .font(V2Type.subhead)
+                .foregroundStyle(V2.label2)
+                .fixedSize(horizontal: false, vertical: true)
+                .frame(maxWidth: .infinity, alignment: .leading)
+            Button(action: retry) {
+                Text("Try again")
                     .font(V2Type.body)
                     .foregroundStyle(V2.tint)
                     .frame(minHeight: 44)
@@ -284,6 +323,99 @@ struct V2GameCenterConnectRow: View {
         .padding(.horizontal, 16)
         .padding(.vertical, 6)
         .frame(minHeight: 56)
+    }
+}
+
+// MARK: - Game Center status
+
+/// What GameCenterManager doesn't publish: whether GameKit refused to show its
+/// sign-in sheet (after one cancelled sign-in it won't present again this
+/// launch, and the manager drops the handler's error), and whether an empty
+/// friends board means "couldn't reach Game Center" rather than "no friends
+/// yet" (fetchFriends fails silently). Display-side only: authentication and
+/// score submission stay with GameCenterManager.
+@MainActor
+final class V2GameCenterStatus: ObservableObject {
+    static let shared = V2GameCenterStatus()
+
+    /// A Sign in tap produced neither a sign-in sheet nor a signed-in player.
+    @Published private(set) var signInBlocked = false
+    /// The last refresh came back empty because Game Center couldn't be reached.
+    @Published private(set) var fetchFailed = false
+    /// A Sign in tap is waiting for GameKit's answer.
+    @Published private(set) var signingIn = false
+
+    private init() {}
+
+    /// "Sign in": GameCenterManager's authenticate, or Settings once GameKit
+    /// has stopped presenting its sheet.
+    func signIn() {
+        if signInBlocked {
+            Self.openSettings()
+            return
+        }
+        guard !signingIn else { return }
+        signingIn = true
+        GameCenterManager.shared.authenticate()
+        Task { @MainActor in
+            // GameKit answers within a moment: its sheet, a signed-in player, or nothing.
+            try? await Task.sleep(for: .milliseconds(1500))
+            // While its sheet is up, wait for it to close (bounded), then give
+            // the handler a beat: a cancel there means GameKit won't ask again.
+            var waits = 0
+            while Self.isPresentingSheet() && waits < 240 {
+                try? await Task.sleep(for: .milliseconds(500))
+                waits += 1
+            }
+            if waits > 0 {
+                try? await Task.sleep(for: .milliseconds(1000))
+            }
+            self.signingIn = false
+            if !GameCenterManager.shared.isAuthenticated && !Self.isPresentingSheet() {
+                self.signInBlocked = true
+            }
+        }
+    }
+
+    /// GameCenterManager.fetchFriends for the scope (the beta's fetch, unchanged).
+    /// When the board comes back empty, a read-only probe of the same
+    /// leaderboard tells a failed fetch from a friendless one.
+    func refresh(_ scope: GKLeaderboard.TimeScope) async {
+        let center = GameCenterManager.shared
+        await center.fetchFriends(timeScope: scope)
+        guard center.isAuthenticated else { return }
+        signInBlocked = false
+        guard center.entries.isEmpty else {
+            fetchFailed = false
+            return
+        }
+        let reachable = await Self.canReachBoard(scope)
+        fetchFailed = !reachable
+    }
+
+    private static func canReachBoard(_ scope: GKLeaderboard.TimeScope) async -> Bool {
+        do {
+            let boards = try await GKLeaderboard.loadLeaderboards(IDs: [GameCenterManager.leaderboardID])
+            guard let board = boards.first else { return false }
+            _ = try await board.loadEntries(for: .friendsOnly, timeScope: scope,
+                                            range: NSRange(location: 1, length: 1))
+            return true
+        } catch {
+            return false
+        }
+    }
+
+    /// GameCenterManager presents its sheet on the key window's root.
+    private static func isPresentingSheet() -> Bool {
+        let root = UIApplication.shared.connectedScenes
+            .compactMap { $0 as? UIWindowScene }
+            .first?.keyWindow?.rootViewController
+        return root?.presentedViewController != nil
+    }
+
+    private static func openSettings() {
+        guard let url = URL(string: UIApplication.openSettingsURLString) else { return }
+        UIApplication.shared.open(url)
     }
 }
 
@@ -413,6 +545,7 @@ struct V2LeaderboardView: View {
     @ObservedObject private var gc = GameCenterManager.shared
     @ObservedObject private var storage = DriveStorage.shared
     @ObservedObject private var library = V2Library.shared
+    @ObservedObject private var status = V2GameCenterStatus.shared
 
     init() {}
 
@@ -430,7 +563,8 @@ struct V2LeaderboardView: View {
                         .background(V2.card)
                         .clipShape(RoundedRectangle(cornerRadius: V2.radiusCard, style: .continuous))
                 } else {
-                    V2FriendsHeader(Self.header(rows), top: 16)
+                    V2FriendsHeader(status.fetchFailed && rows.count <= 1 ? "Your friends, all time." : Self.header(rows),
+                                    top: 16)
                     VStack(spacing: 0) {
                         ForEach(Array(rows.enumerated()), id: \.element.id) { i, row in
                             if i > 0 && !row.isMe && !rows[i - 1].isMe {
@@ -440,12 +574,18 @@ struct V2LeaderboardView: View {
                         }
                         if rows.count <= 1 {
                             if !rows.isEmpty { V2FriendSeparator() }
-                            Text("Game Center friends who use Drive show up here.")
-                                .font(V2Type.subhead)
-                                .foregroundStyle(V2.label2)
-                                .fixedSize(horizontal: false, vertical: true)
-                                .frame(maxWidth: .infinity, alignment: .leading)
-                                .padding(16)
+                            if status.fetchFailed {
+                                V2GameCenterUnreachableRow {
+                                    Task { await V2GameCenterStatus.shared.refresh(.allTime) }
+                                }
+                            } else {
+                                Text("Game Center friends who use Drive show up here.")
+                                    .font(V2Type.subhead)
+                                    .foregroundStyle(V2.label2)
+                                    .fixedSize(horizontal: false, vertical: true)
+                                    .frame(maxWidth: .infinity, alignment: .leading)
+                                    .padding(16)
+                            }
                         }
                     }
                     .background(V2.card)
@@ -464,10 +604,10 @@ struct V2LeaderboardView: View {
         .navigationTitle("All time")
         .navigationBarTitleDisplayMode(.inline)
         .onAppear {
-            Task { await GameCenterManager.shared.fetchFriends(timeScope: .allTime) }
+            Task { await V2GameCenterStatus.shared.refresh(.allTime) }
         }
         .onChange(of: gc.isAuthenticated) { _, signedIn in
-            if signedIn { Task { await GameCenterManager.shared.fetchFriends(timeScope: .allTime) } }
+            if signedIn { Task { await V2GameCenterStatus.shared.refresh(.allTime) } }
         }
     }
 

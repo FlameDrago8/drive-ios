@@ -136,13 +136,30 @@ Swift 6 concurrency warnings are expected throughout (the app is in Swift 5 mode
 
 ## App Group setup (widgets stay empty until this is done, same as the launch beta)
 
-`driveAppGroupID` is still the `group.YOUR_BUNDLE_ID` placeholder from the beta, so the app
-writes its widget data where the widgets can't read it.
+The code side is done: `driveAppGroupID` is `group.com.venkatgunupuru.Driv`
+(`Drive/Managers/DriveWidgetSharedData.swift:20`), `Drive/Drive.entitlements` and the new
+`DriveWidget/DriveWidget.entitlements` both list that group, and the widget target's Debug
+and Release settings point `CODE_SIGN_ENTITLEMENTS` at its file. What's left is signing:
 
-1. developer.apple.com → Identifiers → App Groups → **+** → `group.com.venkatgunupuru.Driv` (the app's bundle id is `com.venkatgunupuru.Driv`).
-2. Xcode → **Drive** target → Signing & Capabilities → **+ Capability** → App Groups → tick the group. That adds it to `Drive/Drive.entitlements`. Do the same for the **DriveWidgetExtension** target (`com.venkatgunupuru.Driv.DriveWidget`), which creates its entitlements file.
-3. In `Drive/Managers/DriveWidgetSharedData.swift:20`, set `let driveAppGroupID = "group.com.venkatgunupuru.Driv"`. Both targets compile this file.
-4. Clean-build both targets and open the app once (its first library rebuild writes the widget data). Then add the widgets.
+1. Xcode → **Drive** target → Signing & Capabilities. An **App Groups** section now shows
+   `group.com.venkatgunupuru.Driv`. Make sure it's ticked and has no red warning. Automatic
+   signing registers the group for your team; if it can't, click the refresh button under
+   the list.
+2. Do the same on the **DriveWidgetExtension** target (`com.venkatgunupuru.Driv.DriveWidget`).
+   It should show the same group, ticked. The two strings must match exactly.
+3. If Xcode still says the group isn't registered: developer.apple.com → Identifiers → App
+   Groups → **+** → `group.com.venkatgunupuru.Driv`, then enable App Groups with that group on
+   both App IDs (`com.venkatgunupuru.Driv` and `com.venkatgunupuru.Driv.DriveWidget`), and
+   go back to step 1.
+4. Product → Clean Build Folder, build to the phone, and open the app once. Its first
+   library rebuild (`V2Library.rebuild` → `WidgetDataStore.writeV2`) writes the widget data.
+   Then add the widgets. A widget placed before this can keep its old empty timeline, so
+   remove it and add it again if it still reads "No drives yet".
+5. Debug builds stop on an `assertionFailure` in `WidgetDataStore` if
+   `UserDefaults(suiteName:)` returns nil. That only catches an unusable suite name, not a
+   missing or mismatched entitlement, so if the widgets still read "No drives yet" after a
+   drive, check that the group string is identical on both targets and in
+   `DriveWidgetSharedData.swift`.
 
 ## Behaviour that intentionally differs from the launch beta
 

@@ -44,6 +44,9 @@ struct CameraView: UIViewRepresentable {
         let c = context.coordinator
         // Only act when the recording intent actually changes — updateUIView is called for
         // every binding update and we must not hammer startRecording/stopRecording.
+        // Camera access granted after launch (Ready's first-run prompt, or
+        // Settings): configure now so the Ready preview comes alive.
+        c.configureIfAuthorized()
         guard isRecording != c.lastRecordingState else { return }
         c.lastRecordingState = isRecording
         if isRecording {
@@ -66,6 +69,18 @@ struct CameraView: UIViewRepresentable {
         var lastRecordingState = false
         /// Set when recording starts so timeOffset can be computed for each frame.
         var recordingStartDate: Date?
+        /// The camera input and outputs are on the session. False when access
+        /// was not granted at launch (or there is no camera).
+        private var isConfigured = false
+        /// A late configuration already failed with access granted (no camera):
+        /// don't retry it on every view update.
+        private var configureFailed = false
+        /// startRecording waits for the session; it gives up (and reports the
+        /// camera unavailable) after this many 0.4 s retries, about 4 s.
+        private var startAttempts = 0
+        private static let maxStartAttempts = 10
+        /// A start was asked for and the movie output hasn't begun yet.
+        private var startPending = false
 
         private let frameQueue = DispatchQueue(label: "com.drive.framequeue", qos: .userInitiated)
 
@@ -95,18 +110,61 @@ struct CameraView: UIViewRepresentable {
                 conn.isEnabled = true
             }
             session.commitConfiguration()
+            isConfigured = session.inputs.contains { $0 === input }
         }
 
+        /// Main thread. Configures (and starts) a session that launched
+        /// without camera access once access is granted. Cheap when done.
+        func configureIfAuthorized() {
+            guard !isConfigured, !configureFailed,
+                  AVCaptureDevice.authorizationStatus(for: .video) == .authorized else { return }
+            configureSession()
+            if isConfigured {
+                startSessionIfNeeded()
+            } else {
+                configureFailed = true
+            }
+        }
+
+        private func startSessionIfNeeded() {
+            guard !session.isRunning else { return }
+            let session = self.session
+            DispatchQueue.global(qos: .userInitiated).async { session.startRunning() }
+        }
+
+        /// Main thread (updateUIView). The session starts asynchronously, so
+        /// this retries briefly; if nothing records within ~4 s the camera is
+        /// reported unavailable instead of the HUD recording into nothing.
         func startRecording() {
-            guard !movieOutput.isRecording else { return }
-            guard session.isRunning else {
-                // The AVCaptureSession starts asynchronously; retry after a short pause.
-                DispatchQueue.global(qos: .userInitiated).asyncAfter(deadline: .now() + 0.4) { [weak self] in
-                    self?.startRecording()
+            startAttempts = 0
+            startPending = true
+            attemptStart()
+        }
+
+        private func attemptStart() {
+            // A stop since the retry was queued wins.
+            guard lastRecordingState else { return }
+            guard !movieOutput.isRecording else {
+                startPending = false
+                return
+            }
+            if !isConfigured {
+                configureSession()
+                if isConfigured { startSessionIfNeeded() }
+            }
+            guard isConfigured, session.isRunning,
+                  let conn = movieOutput.connection(with: .video), conn.isEnabled else {
+                startAttempts += 1
+                guard startAttempts <= Self.maxStartAttempts else {
+                    reportUnavailable()
+                    return
+                }
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) { [weak self] in
+                    self?.attemptStart()
                 }
                 return
             }
-            guard let conn = movieOutput.connection(with: .video), conn.isEnabled else { return }
+            startPending = false
             recordingStartDate = Date()
             let url = FileManager.default.temporaryDirectory
                 .appendingPathComponent("driveVideo_\(UUID().uuidString).mov")
@@ -114,9 +172,22 @@ struct CameraView: UIViewRepresentable {
         }
 
         func stopRecording() {
-            guard movieOutput.isRecording else { return }
+            guard movieOutput.isRecording else {
+                // Stopped before the camera ever recorded: no file will come,
+                // so say so now rather than leaving the HUD on Analysing.
+                // (After an interruption the output has already finished.)
+                if startPending { reportUnavailable() }
+                return
+            }
             recordingStartDate = nil
             movieOutput.stopRecording()
+        }
+
+        /// Async so it never lands inside a SwiftUI view update.
+        private func reportUnavailable() {
+            startAttempts = 0
+            startPending = false
+            DispatchQueue.main.async { self.parent.onRecordingError?(V2CameraError.unavailable) }
         }
 
         // MARK: - AVCaptureFileOutputRecordingDelegate
@@ -125,9 +196,15 @@ struct CameraView: UIViewRepresentable {
                         didFinishRecordingTo outputFileURL: URL,
                         from connections: [AVCaptureConnection],
                         error: Error?) {
+            // An interruption (Drive leaving the screen: Maps, a call, the side
+            // button) ends the recording with an error, but the movie is
+            // usually finalised and playable: that is a finished drive.
             if let error = error {
-                DispatchQueue.main.async { self.parent.onRecordingError?(error) }
-                return
+                let finished = (error as NSError).userInfo[AVErrorRecordingSuccessfullyFinishedKey] as? Bool ?? false
+                guard finished else {
+                    DispatchQueue.main.async { self.parent.onRecordingError?(error) }
+                    return
+                }
             }
             parent.onRecordingFinished?(outputFileURL)
         }
@@ -140,6 +217,37 @@ struct CameraView: UIViewRepresentable {
             guard parent.isRecording, let start = recordingStartDate else { return }
             let timeOffset = Date().timeIntervalSince(start)
             DriveAIEngine.shared.processFrame(sampleBuffer, at: timeOffset)
+        }
+    }
+}
+
+// MARK: - Camera availability (v2)
+
+/// The camera never produced a recording (no access, no camera, or the
+/// session never started).
+enum V2CameraError: Error {
+    case unavailable
+}
+
+/// Ready's camera check (§6.5): drives are recorded only with the camera, so
+/// Start is disabled when Drive can't use it.
+enum V2CameraAccess: Equatable {
+    case available, notDetermined, denied, noCamera
+
+    static var current: V2CameraAccess {
+        guard AVCaptureDevice.default(for: .video) != nil else { return .noCamera }
+        switch AVCaptureDevice.authorizationStatus(for: .video) {
+        case .authorized:          return .available
+        case .notDetermined:       return .notDetermined
+        case .denied, .restricted: return .denied
+        @unknown default:          return .denied
+        }
+    }
+
+    /// The system camera prompt. `completion` runs on the main actor.
+    static func request(_ completion: @escaping @MainActor (Bool) -> Void) {
+        AVCaptureDevice.requestAccess(for: .video) { granted in
+            Task { @MainActor in completion(granted) }
         }
     }
 }

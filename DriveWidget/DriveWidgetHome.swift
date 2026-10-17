@@ -133,8 +133,19 @@ struct DriveWidgetView: View {
 
     var body: some View {
         content
-            .widgetURL(URL(string: "drive://open"))
+            .widgetURL(tapURL)
             .containerBackground(for: .widget) { background }
+    }
+
+    /// The last-drive layouts open that drive's Report; the score and the
+    /// Focus sign just open the app.
+    private var tapURL: URL {
+        switch family {
+        case .systemMedium, .systemLarge, .systemExtraLarge, .accessoryRectangular:
+            return V2WLinks.report(entry.summary.lastDriveID)
+        default:
+            return V2WLinks.openApp
+        }
     }
 
     @ViewBuilder private var content: some View {
@@ -175,7 +186,7 @@ struct V2WStreakWidgetView: View {
     var body: some View {
         let streak = V2WStreak.resolve(entry.summary, writtenAt: entry.writtenAt, now: entry.date)
         content(streak)
-            .widgetURL(URL(string: "drive://open"))
+            .widgetURL(V2WLinks.openApp)
             .containerBackground(for: .widget) { background }
     }
 

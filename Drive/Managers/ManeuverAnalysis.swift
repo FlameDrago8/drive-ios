@@ -294,9 +294,17 @@ enum ManeuverDetector {
             score -= cost
         }
 
+        // Dangerous (display only, approved 2026-10-17): past a line strictly
+        // above the serious one, the fault is marked .dangerous with a plain
+        // account of what happened. Same criterion, same point cost as the
+        // serious fault it replaces, so every grade and score is unchanged.
         switch m.type {
         case .stop:
-            if peakDecel > 0.55 {
+            if peakDecel > 0.75 {
+                fault("Late braking", .dangerous, m.tEnd,
+                      "You braked at \(gStr(peakDecel)) coming into this stop, about as hard as an emergency stop. Start slowing four or five car lengths earlier so the car settles before the line.",
+                      .braking, 22)
+            } else if peakDecel > 0.55 {
                 fault("Late braking", .serious, m.tEnd,
                       "You arrived at this stop needing \(gStr(peakDecel)) of braking. Start slowing four or five car lengths earlier so the car settles before the line.",
                       .braking, 22)
@@ -312,7 +320,11 @@ enum ManeuverDetector {
             }
 
         case .turnLeft, .turnRight:
-            if peakLatHarsh > 0.50 {
+            if peakLatHarsh > 0.65 {
+                fault("Corner entry speed", .dangerous, m.tStart,
+                      "You took this turn with \(gStr(peakLat)) of sideways force, far too fast for the corner. Set your speed before you turn in, not during.",
+                      .cornering, 22)
+            } else if peakLatHarsh > 0.50 {
                 fault("Corner entry speed", .serious, m.tStart,
                       "You carried \(gStr(peakLat)) of lateral force through this turn — too fast for the corner. Set your speed before you turn in, not during.",
                       .cornering, 22)
@@ -326,7 +338,11 @@ enum ManeuverDetector {
             let midHi = hi - (hi - lo) / 4
             if midHi > midLo {
                 let midDecel = (midLo...midHi).map { max(0, -k.longG[$0]) }.max() ?? 0
-                if midDecel > 0.28 {
+                if midDecel > 0.45 {
+                    fault("Braking into the turn", .dangerous, Double(midLo) / hz,
+                          "You braked at \(gStr(midDecel)) after turning in, hard enough to unsettle the car mid-corner. Brake in a straight line, then come off the brake as you steer.",
+                          .cornering, 18)
+                } else if midDecel > 0.28 {
                     fault("Braking into the turn", .serious, Double(midLo) / hz,
                           "You were still braking after turning in. Brake in a straight line, then come off the brake as you steer — braking mid-corner unsettles the car and costs you grip.",
                           .cornering, 18)
@@ -334,7 +350,11 @@ enum ManeuverDetector {
             }
 
         case .roundabout:
-            if peakLatHarsh > 0.45 {
+            if peakLatHarsh > 0.60 {
+                fault("Roundabout speed", .dangerous, m.tStart,
+                      "You went round this roundabout with \(gStr(peakLat)) of sideways force, far too fast for it. Slowing on approach buys you time to look right and still have options.",
+                      .cornering, 20)
+            } else if peakLatHarsh > 0.45 {
                 fault("Roundabout speed", .serious, m.tStart,
                       "Too quick through this roundabout. Slowing on approach buys you time to look right and still have options.",
                       .cornering, 20)
@@ -346,7 +366,11 @@ enum ManeuverDetector {
             }
 
         case .laneChange:
-            if peakLatHarsh > 0.30 {
+            if peakLatHarsh > 0.45 {
+                fault("Abrupt lane change", .dangerous, m.tStart,
+                      "You moved across with \(gStr(peakLat)) of sideways force, closer to a swerve than a lane change. Signal, check, then move across gradually over two to three seconds.",
+                      .safety, 18)
+            } else if peakLatHarsh > 0.30 {
                 fault("Abrupt lane change", .serious, m.tStart,
                       "This lane change was sharp. Signal, check, then move across gradually over two to three seconds.",
                       .safety, 18)

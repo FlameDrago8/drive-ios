@@ -11,7 +11,7 @@
 //  hasRecord; a tap on any moment seeks the footage (3 s pre-roll, plays) and
 //  scrolls the instrument into view; no-metrics placeholder; speed rows only
 //  with an average speed; map only with ≥ 2 route points; footage chain and
-//  copy; the PNG share card at 3×.
+//  copy (V2FootagePlayer.swift); the PNG share card at 3×.
 //
 
 import SwiftUI
@@ -88,12 +88,15 @@ private struct V2ReportContent: View {
 
     // Reveal (§4.16): captured when the Report first opens this drive.
     @State private var heroRevealed: Bool
+    /// The PB tab STAMPs ~200 ms after the score lands (§4.13, G2-04).
+    @State private var pbIn: Bool
     @State private var pointsSweep: Bool
     @State private var drawProgress: Double
 
     /// nil = at rest (the worst moment, or P when there are none).
     @State private var car: V2ReportCar? = nil
-    @State private var footageSeek: V2FootageSeek? = nil
+    /// The footage player: cued at the worst moment, jumped by taps, scrubbed by the car.
+    @StateObject private var footage = V2FootagePlayer()
     @State private var trace: [DriveTraceSecond]? = nil
     @State private var expandedTips: Set<Int> = []
     @State private var showTitle = false
@@ -119,6 +122,7 @@ private struct V2ReportContent: View {
         self.at = at
         let revealed = V2RevealLedger.shared.isRevealed(sessionID)
         _heroRevealed = State(initialValue: revealed)
+        _pbIn = State(initialValue: revealed)
         _pointsSweep = State(initialValue: revealed)
         _drawProgress = State(initialValue: revealed ? 1 : 0)
     }
@@ -244,6 +248,11 @@ private struct V2ReportContent: View {
         let focusTop: CGFloat = check != nil ? 12 : (insight != nil ? 16 : 32)
         let tipsTop: CGFloat = (insight != nil || check != nil || m.focusJob != nil) ? 16 : 32
         let focusMoments = Array(m.moments.filter { $0.isFocus }.prefix(2))
+        // V2Tips' count-based fallbacks get rewritten bodies; praise carries a number.
+        let fallbackTips = (m.session.coachTips ?? []).isEmpty && m.session.metrics != nil
+        let praise: V2TipPraise? = tips.contains(where: { $0.category == .positive })
+            ? V2TipPraise.make(metrics: m.session.metrics, strip: m.strip, trace: trace)
+            : nil
 
         return VStack(alignment: .leading, spacing: 0) {
             header("Where the points went")
@@ -279,6 +288,8 @@ private struct V2ReportContent: View {
                                  strip: m.strip,
                                  start: m.facts.start,
                                  expanded: $expandedTips,
+                                 fallback: fallbackTips,
+                                 praise: praise,
                                  onMoment: onMoment,
                                  onOffset: onOffset)
                     .padding(.top, tipsTop)
@@ -368,13 +379,12 @@ private struct V2ReportContent: View {
                 V2HeroScore(score: f.score, size: 112, plateHeight: 56,
                             rollFrom: f.averageBefore ?? max(0, f.score - 10),
                             revealed: heroRevealed,
-                            onRevealed: {
-                                V2Haptics.play(.land)
-                                V2RevealLedger.shared.markRevealed(sessionID)
-                            })
+                            onRevealed: { scoreLanded() })
                 if f.recordTab == .pb {
                     V2GuideTabView(.pb, height: 20)
+                        .v2Stamp(pbIn)
                         .padding(.bottom, 14)
+                        .accessibilityHidden(!pbIn)
                 }
             }
             if let line = V2Voice.versusAverage(delta: f.deltaVsAverage, average: f.averageBefore) {
@@ -439,23 +449,27 @@ private struct V2ReportContent: View {
     }
 
     private func instrument(_ m: V2ReportModel) -> some View {
-        V2ReportInstrument(session: m.session,
-                           start: m.facts.start,
-                           strip: m.strip,
-                           moments: m.moments,
-                           car: m.car,
-                           footageSeek: footageSeek,
-                           drawProgress: drawProgress,
-                           teachToken: teachToken,
-                           showsTip: tipShown,
-                           onMoment: { moment in jump(to: moment.timeOffset, moment: moment, proxy: nil) },
-                           onRelease: { dropped, t, snapped in release(dropped, at: t, snapped: snapped, duration: m.session.duration) },
-                           onHome: { home() },
-                           onScrubStart: { scrubStarted() },
-                           onStripVisible: { visible in
-                               stripVisible = visible
-                               if visible { teachScrubIfNeeded() }
-                           })
+        let player = footage
+        return V2ReportInstrument(session: m.session,
+                                  start: m.facts.start,
+                                  strip: m.strip,
+                                  moments: m.moments,
+                                  car: m.car,
+                                  footage: player,
+                                  restOffset: Self.restMoment(strip: m.strip, moments: m.moments)?.timeOffset,
+                                  trace: trace,
+                                  drawProgress: drawProgress,
+                                  teachToken: teachToken,
+                                  showsTip: tipShown,
+                                  onMoment: { moment in jump(to: moment.timeOffset, moment: moment, proxy: nil) },
+                                  onRelease: { dropped, t, snapped in release(dropped, at: t, snapped: snapped, duration: m.session.duration) },
+                                  onHome: { home() },
+                                  onScrubStart: { scrubStarted() },
+                                  onScrub: { t in player.scrub(to: t) },
+                                  onStripVisible: { visible in
+                                      stripVisible = visible
+                                      if visible { teachScrubIfNeeded() }
+                                  })
             .padding(.horizontal, -V2.margin)
             .id(Self.instrumentID)
             .onScrollVisibilityChange(threshold: 0.3) { visible in
@@ -563,14 +577,16 @@ private struct V2ReportContent: View {
         f.routeName == nil ? "Name this route" : "Rename route"
     }
 
+    /// Saves the route's existing spelling when the name matches one (case,
+    /// spacing and accents aside), so "school run" joins "School run".
     private func saveRouteName() {
-        let trimmed = draftName.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty else { return }
+        let resolved = library.resolveRoute(draftName, renaming: sessionID)
+        guard !resolved.name.isEmpty else { return }
         // First name for this drive: its new shield STAMPs in, as after Parked.
         if library.facts(sessionID)?.routeName == nil {
             UserDefaults.standard.set(sessionID.uuidString, forKey: V2UserKey.scoped("routeJustNamed"))
         }
-        DriveStorage.shared.updateRouteTag(id: sessionID, tag: trimmed)
+        DriveStorage.shared.updateRouteTag(id: sessionID, tag: resolved.name)
     }
 
     /// Named on Parked (or just now): STAMP the header shield once, `stamp`
@@ -644,7 +660,20 @@ private struct V2ReportContent: View {
         trace = loaded
     }
 
-    /// First open of an unrevealed drive: ROLL + STAMP (land), points sweep.
+    /// The plate STAMPed (first open only): `stamp` at contact (~120 ms, as
+    /// `.v2Stamp` callers do; `land` is Parked's and goals'), then the PB tab
+    /// STAMPs ~200 ms after the plate, silently.
+    private func scoreLanded() {
+        V2RevealLedger.shared.markRevealed(sessionID)
+        Task { @MainActor in
+            try? await Task.sleep(for: .milliseconds(120))
+            V2Haptics.play(.stamp)
+            try? await Task.sleep(for: .milliseconds(80))
+            pbIn = true
+        }
+    }
+
+    /// First open of an unrevealed drive: ROLL + STAMP, points sweep.
     /// The strip DRAWs when the instrument scrolls into view.
     private func reveal() async {
         guard !heroRevealed else { return }
@@ -714,15 +743,20 @@ private struct V2ReportContent: View {
 
     /// The worst moment (lowest bucket quality), else home at P.
     static func restCar(strip: V2Strip, moments: [V2Moment]) -> V2ReportCar {
+        guard let worst = restMoment(strip: strip, moments: moments) else { return .parked }
+        return .bucket(Double(worst.bucket))
+    }
+
+    /// The moment the car rests on (and the footage is cued 3 s before).
+    static func restMoment(strip: V2Strip, moments: [V2Moment]) -> V2Moment? {
         func q(_ i: Int) -> Double {
             strip.buckets.indices.contains(i) ? (strip.buckets[i] ?? 100) : 100
         }
-        guard let worst = moments.min(by: { a, b in
+        return moments.min(by: { a, b in
             if q(a.bucket) != q(b.bucket) { return q(a.bucket) < q(b.bucket) }
             if a.band != b.band { return a.band < b.band }
             return a.timeOffset < b.timeOffset
-        }) else { return .parked }
-        return .bucket(Double(worst.bucket))
+        })
     }
 
     /// The car's place for a time that isn't a numbered moment.
@@ -744,7 +778,7 @@ private struct V2ReportContent: View {
         withAnimation(V2Motion.reduced(V2Motion.drive, reduceMotion: reduceMotion, fallback: nil)) {
             car = target
         }
-        footageSeek = V2FootageSeek(offset: moment?.timeOffset ?? offset)
+        footage.jump(to: moment?.timeOffset ?? offset)
         if haptic { V2Haptics.play(.select) }
         if let proxy {
             withAnimation(reduceMotion ? nil : .easeInOut(duration: 0.35)) {
@@ -763,8 +797,8 @@ private struct V2ReportContent: View {
     /// matches the car; a snapped marker keeps the pre-roll, like a tap).
     private func release(_ dropped: V2ReportCar, at t: TimeInterval, snapped: V2Moment?, duration: TimeInterval) {
         car = dropped
-        let offset = snapped?.timeOffset ?? min(max(0, duration), t + 3)
-        footageSeek = V2FootageSeek(offset: offset)
+        let offset = snapped?.timeOffset ?? min(max(0, duration), t + V2FootagePlayer.preRoll)
+        footage.jump(to: offset)
     }
 
     /// Double-tap: the car drives home to P.

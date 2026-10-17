@@ -14,7 +14,14 @@ final class WidgetDataStore {
     private init() {}
 
     private var defaults: UserDefaults? {
-        UserDefaults(suiteName: driveAppGroupID)
+        let defaults = UserDefaults(suiteName: driveAppGroupID)
+        #if DEBUG
+        // Without the shared suite every widget silently sits on "No drives yet".
+        if defaults == nil {
+            assertionFailure("App Group \(driveAppGroupID) is unavailable. Check the App Groups capability on the Drive and DriveWidgetExtension targets.")
+        }
+        #endif
+        return defaults
     }
 
     func update(sessions: [DriveSession]) {
@@ -60,7 +67,7 @@ extension WidgetDataStore {
     private static let maxWidgetBars = 96
 
     /// Merges the v2 fields (30-day score, week change, painted days, latest
-    /// drive's route/strip, the Focus job, driver type) into the stored
+    /// drive's route/strip/id, the Focus job, driver type) into the stored
     /// summary. Called by V2Library after every snapshot rebuild, which runs
     /// after `update(sessions:)` on each DriveStorage publish (that one writes
     /// the base fields and resets these to nil).
@@ -110,6 +117,7 @@ extension WidgetDataStore {
             summary.focusCategory = snapshot.focus.current?.category.rawValue
             summary.focusShortTitle = snapshot.focus.current?.shortTitle
             summary.driverType = ProfileManager.shared.driverType.rawValue
+            summary.lastDriveID = latest.session.id.uuidString
         } else {
             summary.thirtyDayScore = nil
             summary.weekChangePct = nil
@@ -123,6 +131,7 @@ extension WidgetDataStore {
             summary.focusCategory = nil
             summary.focusShortTitle = nil
             summary.driverType = nil
+            summary.lastDriveID = nil
         }
 
         guard let data = try? JSONEncoder().encode(summary) else { return }

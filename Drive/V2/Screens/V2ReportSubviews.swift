@@ -306,12 +306,69 @@ struct V2ReportBeforeScoreCard: View {
         .v2Card()
     }
 
-    /// The plain fact, then the fix. No score talk.
+    /// The plain fact, then why it matters (§4.10). No score talk, no wink.
     private var sentence: String {
-        let clock = V2Format.clock(start.addingTimeInterval(fault.t))
-        let what = fault.criterion.trimmingCharacters(in: CharacterSet(charactersIn: ". "))
-        return "\(what) at \(clock). \(fault.detail)"
+        V2Voice.beforeScoreBody(fault, clock: V2Format.clock(start.addingTimeInterval(fault.t)))
     }
+}
+
+// MARK: - Why a Dangerous fault matters (§4.10)
+
+extension V2Voice {
+    /// "At 3:32 PM you braked at 0.81 g coming into this stop, about as hard
+    /// as an emergency stop. Anyone close behind you would have had almost no
+    /// time to stop." The fact is the fault's first sentence (ManeuverAnalysis
+    /// writes Dangerous details fact first, then the fix).
+    static func beforeScoreBody(_ fault: DriveFault, clock: String) -> String {
+        let fact = v2rFirstSentence(fault.detail)
+        let lead: String
+        if fact.hasPrefix("You ") {
+            lead = "At \(clock) you " + String(fact.dropFirst(4))
+        } else if fact.isEmpty {
+            lead = "\(fault.criterion) at \(clock)"
+        } else {
+            lead = "\(fact) at \(clock)"
+        }
+        return "\(lead). \(dangerWhy(fault))"
+    }
+
+    /// One consequence per criterion, said plainly.
+    static func dangerWhy(_ fault: DriveFault) -> String {
+        switch fault.criterion {
+        case "Late braking":
+            return "Anyone close behind you would have had almost no time to stop."
+        case "Corner entry speed":
+            return "At that speed the tires have no grip left for a surprise, like someone stepping out."
+        case "Braking into the turn":
+            return "Hard braking mid-turn takes grip from the tires and can push the car wide of its lane."
+        case "Roundabout speed":
+            return "Going round that fast leaves no time to yield to traffic already in the roundabout."
+        case "Abrupt lane change":
+            return "A move that sharp gives the drivers beside and behind you no time to react."
+        default:
+            switch fault.category {
+            case .braking:
+                return "Anyone close behind you would have had almost no time to stop."
+            case .cornering:
+                return "At that speed the tires have no grip left for a surprise."
+            case .safety:
+                return "The drivers around you would have had no time to react."
+            default:
+                return "Moments like this leave no room for anything unexpected."
+            }
+        }
+    }
+}
+
+/// The detail's first sentence without its period ("0.81 g" stays whole).
+private func v2rFirstSentence(_ text: String) -> String {
+    let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+    if let end = trimmed.range(of: ". ") {
+        return String(trimmed[..<end.lowerBound])
+    }
+    var whole = trimmed
+    while let last = whole.last, last == "." { whole.removeLast() }
+    return whole
 }
 
 // MARK: - Tip rows (§6.2)
@@ -322,18 +379,26 @@ struct V2ReportTipsCard: View {
     let strip: V2Strip
     let start: Date
     @Binding var expanded: Set<Int>
+    /// The tips are V2Tips' count-based fallbacks (no stored AI tips).
+    let fallback: Bool
+    /// Measured praise for the positive row, when the drive has a number to praise.
+    let praise: V2TipPraise?
     let onMoment: (V2Moment) -> Void
     let onOffset: (TimeInterval) -> Void
 
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
 
     init(tips: [V2Tip], moments: [V2Moment], strip: V2Strip, start: Date, expanded: Binding<Set<Int>>,
+         fallback: Bool = false, praise: V2TipPraise? = nil,
          onMoment: @escaping (V2Moment) -> Void, onOffset: @escaping (TimeInterval) -> Void) {
         self.tips = tips
         self.moments = moments
         self.strip = strip
         self.start = start
         _expanded = expanded
+        self.fallback = fallback
+        self.praise = praise
         self.onMoment = onMoment
         self.onOffset = onOffset
     }
@@ -355,14 +420,15 @@ struct V2ReportTipsCard: View {
     }
 
     private func positiveRow(_ tip: V2Tip) -> some View {
-        HStack(spacing: 12) {
+        let copy = V2TipCopy.positive(tip, praise: praise)
+        return HStack(spacing: 12) {
             V2Plate.category(.positive, size: 24)
                 .frame(width: 34)
             VStack(alignment: .leading, spacing: 0) {
-                Text(verbatim: tip.title)
+                Text(verbatim: copy.title)
                     .font(V2Type.headline)
                     .foregroundStyle(V2.label)
-                Text(verbatim: tip.message)
+                Text(verbatim: copy.body)
                     .font(V2Type.subhead)
                     .foregroundStyle(V2.label)
             }
@@ -386,7 +452,7 @@ struct V2ReportTipsCard: View {
                 HStack(spacing: 12) {
                     V2Plate.category(tip.category, size: 24)
                         .frame(width: 34)
-                    Text(verbatim: tip.title)
+                    Text(verbatim: V2TipCopy.title(tip))
                         .font(V2Type.headline)
                         .foregroundStyle(V2.label)
                         .fixedSize(horizontal: false, vertical: true)
@@ -406,7 +472,7 @@ struct V2ReportTipsCard: View {
 
             if open {
                 VStack(alignment: .leading, spacing: 12) {
-                    Text(verbatim: tip.message)
+                    Text(verbatim: V2TipCopy.body(tip, fallback: fallback))
                         .font(V2Type.subhead)
                         .foregroundStyle(V2.label)
                         .fixedSize(horizontal: false, vertical: true)
@@ -439,11 +505,17 @@ struct V2ReportTipsCard: View {
         let loose = tip.momentOffsets.filter { off in !moments.contains { abs($0.timeOffset - off) < 1 } }
         let overflow = max(0, tip.totalMoments - tip.momentOffsets.count)
         if !tokens.isEmpty {
-            HStack(spacing: 8) {
+            // Two share a row; from AX3 they stack, full width (§3.2).
+            let stacked = dynamicTypeSize >= .accessibility3
+            let layout = stacked
+                ? AnyLayout(VStackLayout(alignment: .leading, spacing: 8))
+                : AnyLayout(HStackLayout(alignment: .top, spacing: 8))
+            layout {
                 ForEach(tokens) { m in
-                    V2MomentToken(moment: m, strip: strip, width: tokens.count == 1 ? 161 : nil) { onMoment(m) }
+                    V2MomentToken(moment: m, strip: strip,
+                                  width: (tokens.count == 1 && !stacked) ? 161 : nil) { onMoment(m) }
                 }
-                if tokens.count == 1 { Spacer(minLength: 0) }
+                if tokens.count == 1 && !stacked { Spacer(minLength: 0) }
             }
         }
         if !loose.isEmpty || overflow > 0 {
@@ -469,6 +541,171 @@ struct V2ReportTipsCard: View {
     }
 }
 
+// MARK: - Tip copy (§5, §6.2 tip rows)
+
+/// Measured praise for the positive tip (§5 rule 2): "Nice: steady at speed"
+/// over "You held 35 mph for six minutes."
+struct V2TipPraise: Equatable {
+    let title: String
+    let body: String
+
+    /// The clean stretch first (with its speed when the trace shows a steady
+    /// one), else the best sub-score when it's 85 or more. Nil: nothing to measure.
+    static func make(metrics: DriveMetrics?, strip: V2Strip, trace: [DriveTraceSecond]?) -> V2TipPraise? {
+        if let run = strip.cleanRun, let minutes = strip.cleanRunMinutes, minutes >= 3 {
+            let words = v2rCountWord(minutes)
+            let from = Double(run.lowerBound) * V2Strip.bucketSeconds
+            let to = Double(run.upperBound + 1) * V2Strip.bucketSeconds
+            if let mph = steadyMPH(trace, from: from, to: to) {
+                return V2TipPraise(title: "Nice: steady at speed",
+                                   body: "You held \(mph) mph for \(words) minutes.")
+            }
+            return V2TipPraise(title: "Nice: a clean stretch",
+                               body: "\(v2rCapitalizedFirst(words)) minutes in a row with nothing flagged.")
+        }
+        guard let m = metrics else { return nil }
+        let parts: [(category: CoachTip.Category, score: Double)] = [
+            (.braking, m.braking), (.acceleration, m.acceleration),
+            (.cornering, m.cornering), (.smoothness, m.smoothness),
+        ]
+        guard let best = parts.max(by: { $0.score < $1.score }), best.score.isFinite, best.score >= 85 else { return nil }
+        let behaviour: String
+        switch best.category {
+        case .braking:      behaviour = "smooth braking"
+        case .acceleration: behaviour = "gentle on the gas"
+        case .cornering:    behaviour = "clean through the turns"
+        default:            behaviour = "smooth inputs"
+        }
+        let name = V2Voice.categoryName(best.category)
+        return V2TipPraise(title: "Nice: \(behaviour)",
+                           body: "\(name) scored \(V2Voice.scoreText(best.score)), your best part of this drive.")
+    }
+
+    /// Mean speed over [from, to) when GPS covered most of it, it was at
+    /// least 20 mph and it barely varied (so "held" is true).
+    private static func steadyMPH(_ trace: [DriveTraceSecond]?, from: TimeInterval, to: TimeInterval) -> Int? {
+        guard let trace, to > from else { return nil }
+        let speeds = trace.filter { $0.t >= from && $0.t < to && $0.speedMS >= 0 }.map(\.speedMS)
+        guard Double(speeds.count) >= (to - from) * 0.6 else { return nil }
+        let mean = speeds.reduce(0, +) / Double(speeds.count)
+        guard mean.isFinite, mean >= 8.9 else { return nil }
+        let variance = speeds.reduce(0) { $0 + ($1 - mean) * ($1 - mean) } / Double(speeds.count)
+        guard variance.squareRoot() / mean <= 0.15 else { return nil }
+        return V2Format.mph(fromMS: mean)
+    }
+}
+
+/// Report tip copy in the coach's voice (§5 rules 2, 3, 10): imperative,
+/// sentence-case titles for corrections, no enum names in bodies. Display
+/// only; `V2Tip.title` stays the input V2Focus reads.
+enum V2TipCopy {
+    /// "Brake before the turn, not in it". Known AI and fallback titles get a
+    /// line of their own; anything else takes the Focus job's line for its category.
+    static func title(_ tip: V2Tip) -> String {
+        if let line = titles[tip.title.lowercased()] { return line }
+        return V2FocusEngine.title(for: tip.category, tipTitle: tip.title)
+    }
+
+    /// The AI message, except V2Tips' count-based fallbacks, which are rewritten.
+    static func body(_ tip: V2Tip, fallback: Bool) -> String {
+        guard fallback else { return tip.message }
+        let n = tip.totalMoments
+        switch tip.title.lowercased() {
+        case "smooth braking":
+            return "\(n) hard \(n == 1 ? "brake" : "brakes") this drive. Start slowing a few car lengths sooner."
+        case "easy acceleration":
+            return "\(n) hard \(n == 1 ? "start" : "starts") this drive. Ease onto the gas over two seconds."
+        case "smoother cornering":
+            return "\(n) sharp \(n == 1 ? "turn" : "turns") this drive. Brake before the bend, then turn."
+        case "keep improving":
+            return "\(V2Voice.categoryName(tip.category)) has the most room to grow. \(fix(tip.category))"
+        default:
+            return tip.message
+        }
+    }
+
+    /// The positive row: measured praise when there is some, else the tip in sentence case.
+    static func positive(_ tip: V2Tip, praise: V2TipPraise?) -> (title: String, body: String) {
+        let key = tip.title.lowercased()
+        if key == "scoring in development" {
+            return ("Scoring in development", tip.message)
+        }
+        if let praise { return (praise.title, praise.body) }
+        return (v2rSentenceCase(tip.title), tip.message)
+    }
+
+    private static func fix(_ category: CoachTip.Category) -> String {
+        switch category {
+        case .braking:      return "Start slowing a few car lengths sooner."
+        case .acceleration: return "Ease onto the gas over two seconds."
+        case .cornering:    return "Brake before the turn, not in it."
+        case .speed:        return "Ease off sooner and hold a steady pace."
+        case .safety:       return "Look further ahead and leave a 3-second gap."
+        default:            return "Plan each input a beat earlier."
+        }
+    }
+
+    /// Lower-cased stored titles (DriveAIEngine tips, its maneuver headlines
+    /// and fault criteria, V2Tips fallbacks) → the row's line.
+    private static let titles: [String: String] = [
+        // Braking
+        "braking pattern":          "Brake once, smoothly, for each stop",
+        "smooth braking":           "Start slowing earlier for stops",
+        "braking consistency":      "Brake the same smooth way at every stop",
+        "braking refinement":       "Ease off the brake just before you stop",
+        "late braking":             "Start braking sooner for stops",
+        "stops need work":          "Settle the car before each stop line",
+        // Acceleration
+        "throttle control":         "Ease onto the gas from a stop",
+        "gentle acceleration":      "Build speed gradually from stops",
+        "easy acceleration":        "Build speed gradually from stops",
+        "acceleration smoothness":  "Press the gas more steadily",
+        "throttle finesse":         "Roll onto the gas more softly",
+        // Cornering
+        "cornering technique":      "Brake before the turn, not in it",
+        "braking into the turn":    "Brake before the turn, not in it",
+        "corner entry speed":       "Set your speed before you turn in",
+        "cornering consistency":    "Take each turn at the same steady pace",
+        "cornering refinement":     "Ease out of each turn more gently",
+        "smoother cornering":       "Brake before the bend, then turn",
+        "left turns need work":     "Slow down before left turns",
+        "right turns need work":    "Slow down before right turns",
+        "roundabouts need work":    "Slow down before the roundabout",
+        "roundabout speed":         "Slow down before the roundabout",
+        // Smoothness
+        "input smoothness":         "Smooth out your steering and pedals",
+        "smoother inputs":          "Plan each input a beat earlier",
+        "ride smoothness":          "Keep the ride steady for passengers",
+        // Speed
+        "speed & reaction time":    "Leave more time to react at speed",
+        "smoother speed":           "Hold a steadier pace",
+        // Safety
+        "lane position":            "Hold the center of your lane",
+        "following distance":       "Leave more room ahead",
+        "stay focused":             "Keep your eyes on the road",
+        "night driving":            "Take extra care after dark",
+        "lane changes need work":   "Move across lanes over a few seconds",
+        "abrupt lane change":       "Move across lanes over a few seconds",
+    ]
+}
+
+/// "six" for 0–10 (the spec's "six minutes"), digits above.
+private func v2rCountWord(_ n: Int) -> String {
+    let words = ["zero", "one", "two", "three", "four", "five", "six", "seven", "eight", "nine", "ten"]
+    return words.indices.contains(n) ? words[n] : "\(n)"
+}
+
+private func v2rCapitalizedFirst(_ s: String) -> String {
+    guard let first = s.first else { return s }
+    return first.uppercased() + String(s.dropFirst())
+}
+
+/// "First Drive Logged" → "First drive logged".
+private func v2rSentenceCase(_ s: String) -> String {
+    let lower = s.lowercased()
+    return v2rCapitalizedFirst(lower)
+}
+
 // MARK: - "Where the points went" placeholder (no metrics)
 
 /// v1 showed "—" on every sub-score when a drive has no metrics. Same here:
@@ -477,53 +714,94 @@ struct V2ReportPointsPlaceholder: View {
     private static let categories: [CoachTip.Category] = [.braking, .acceleration, .cornering, .smoothness]
     private static let names = ["Braking", "Acceleration", "Cornering", "Smoothness"]
 
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
+    /// The card's inner width; the columns sit outside a GeometryReader so
+    /// their labels can grow with Dynamic Type.
+    @State private var width: CGFloat = 0
+
+    private var usable: CGFloat { max(0, width - 9) }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
-            GeometryReader { geo in
-                let usable = max(0, geo.size.width - 9)
-                VStack(alignment: .leading, spacing: 8) {
-                    HStack(spacing: 3) {
-                        ForEach(0..<4, id: \.self) { i in
-                            UnevenRoundedRectangle(topLeadingRadius: i == 0 ? 8 : 3,
-                                                   bottomLeadingRadius: i == 0 ? 8 : 3,
-                                                   bottomTrailingRadius: i == 3 ? 8 : 3,
-                                                   topTrailingRadius: i == 3 ? 8 : 3,
-                                                   style: .continuous)
-                                .fill(V2.fill)
-                                .frame(width: usable * CGFloat(V2PointsInstrument.weights[i]), height: 28)
-                        }
-                    }
-                    HStack(alignment: .top, spacing: 3) {
-                        ForEach(0..<4, id: \.self) { i in
-                            VStack(alignment: .leading, spacing: 2) {
-                                HStack(spacing: 6) {
-                                    V2Plate.category(Self.categories[i], size: 20)
-                                    Text(verbatim: "\u{2014}")
-                                        .font(V2Type.headline)
-                                        .foregroundStyle(V2.label2)
-                                }
-                                .frame(height: 24)
-                                Text(verbatim: Self.names[i])
-                                    .font(V2Type.caption1)
-                                    .foregroundStyle(V2.label2)
-                                    .lineLimit(1)
-                                    .minimumScaleFactor(0.7)
-                            }
-                            .frame(width: usable * CGFloat(V2PointsInstrument.weights[i]), alignment: .leading)
-                        }
-                    }
-                }
+            bar
+            if dynamicTypeSize >= .accessibility1 {
+                // Large accessibility sizes: one row per segment, as V2PointsInstrument does.
+                stackedRows.padding(.top, 12)
+            } else {
+                columns.padding(.top, 8)
             }
-            .frame(height: 28 + 8 + 46)
             Text("This drive wasn't scored, so there's no breakdown.")
                 .font(V2Type.subhead)
                 .foregroundStyle(V2.label)
                 .fixedSize(horizontal: false, vertical: true)
                 .padding(.top, 16)
         }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .onGeometryChange(for: CGFloat.self) { proxy in
+            proxy.size.width
+        } action: { newWidth in
+            width = newWidth
+        }
         .v2Card()
         .accessibilityElement(children: .ignore)
         .accessibilityLabel("No sub-scores. This drive wasn't scored, so there's no breakdown.")
+    }
+
+    private var bar: some View {
+        HStack(spacing: 3) {
+            ForEach(0..<4, id: \.self) { i in
+                UnevenRoundedRectangle(topLeadingRadius: i == 0 ? 8 : 3,
+                                       bottomLeadingRadius: i == 0 ? 8 : 3,
+                                       bottomTrailingRadius: i == 3 ? 8 : 3,
+                                       topTrailingRadius: i == 3 ? 8 : 3,
+                                       style: .continuous)
+                    .fill(V2.fill)
+                    .frame(width: usable * CGFloat(V2PointsInstrument.weights[i]), height: 28)
+            }
+        }
+        .frame(maxWidth: .infinity, minHeight: 28, alignment: .leading)
+    }
+
+    private var columns: some View {
+        HStack(alignment: .top, spacing: 3) {
+            ForEach(0..<4, id: \.self) { i in
+                VStack(alignment: .leading, spacing: 2) {
+                    HStack(spacing: 6) {
+                        V2Plate.category(Self.categories[i], size: 20)
+                        Text(verbatim: "\u{2014}")
+                            .font(V2Type.headline)
+                            .foregroundStyle(V2.label2)
+                    }
+                    .frame(minHeight: 24)
+                    Text(verbatim: Self.names[i])
+                        .font(V2Type.caption1)
+                        .foregroundStyle(V2.label2)
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.7)
+                }
+                .frame(width: usable * CGFloat(V2PointsInstrument.weights[i]), alignment: .leading)
+            }
+        }
+        .fixedSize(horizontal: false, vertical: true)
+    }
+
+    private var stackedRows: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            ForEach(0..<4, id: \.self) { i in
+                HStack(spacing: 8) {
+                    V2Plate.category(Self.categories[i], size: 20)
+                    Text(verbatim: Self.names[i])
+                        .font(V2Type.subhead)
+                        .foregroundStyle(V2.label2)
+                        .fixedSize(horizontal: false, vertical: true)
+                    Spacer(minLength: 8)
+                    Text(verbatim: "\u{2014}")
+                        .font(V2Type.headline)
+                        .foregroundStyle(V2.label2)
+                }
+                .frame(minHeight: 24)
+            }
+        }
     }
 }
 
@@ -1175,12 +1453,84 @@ struct V2ReportTripMeterCard: View {
 
 // MARK: - Every event (pushed)
 
+/// A kind of event for All events' tally and filter: the type, plus the side
+/// for sharp turns (v1's tally chips counted left and right apart).
+struct V2EventKind: Hashable, Identifiable {
+    let type: DriveEventType
+    let direction: TurnDirection?
+
+    var id: String { type.rawValue + "-" + (direction?.rawValue ?? "") }
+
+    init(_ event: DriveEvent) {
+        type = event.type
+        direction = event.type == .hardCorner ? event.direction : nil
+    }
+
+    private var order: Int {
+        switch type {
+        case .hardBrake:     return 0
+        case .hardAccel:     return 1
+        case .hardCorner:    return direction == .left ? 2 : (direction == .right ? 3 : 4)
+        case .laneDeparture: return 5
+        case .tailgating:    return 6
+        case .distraction:   return 7
+        }
+    }
+
+    /// "5 hard brakes", "1 sharp left turn".
+    func counted(_ n: Int) -> String {
+        let one = n == 1
+        let noun: String
+        switch type {
+        case .hardBrake:     noun = one ? "hard brake" : "hard brakes"
+        case .hardAccel:     noun = one ? "hard start" : "hard starts"
+        case .hardCorner:
+            let side = direction.map { $0 == .left ? "left " : "right " } ?? ""
+            noun = "sharp " + side + (one ? "turn" : "turns")
+        case .laneDeparture: noun = one ? "lane drift" : "lane drifts"
+        case .tailgating:    noun = one ? "close-follow moment" : "close-follow moments"
+        case .distraction:   noun = one ? "distraction" : "distractions"
+        }
+        return "\(n) \(noun)"
+    }
+
+    /// The SF Symbol nearest the event's plate legend, for the stock menu.
+    var symbol: String {
+        switch type {
+        case .hardBrake:     return "octagon"
+        case .hardAccel:     return "arrow.up"
+        case .hardCorner:    return direction == .left ? "arrow.turn.up.left" : "arrow.turn.up.right"
+        case .laneDeparture: return "road.lanes"
+        case .tailgating:    return "car.2"
+        case .distraction:   return "eye"
+        }
+    }
+
+    /// Kinds present, most frequent first (ties in plate order).
+    static func tally(_ events: [DriveEvent]) -> [V2EventTally] {
+        var counts: [V2EventKind: Int] = [:]
+        for event in events { counts[V2EventKind(event), default: 0] += 1 }
+        return counts.map { V2EventTally(kind: $0.key, count: $0.value) }
+            .sorted { a, b in a.count != b.count ? a.count > b.count : a.kind.order < b.kind.order }
+    }
+}
+
+struct V2EventTally: Identifiable {
+    let kind: V2EventKind
+    let count: Int
+    var id: String { kind.id }
+    /// "5 hard brakes"
+    var text: String { kind.counted(count) }
+}
+
 struct V2AllEventsView: View {
     let sessionID: UUID
 
     @ObservedObject private var library = V2Library.shared
     @ObservedObject private var storage = DriveStorage.shared
     @Environment(\.dismiss) private var dismiss
+    /// nil = every event (v1's tally chips filtered the same way).
+    @State private var filter: V2EventKind? = nil
 
     init(sessionID: UUID) {
         self.sessionID = sessionID
@@ -1188,11 +1538,14 @@ struct V2AllEventsView: View {
 
     var body: some View {
         let session = library.session(sessionID)
-        let events = (session?.metrics?.events ?? []).sorted { $0.timeOffset < $1.timeOffset }
+        let all = (session?.metrics?.events ?? []).sorted { $0.timeOffset < $1.timeOffset }
+        let tally = V2EventKind.tally(all)
+        let active: V2EventKind? = filter.flatMap { f in tally.contains(where: { $0.kind == f }) ? f : nil }
+        let events = active.map { f in all.filter { V2EventKind($0) == f } } ?? all
         let moments = library.moments(for: sessionID)
         let start = session.map { $0.date.addingTimeInterval(-$0.duration) } ?? Date()
         List {
-            if events.isEmpty {
+            if all.isEmpty {
                 Text(verbatim: session == nil ? "This drive isn't available." : "No events on this drive.")
                     .font(V2Type.body)
                     .foregroundStyle(V2.label2)
@@ -1203,10 +1556,7 @@ struct V2AllEventsView: View {
                         row(event, moment: moment(for: event, in: moments), start: start)
                     }
                 } header: {
-                    Text(verbatim: events.count == 1 ? "1 event, in order" : "\(events.count) events, in order")
-                        .font(V2Type.footnote)
-                        .foregroundStyle(V2.label2)
-                        .textCase(nil)
+                    header(tally: tally, active: active, shown: events.count, total: all.count)
                 }
             }
         }
@@ -1215,6 +1565,63 @@ struct V2AllEventsView: View {
         .background(V2.bg.ignoresSafeArea())
         .navigationTitle("All events")
         .navigationBarTitleDisplayMode(.inline)
+        .toolbar {
+            ToolbarItem(placement: .topBarTrailing) {
+                if tally.count > 1 {
+                    filterMenu(tally, active: active)
+                }
+            }
+        }
+    }
+
+    /// "5 hard brakes, 3 sharp left turns." over "8 events, in order", or,
+    /// filtered, the kind's plate and "5 hard brakes, in order".
+    private func header(tally: [V2EventTally], active: V2EventKind?,
+                        shown: Int, total: Int) -> some View {
+        VStack(alignment: .leading, spacing: 4) {
+            if let active {
+                HStack(spacing: 8) {
+                    V2Plate.event(active.type, direction: active.direction, size: 20)
+                    Text(verbatim: "\(active.counted(shown)), in order")
+                        .font(V2Type.subhead)
+                        .foregroundStyle(V2.label)
+                }
+                Text(verbatim: "Of \(total) \(total == 1 ? "event" : "events") on this drive.")
+                    .font(V2Type.footnote)
+                    .foregroundStyle(V2.label2)
+            } else {
+                Text(verbatim: tally.map(\.text).joined(separator: ", ") + ".")
+                    .font(V2Type.subhead)
+                    .foregroundStyle(V2.label)
+                    .fixedSize(horizontal: false, vertical: true)
+                Text(verbatim: total == 1 ? "1 event, in order" : "\(total) events, in order")
+                    .font(V2Type.footnote)
+                    .foregroundStyle(V2.label2)
+            }
+        }
+        .textCase(nil)
+        .padding(.bottom, 4)
+    }
+
+    /// A stock menu of the kinds present (no tinted chips, §8).
+    private func filterMenu(_ tally: [V2EventTally], active: V2EventKind?) -> some View {
+        let current = tally.first { $0.kind == active }
+        return Menu {
+            Picker("Show", selection: $filter) {
+                Text("All events").tag(V2EventKind?.none)
+                ForEach(tally) { entry in
+                    Label(entry.text, systemImage: entry.kind.symbol)
+                        .tag(Optional(entry.kind))
+                }
+            }
+        } label: {
+            Image(systemName: active == nil
+                  ? "line.3.horizontal.decrease.circle"
+                  : "line.3.horizontal.decrease.circle.fill")
+                .fontWeight(.semibold)
+        }
+        .accessibilityLabel("Filter events")
+        .accessibilityValue(current?.text ?? "All events")
     }
 
     private func moment(for event: DriveEvent, in moments: [V2Moment]) -> V2Moment? {

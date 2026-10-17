@@ -74,6 +74,12 @@ struct V2WActivityModel {
         V2WFormat.isJob(state.focusCategory) ? state.focusCategory : nil
     }
 
+    /// Parked with a saved drive: that drive's Report. Recording, or an
+    /// older payload without an id: just open the app.
+    var tapURL: URL {
+        isParked ? V2WLinks.report(state.driveID) : V2WLinks.openApp
+    }
+
     var spokenScore: String {
         hasScore ? "\(score), \(V2WScore.spoken(grade))" : "Not scored"
     }
@@ -136,7 +142,7 @@ struct DriveWidgetLiveActivity: Widget {
             } minimal: {
                 V2WIslandMinimal(state: context.state, driverName: context.attributes.driverName)
             }
-            .widgetURL(URL(string: "drive://open"))
+            .widgetURL(V2WActivityModel(state: context.state, now: Date()).tapURL)
             .keylineTint(V2W.Island.keyline)
         }
         // CarPlay Dashboard and the Smart Stack (§6.9). The widget target is iOS 26.1.
@@ -176,6 +182,7 @@ struct V2WActivityLockScreen: View {
         .padding(16)
         .activityBackgroundTint(V2W.activityBackground(scheme))
         .activitySystemActionForegroundColor(V2W.label)
+        .widgetURL(m.tapURL)
         .accessibilityElement(children: .ignore)
         .accessibilityLabel(m.spoken)
     }

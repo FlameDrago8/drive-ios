@@ -5,27 +5,27 @@
 //  Created by Shiv g on 10/31/25.
 //
 //  v2 "Road Furniture" HUD (§6.5, §6.6): Ready → Recording → Analysing →
-//  Saved / Parked / Too short / Not scored / Save failed (Saved turns into
-//  Parked after 30 s under 2 mph; see watchForParking). The recording,
+//  Saved / Parked / Too short / Not scored / Couldn't save (Saved turns into
+//  Parked after 30 s under 2 mph; see V2ParkingWatch). The recording,
 //  scoring and saving logic below is the launch beta's, unchanged in order;
 //  the UI is drawn in one fake-landscape container (V2HUDLandscape) over the
-//  single full-bleed CameraView.
+//  single full-bleed CameraView. A capture that ends without the hold (iOS
+//  stops the camera when Drive leaves the screen) still saves the drive.
 //
 
 import SwiftUI
 import CoreLocation
 import ActivityKit
-import StoreKit
 
 private enum UploadStatus: Equatable {
-    case idle, uploading, done, failed(String), tooShort(TimeInterval), notScored(String)
+    case idle, uploading, done, failed(String, String), tooShort(TimeInterval), notScored(String)
 }
 
 /// What the HUD shows. Derived from the recording flags; there is no
 /// separate state machine to fall out of sync with them.
 private enum HUDPhase: Equatable {
     case ready, recording, analysing, saved, parked(UUID)
-    case tooShort(TimeInterval), notScored(String), failed(String)
+    case tooShort(TimeInterval), notScored(String), failed(String, String)
 }
 
 struct DriveView: View {
@@ -62,8 +62,6 @@ struct DriveView: View {
     // recording, so Ready shows the road check as an instruction instead.
     @State private var isOnRoad: Bool = true
 
-    @Environment(\.requestReview) private var requestReview
-
     // v2 HUD
     /// Buckets, ticks, grade hysteresis, distance and Live Activity coalescing.
     @StateObject private var liveDrive = V2LiveDrive()
@@ -91,6 +89,18 @@ struct DriveView: View {
     /// driver to come back (so it isn't spent unseen).
     @State private var parkedRevealPending = false
     @Environment(\.scenePhase) private var scenePhase
+    /// Ready's camera check: Start is disabled when Drive can't record.
+    /// Refreshed on appear and whenever the app is active again.
+    @State private var cameraAccess: V2CameraAccess = .available
+    /// The capture ended without the hold (iOS stopped the camera, e.g. a
+    /// thermal shutdown), and whether that was Drive leaving the screen.
+    @State private var captureEndedEarly = false
+    @State private var captureInterrupted = false
+    /// Real stages of the end-of-drive work, 0…1: the Analysing car rides
+    /// the finished strip with it and reaches P when the save lands.
+    @State private var analysisProgress: Double = 0
+    /// Saved's parking watch; it outlives the HUD (Done keeps it running).
+    @ObservedObject private var parkingWatch = V2ParkingWatch.shared
 
     private var phase: HUDPhase {
         switch uploadStatus {
@@ -99,7 +109,7 @@ struct DriveView: View {
             return .saved
         case .tooShort(let duration): return .tooShort(duration)
         case .notScored(let reason):  return .notScored(reason)
-        case .failed(let message):    return .failed(message)
+        case .failed(let title, let message): return .failed(title, message)
         case .uploading:              return .analysing
         case .idle:
             if isRecording { return .recording }
@@ -116,6 +126,15 @@ struct DriveView: View {
             // it mid-drive would tear down the capture session). Ready shows it
             // through a window in the HUD scrim; every other phase covers it.
             CameraView(isRecording: $isRecording, onRecordingFinished: { tempVideoURL in
+                // The capture can end without the hold (iOS stopped the camera
+                // when Drive left the screen): stop the model before the
+                // evaluation as the hold does, and wind the HUD down. Both are
+                // no-ops after a hold.
+                aiEngine.stop()
+                DispatchQueue.main.async {
+                    endDriveWithoutHold()
+                    advanceAnalysis(to: 0.1)
+                }
                 let duration: TimeInterval = driveStartDate.map { Date().timeIntervalSince($0) } ?? 0
                 let (route, samples) = locationManager.stopAndFlush()
 
@@ -156,6 +175,7 @@ struct DriveView: View {
                     }
                     return
                 }
+                DispatchQueue.main.async { advanceAnalysis(to: 0.7) }
                 // Copy temp video to permanent Documents storage before AVFoundation deletes it
                 let permanentVideoURL: URL? = {
                     let docs = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
@@ -184,6 +204,7 @@ struct DriveView: View {
                     captureHz: LocationManager.captureHz
                 )
                 let savedRecord = DriveRecordStore.save(record)
+                DispatchQueue.main.async { advanceAnalysis(to: 0.95) }
 
                 let session = DriveSession(
                     id: sessionID,
@@ -208,26 +229,38 @@ struct DriveView: View {
                 driveStorage.add(session: session)
                 driveStorage.uploadTrainingData(windows: evaluation.sensorWindows)
                 DispatchQueue.main.async {
-                    // v2: the success haptic is Parked's `land`; naming is
-                    // Parked's "Name this route?" alert (RouteTagSheet retired);
-                    // Saved / Parked stay up until Done.
+                    // v2: the success haptic is Parked's `land`; "Name this
+                    // route?" is asked by V2Root once the HUD has closed
+                    // (RouteTagSheet retired); Saved / Parked stay up until Done.
                     currentScore = evaluation.overallScore
                     lastSavedSessionID = session.id
                     lastSavedSession = session
+                    // Saved: the car finishes the strip at P. (Parked takes the
+                    // strip over where the car is.)
+                    if savedWhileMoving { analysisProgress = 1 }
                     withAnimation { uploadStatus = .done }
                     endLiveActivityParked(sessionID: session.id,
                                           finalScore: Int(evaluation.overallScore),
                                           fallbackName: V2Format.unnamedDriveName(session.date.addingTimeInterval(-duration)))
                     newBadge = notifyNewBadges(prev: prev).first
-                    // Request App Store review after the 3rd drive
+                    // Request App Store review after the 3rd drive. V2Root asks
+                    // once the HUD has closed: over the rotated HUD the sheet
+                    // would land sideways.
                     if driveStorage.sessions.count == 3 {
-                        DispatchQueue.main.asyncAfter(deadline: .now() + 2.0) {
-                            requestReview()
-                        }
+                        V2Router.shared.pendingReviewPrompt = true
                     }
                 }
             }, onRecordingError: { error in
-                withAnimation { uploadStatus = .failed(error.localizedDescription) }
+                #if DEBUG
+                print("Recording error: \(error)")
+                #endif
+                // The recording is over either way: wind the drive down (a
+                // no-op after the hold) and say what happened in plain words.
+                endDriveWithoutHold()
+                locationManager.stopSensors()
+                let copy = V2Voice.recordingFailed(cameraUnavailable: error is V2CameraError,
+                                                   interrupted: captureInterrupted)
+                withAnimation { uploadStatus = .failed(copy.title, copy.body) }
                 // A failed recording still ends the drive; without this the
                 // Live Activity kept counting up as though it were ongoing.
                 endLiveActivity(finalScore: 0)
@@ -246,16 +279,27 @@ struct DriveView: View {
         .onChange(of: uploadStatus) { _, status in
             if status != .idle { awaitingFinish = false }
         }
-        // Saved → Parked (§6.5): the parking watch runs only while Saved is
-        // up; leaving Saved (Parked, Done, disappear) cancels it.
-        .task(id: phase == .saved) {
-            guard phase == .saved else { return }
-            await watchForParking()
+        // The hold ended the drive but no video ever came back (the camera
+        // never recorded): leave Analysing for a plain end state.
+        .task(id: awaitingFinish) {
+            guard awaitingFinish else { return }
+            try? await Task.sleep(for: .seconds(10))
+            guard !Task.isCancelled, awaitingFinish, uploadStatus == .idle else { return }
+            noRecordingArrived()
+        }
+        // Saved → Parked (§6.5): V2ParkingWatch starts with Saved and keeps
+        // running after Done, so the Parked notification still posts.
+        .onChange(of: phase) { oldPhase, newPhase in
+            phaseChanged(from: oldPhase, to: newPhase)
+        }
+        .onChange(of: parkingWatch.lastParked) { _, parked in
+            watchFoundParked(parked)
         }
         .onChange(of: scenePhase) { _, newPhase in
             scenePhaseChanged(newPhase)
         }
         .onAppear {
+            cameraAccess = .current
             locationManager.requestPermission()
             aiEngine.onScoreUpdate = { score in
                 // Ignore any update that lands after the drive has ended, and
@@ -286,6 +330,7 @@ struct DriveView: View {
             if !parkedEndPending {
                 Task { await DriveActivityAttributes.endAll() }
             }
+            V2ParkingWatch.shared.setHUDShowing(nil)
         }
     }
 
@@ -296,8 +341,31 @@ struct DriveView: View {
         let slide: AnyTransition = reduceMotion
             ? .opacity
             : .move(edge: .leading).combined(with: .opacity)
+        let parkedNow: Bool = {
+            if case .parked = phase { return true }
+            return false
+        }()
+        let finishedMetrics = V2HUDFinishedStrip.metrics(hasClock: startClock != nil)
         return ZStack(alignment: .topLeading) {
             V2HUDScrim(size: m.size, window: m.cardRect, open: phase == .ready)
+
+            // One finished strip from Analysing through Saved, the car riding
+            // it with the end-of-drive work. Parked mounts the same strip in
+            // the same place and takes it over, so this one leaves unanimated
+            // then (any other exit fades).
+            ZStack(alignment: .topLeading) {
+                if phase == .analysing || phase == .saved {
+                    V2HUDFinishedStrip(buckets: liveDrive.buckets, ticks: liveDrive.ticks,
+                                       startClock: startClock, width: m.contentWidth,
+                                       carFraction: analysisProgress)
+                        .offset(x: m.side, y: m.hudBaselineY - finishedMetrics.baselineY)
+                        .transition(.opacity)
+                }
+            }
+            .frame(width: m.size.width, height: m.size.height, alignment: .topLeading)
+            .transaction { t in
+                if parkedNow { t.animation = nil }
+            }
 
             if phase == .ready {
                 V2HUDCameraGuides()
@@ -334,21 +402,25 @@ struct DriveView: View {
                 }
                 .transition(.opacity)
             case .analysing:
-                messageLayer(m, title: "Analysing your drive", message: nil, onDone: nil, strip: .completed)
+                messageLayer(m, title: "Analysing your drive", message: nil, onDone: nil, strip: nil)
                     .transition(.opacity)
             case .saved:
-                messageLayer(m, title: V2Voice.speedGate.title, message: V2Voice.speedGate.body,
-                             onDone: { finish() }, strip: .completed)
+                messageLayer(m, title: V2Voice.speedGate.title, message: savedMessage,
+                             onDone: { finish() }, strip: nil)
                     .transition(.opacity)
             case .parked(let id):
                 V2ParkedView(sessionID: id, fallback: lastSavedSession, newBadge: newBadge,
+                             handoff: V2ParkedHandoff(buckets: liveDrive.buckets, ticks: liveDrive.ticks,
+                                                      startClock: startClock, carFraction: analysisProgress),
                              onSeeReport: { reportID in
                                  V2Router.shared.openReport(reportID)
                                  finish()
                              },
                              onDone: { finish() })
                     .frame(width: m.size.width, height: m.size.height)
-                    .transition(.opacity)
+                    // No crossfade in: Parked draws the finished strip where
+                    // it was and fades its own chrome (§7 M3 F1).
+                    .transition(.asymmetric(insertion: .identity, removal: .opacity))
             case .tooShort(let duration):
                 let copy = tooShortCopy(duration)
                 messageLayer(m, title: copy.title, message: copy.body,
@@ -358,8 +430,8 @@ struct DriveView: View {
                 messageLayer(m, title: "Not scored.", message: reason,
                              onDone: { isDriving = false }, strip: nil)
                     .transition(.opacity)
-            case .failed(let message):
-                messageLayer(m, title: "Save failed.", message: message,
+            case .failed(let title, let message):
+                messageLayer(m, title: title, message: message,
                              onDone: { isDriving = false }, strip: nil)
                     .transition(.opacity)
             }
@@ -435,39 +507,51 @@ struct DriveView: View {
     }
 
     /// Ready's left column under the job: road check, PERMIT line, Start.
+    /// Without a usable camera: the reason (and Settings), Start disabled.
     private func readyPanel(_ m: V2HUDMetrics) -> some View {
-        ZStack(alignment: .topLeading) {
-            V2HUDRoadCheck(mode: .instruction)
-                .frame(height: 22)
-                .offset(x: m.side, y: 200 + m.dy)
-            if ProfileManager.shared.driverType == .learner {
-                V2HUDPermitLine()
-                    .frame(height: 20)
-                    .offset(x: m.side, y: 236 + m.dy)
+        let canRecord = cameraAccess == .available || cameraAccess == .notDetermined
+        return ZStack(alignment: .topLeading) {
+            if canRecord {
+                V2HUDRoadCheck(mode: .instruction)
+                    .frame(height: 22)
+                    .offset(x: m.side, y: 200 + m.dy)
+                if ProfileManager.shared.driverType == .learner {
+                    V2HUDPermitLine()
+                        .frame(height: 20)
+                        .offset(x: m.side, y: 236 + m.dy)
+                }
+            } else {
+                V2HUDCameraNeeded(access: cameraAccess)
+                    .frame(width: m.leftWidth, alignment: .leading)
+                    .offset(x: m.side, y: 200 + m.dy)
             }
-            V2StartDriveButton(height: 72) { startDrive() }
+            V2StartDriveButton(height: 72) { startTapped() }
                 .frame(width: 240)
+                .disabled(!canRecord)
+                .opacity(canRecord ? 1 : 0.35)
                 .offset(x: m.side, y: 292 + m.dy)
         }
         .frame(width: m.size.width, height: m.size.height, alignment: .topLeading)
     }
 
-    private enum MessageStrip { case completed, short(TimeInterval) }
+    /// Saved's line: the speed gate's, or why the recording ended early.
+    private var savedMessage: String {
+        guard captureEndedEarly else { return V2Voice.speedGate.body }
+        return V2Voice.interruptedSave(duration: lastSavedSession?.duration ?? elapsed,
+                                       leftScreen: captureInterrupted)
+    }
+
+    private enum MessageStrip { case short(TimeInterval) }
 
     /// End-of-drive text at y 112 and, under it, the neutral strip.
     private func messageLayer(_ m: V2HUDMetrics, title: String, message: String?,
                               onDone: (() -> Void)?, strip: MessageStrip?) -> some View {
-        let sm = V2HUDCompletedStrip.metrics(hasTicks: !liveDrive.ticks.isEmpty, hasClock: startClock != nil)
-        return ZStack(alignment: .topLeading) {
+        ZStack(alignment: .topLeading) {
             V2HUDMessage(title: title, message: message, onDone: onDone)
                 .frame(width: m.contentWidth, alignment: .leading)
                 .offset(x: m.side, y: 112 + m.dy)
             if let strip {
                 switch strip {
-                case .completed:
-                    V2HUDCompletedStrip(buckets: liveDrive.buckets, ticks: liveDrive.ticks,
-                                        startClock: startClock, width: m.contentWidth)
-                        .offset(x: m.side, y: m.hudBaselineY - sm.baselineY)
                 case .short(let duration):
                     let shortMetrics = V2HUDLiveStrip.metrics(hasTicks: false, hasClock: false)
                     V2HUDShortStrip(duration: duration, width: m.contentWidth)
@@ -506,6 +590,11 @@ struct DriveView: View {
         // one can be tapped again mid slide-out, which would orphan the first
         // Timer and request a second Live Activity.
         guard !isRecording else { return }
+        // A new drive: the last drive's parking watch stops.
+        V2ParkingWatch.shared.cancel()
+        captureEndedEarly = false
+        captureInterrupted = false
+        analysisProgress = 0
         liveDrive.reset()
         awaitingFinish = false
         savedWhileMoving = false
@@ -538,66 +627,88 @@ struct DriveView: View {
         pauseLiveActivity()
     }
 
-    // MARK: – Saved → Parked
-
-    /// While Saved is up, GPS and motion restart on the drive's own
-    /// LocationManager (the drive was flushed and saved before Saved showed,
-    /// so this touches nothing the save reads) and are polled once a second.
-    /// After 30 s with no sign of moving at 2 mph or more (no fresh fix that
-    /// fast, no road vibration), the car is parked.
+    /// Start, after the camera check: a first-time camera prompt asks now
+    /// and the drive starts once it's granted.
     @MainActor
-    private func watchForParking() async {
-        guard !isRecording else { return }
-        locationManager.startTracking()
-        defer {
-            if !isRecording { locationManager.stopSensors() }
-            V2ParkedNotifier.endBackgroundTime()
-        }
-        var lastMoving = Date()
-        var newestFix = Date.distantPast
-        var restartedAt = Date()
-        var lastTick = Date()
-        while !Task.isCancelled {
-            try? await Task.sleep(for: .seconds(1))
-            guard !Task.isCancelled, phase == .saved, !parkedRevealPending else { return }
-            let now = Date()
-            // The app was suspended in between: nothing was measured, so the
-            // gap can't count as standing still.
-            if now.timeIntervalSince(lastTick) > 5 { lastMoving = now }
-            lastTick = now
-            let snap = locationManager.snapshot()
-            for point in snap.route where point.timestamp > newestFix {
-                newestFix = point.timestamp
-                if point.speed >= V2LiveDrive.parkedSpeedMS {
-                    lastMoving = max(lastMoving, point.timestamp)
-                }
+    private func startTapped() {
+        switch cameraAccess {
+        case .available:
+            startDrive()
+        case .notDetermined:
+            V2CameraAccess.request { granted in
+                cameraAccess = .current
+                if granted, cameraAccess == .available, phase == .ready { startDrive() }
             }
-            if V2LiveDrive.imuSaysMoving(samples: snap.samples) { lastMoving = now }
-            if now.timeIntervalSince(lastMoving) >= V2LiveDrive.parkedAfterSeconds {
-                carParked()
-                return
-            }
-            // A long Saved stretch: restarting clears the buffers (the watch
-            // keeps its own evidence above).
-            if now.timeIntervalSince(restartedAt) >= 120 {
-                locationManager.startTracking()
-                restartedAt = now
-            }
+        case .denied, .noCamera:
+            break
         }
     }
 
-    /// Still for 30 s on the Saved screen. In front: the Parked reveal plays
-    /// now (spending the reveal). Not in front: the Parked notification posts
-    /// and the reveal waits until the app is active again.
+    /// The capture ended without the hold: iOS stopped the camera (Drive left
+    /// the screen: Maps, a call, the side button; or a thermal shutdown). The
+    /// hold's stop sequence, so the ticker, model and idle timer stop, and the
+    /// drive saves what was captured through Saved: the driver is most likely
+    /// still on the road, so the reveal waits for parking. A no-op once the
+    /// drive has stopped (every normal finish).
     @MainActor
-    private func carParked() {
-        guard phase == .saved, let id = lastSavedSessionID else { return }
-        // Asked of UIApplication, not `scenePhase`: this runs on the copy of
-        // the view the watch task captured, whose environment is a snapshot.
-        if UIApplication.shared.applicationState == .active {
+    private func endDriveWithoutHold() {
+        guard isRecording else { return }
+        captureEndedEarly = true
+        if UIApplication.shared.applicationState != .active {
+            captureInterrupted = true
+            // The short grace period, so the video finalises and the drive
+            // evaluates and saves before iOS suspends the app (ended when
+            // the app is active again, by the parking watch, or by iOS).
+            V2ParkedNotifier.beginBackgroundTime()
+        }
+        savedWhileMoving = true
+        // The finish may already be in (the camera stopped first).
+        if uploadStatus == .idle { awaitingFinish = true }
+        isRecording = false
+        stopTicker()
+        aiEngine.stop()
+        isOnRoad = true
+        UIApplication.shared.isIdleTimerDisabled = false
+        if uploadStatus == .idle { pauseLiveActivity() }
+    }
+
+    /// No video ~10 s after the hold: nothing was recorded.
+    @MainActor
+    private func noRecordingArrived() {
+        locationManager.stopSensors()
+        let copy = V2Voice.recordingFailed(cameraUnavailable: true, interrupted: false)
+        withAnimation { uploadStatus = .failed(copy.title, copy.body) }
+        endLiveActivity(finalScore: 0)
+    }
+
+    /// Moves the Analysing car forward (it never goes back).
+    @MainActor
+    private func advanceAnalysis(to fraction: Double) {
+        guard phase == .analysing, fraction > analysisProgress else { return }
+        analysisProgress = fraction
+    }
+
+    // MARK: – Saved → Parked
+
+    /// Saved starts the parking watch (V2ParkingWatch: 30 s under 2 mph);
+    /// it keeps running after Done so the Parked notification still posts.
+    @MainActor
+    private func phaseChanged(from oldPhase: HUDPhase, to newPhase: HUDPhase) {
+        if newPhase == .saved, oldPhase != .saved, let id = lastSavedSessionID {
+            V2ParkingWatch.shared.start(sessionID: id, fallback: lastSavedSession)
+        }
+        V2ParkingWatch.shared.setHUDShowing(newPhase == .saved ? lastSavedSessionID : nil)
+    }
+
+    /// The watch found the car parked while Saved is up. In front: the
+    /// Parked reveal plays now (spending the reveal). Not in front: the
+    /// notification posted, and the reveal waits until the app is active.
+    @MainActor
+    private func watchFoundParked(_ parked: V2ParkingWatch.Parked?) {
+        guard let parked, parked.sessionID == lastSavedSessionID, phase == .saved else { return }
+        if parked.appWasActive {
             savedWhileMoving = false
         } else {
-            V2ParkedNotifier.post(sessionID: id, fallback: lastSavedSession)
             parkedRevealPending = true
         }
     }
@@ -607,14 +718,16 @@ struct DriveView: View {
         switch newPhase {
         case .active:
             V2ParkedNotifier.endBackgroundTime()
+            cameraAccess = .current
             if parkedRevealPending, phase == .saved {
                 parkedRevealPending = false
                 savedWhileMoving = false
             }
         case .background:
-            // No background modes: ask for the short grace period so the
-            // watch can finish (and post) after the phone locks.
-            if phase == .saved, !parkedRevealPending { V2ParkedNotifier.beginBackgroundTime() }
+            // No background modes: iOS stops the camera now. End the drive
+            // and save what was captured instead of losing it. (Saved's
+            // grace period is V2ParkingWatch's.)
+            if phase == .recording { endDriveWithoutHold() }
         default:
             break
         }
@@ -688,6 +801,7 @@ struct DriveView: View {
                 state.isRecording = false
                 state.endDate = state.endDate ?? Date()
                 state.parked = true
+                state.driveID = sessionID.uuidString
                 state.routeName = facts?.name ?? fallbackName
                 state.routeNumber = facts?.routeNumber
                 state.verdict = facts?.verdict.text

@@ -383,6 +383,8 @@ struct V2BadgeEarnedSheet: View {
     @State private var page = 0
     @State private var stamped: Set<Int> = []
     @State private var settled: Set<Int> = []
+    /// Pages whose icon-unlock row has landed (200 ms after the name, M5 F4).
+    @State private var iconIn: Set<Int> = []
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     init(badges: [Badge], onDone: @escaping () -> Void) {
@@ -401,7 +403,7 @@ struct V2BadgeEarnedSheet: View {
             if let badge = currentBadge, let icon = V2AppIcons.option(unlockedBy: badge) {
                 V2BadgeIconUnlockRow(icon: icon)
                     .padding(.top, 12)
-                    .opacity(settled.contains(page) ? 1 : 0)
+                    .opacity(iconIn.contains(page) ? 1 : 0)
             }
             if let badge = currentBadge {
                 V2BadgeSheetButtons(badge: badge, onDone: onDone)
@@ -436,21 +438,29 @@ struct V2BadgeEarnedSheet: View {
         }
     }
 
-    /// StampLanding (§7 M5): 1.25× / opacity 0 → 1.0 on the stamp spring, the
-    /// haptic at contact, the name in from 200 ms. Once per page per showing.
+    /// StampLanding (§7 M5): the plate STAMPs (`.v2Stamp`; a tier-up STAMPs
+    /// its new dot while the fill crossfades), the haptic at contact, the name
+    /// in from 200 ms, the icon-unlock row 200 ms after the name. Once per page
+    /// per showing.
     private func land(_ index: Int) async {
         guard badges.indices.contains(index), !stamped.contains(index) else { return }
         // Let the sheet finish rising before the first plate lands.
         try? await Task.sleep(for: .milliseconds(stamped.isEmpty ? 350 : 60))
-        withAnimation(reduceMotion ? Animation.easeOut(duration: 0.15) : V2Motion.stamp) {
-            _ = stamped.insert(index)
-        }
+        // No withAnimation: the stamp modifier and the crossfade carry their own timing.
+        _ = stamped.insert(index)
         try? await Task.sleep(for: .milliseconds(120))
-        V2Haptics.play(.stamp)
+        if !Task.isCancelled {
+            V2Haptics.play(.stamp)
+        }
         try? await Task.sleep(for: .milliseconds(80))
-        withAnimation(V2Motion.reduced(.easeOut(duration: 0.25), reduceMotion: reduceMotion,
-                                       fallback: .easeOut(duration: 0.15))) {
+        let fade = V2Motion.reduced(.easeOut(duration: 0.25), reduceMotion: reduceMotion,
+                                    fallback: .easeOut(duration: 0.15))
+        withAnimation(fade) {
             _ = settled.insert(index)
+        }
+        try? await Task.sleep(for: .milliseconds(200))
+        withAnimation(fade) {
+            _ = iconIn.insert(index)
         }
     }
 }
@@ -466,7 +476,7 @@ fileprivate struct V2BadgeDetailSheet: View {
     var body: some View {
         V2BadgeSheetChrome(onClose: onClose) {
             V2BadgeSheetPage(badge: badge, earnedOn: earnedOn, stamped: true, settled: true,
-                             reduceMotion: true, showProgress: true)
+                             reduceMotion: true, showProgress: true, landing: false)
             V2BadgeSheetButtons(badge: badge, onDone: onClose)
         }
     }
@@ -509,6 +519,9 @@ fileprivate struct V2BadgeSheetPage: View {
     let settled: Bool
     let reduceMotion: Bool
     let showProgress: Bool
+    /// The Badge Earned sheet (tier-ups crossfade from the tier below); the
+    /// detail sheet shows the plate at rest.
+    var landing: Bool = true
 
     var body: some View {
         VStack(spacing: 0) {
@@ -551,9 +564,10 @@ fileprivate struct V2BadgeSheetPage: View {
     }
 
     /// First earn: the plate STAMPs. Tier-up (§4.13): the tier below rests
-    /// there, then the new fill and its extra dot crossfade in over 300 ms.
+    /// there, the new fill crossfades in over 300 ms and the new Botts' dot
+    /// STAMPs onto it.
     @ViewBuilder private var plate: some View {
-        if let below = Self.tierBelow(badge) {
+        if landing, let below = Self.tierBelow(badge) {
             ZStack {
                 V2Plate.badge(below, size: 120)
                     .opacity(stamped ? 0 : 1)
@@ -561,10 +575,12 @@ fileprivate struct V2BadgeSheetPage: View {
                     .opacity(stamped ? 1 : 0)
             }
             .animation(.easeInOut(duration: 0.3), value: stamped)
+            .overlay {
+                V2BadgeNewDot(badge: badge, size: 120, landed: stamped)
+            }
         } else {
             V2Plate.badge(badge, size: 120)
-                .scaleEffect(stamped || reduceMotion ? 1 : 1.25)
-                .opacity(stamped ? 1 : 0)
+                .v2Stamp(stamped)
         }
     }
 
@@ -575,6 +591,53 @@ fileprivate struct V2BadgeSheetPage: View {
         return Badge(id: badge.id, icon: badge.icon, title: badge.title, description: badge.description,
                      baseColor: badge.baseColor, progress: 0, currentTier: below, nextTier: tier,
                      isOneTime: false, count: badge.count, nextThreshold: badge.nextThreshold)
+    }
+}
+
+/// The newest Botts' dot of a tier-up plate, drawn on its own so it can STAMP
+/// while the fill crossfades underneath (§4.13). It sits exactly on the dot
+/// V2Plate draws (same geometry: 10-unit discs 16 apart, centred on the
+/// shape's dot line, in `tierInk`), so at rest the two are one dot.
+fileprivate struct V2BadgeNewDot: View {
+    let badge: Badge
+    let size: CGFloat
+    /// STAMPs the dot in place (scaled about its own centre, not the plate's).
+    let landed: Bool
+
+    var body: some View {
+        GeometryReader { geo in
+            if let center = Self.center(badge, size: size, in: geo.size) {
+                Circle()
+                    .fill(V2.tierInk)
+                    .frame(width: 0.1 * size, height: 0.1 * size)
+                    .v2Stamp(landed)
+                    .position(center)
+            }
+        }
+        .allowsHitTesting(false)
+        .accessibilityHidden(true)
+    }
+
+    /// Centre of the last dot, in the plate's frame (V2Plate's render transform).
+    static func center(_ badge: Badge, size: CGFloat, in box: CGSize) -> CGPoint? {
+        guard !badge.isOneTime, let tier = badge.currentTier, size > 0 else { return nil }
+        let n = CGFloat(min(tier.rawValue, 5))
+        let k = size / 100
+        let unitWidth: CGFloat
+        let dotY: CGFloat
+        switch V2BadgeCopy.plateShape(badge.id) {
+        case .regulatory: unitWidth = 78;  dotY = 75
+        case .post:       unitWidth = 56;  dotY = 65
+        case .shield:     unitWidth = 100; dotY = 72
+        case .diamond:    unitWidth = 100; dotY = 74
+        case .yield:      unitWidth = 100; dotY = 60
+        case .guide:      unitWidth = max(140, box.width / k); dotY = 76
+        default:          unitWidth = 100; dotY = 76
+        }
+        let ox = (box.width - unitWidth * k) / 2
+        let oy = (box.height - 100 * k) / 2
+        let x = unitWidth / 2 + (n - 1) / 2 * 16
+        return CGPoint(x: ox + x * k, y: oy + dotY * k)
     }
 }
 

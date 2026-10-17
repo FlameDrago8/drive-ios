@@ -3,13 +3,14 @@
 //  Drive — v2 "Road Furniture"
 //
 //  The Report's "What happened" instrument (§6.2, §4.3, M4): full-bleed
-//  footage (the v1 DriveFootagePlayer chain) with moment 1 as its poster,
-//  the 48 pt readout bar, and the scrubbable lane-line strip with the tint
-//  car as its handle.
+//  footage (`V2ReportFootage`, V2FootagePlayer.swift) with moment 1 as its
+//  poster, the 48 pt readout bar, and the scrubbable lane-line strip with the
+//  tint car as its handle.
 //
 //  The car's resting place is owned by the Report (taps elsewhere drive it);
 //  while a finger is down the deck keeps its own live position so a scrub
-//  never re-renders the rest of the Report or the player.
+//  never re-renders the rest of the Report. The footage follows the drag
+//  through `onScrub` (exact frames, paused), at most 10 times a second.
 //
 
 import SwiftUI
@@ -28,17 +29,6 @@ enum V2ReportCar: Equatable {
         case .bucket(let b): return .bucket(b)
         case .parked:        return .parked
         }
-    }
-}
-
-/// A one-shot footage seek. `offset` goes to `VideoPlayerView` unchanged: it
-/// applies its own 3 s pre-roll and starts playback.
-struct V2FootageSeek: Equatable {
-    let offset: TimeInterval
-    let token = UUID()
-
-    init(offset: TimeInterval) {
-        self.offset = offset
     }
 }
 
@@ -78,7 +68,12 @@ struct V2ReportInstrument: View {
     let strip: V2Strip
     let moments: [V2Moment]
     let car: V2ReportCar
-    let footageSeek: V2FootageSeek?
+    /// The Report's player: the footage section observes it, the Report drives it.
+    let footage: V2FootagePlayer
+    /// The worst moment's offset (the car's rest): footage waits 3 s before it.
+    let restOffset: TimeInterval?
+    /// Per-second trace, when loaded: speed at any scrubbed second (G2-08).
+    let trace: [DriveTraceSecond]?
     let drawProgress: Double
     /// Bumped by the Report to play the teach-once nudge.
     let teachToken: Int
@@ -92,22 +87,28 @@ struct V2ReportInstrument: View {
     let onHome: () -> Void
     /// First frame of a drag (retires the teach-once tip).
     let onScrubStart: () -> Void
+    /// While dragging: the seconds under the car (throttled to ≤ 10 Hz).
+    let onScrub: (TimeInterval) -> Void
     /// The strip itself is (mostly) on screen, or not.
     let onStripVisible: (Bool) -> Void
 
     init(session: DriveSession, start: Date, strip: V2Strip, moments: [V2Moment], car: V2ReportCar,
-         footageSeek: V2FootageSeek?, drawProgress: Double, teachToken: Int = 0, showsTip: Bool = false,
+         footage: V2FootagePlayer, restOffset: TimeInterval?, trace: [DriveTraceSecond]? = nil,
+         drawProgress: Double, teachToken: Int = 0, showsTip: Bool = false,
          onMoment: @escaping (V2Moment) -> Void,
          onRelease: @escaping (V2ReportCar, TimeInterval, V2Moment?) -> Void,
          onHome: @escaping () -> Void,
          onScrubStart: @escaping () -> Void = {},
+         onScrub: @escaping (TimeInterval) -> Void = { _ in },
          onStripVisible: @escaping (Bool) -> Void = { _ in }) {
         self.session = session
         self.start = start
         self.strip = strip
         self.moments = moments
         self.car = car
-        self.footageSeek = footageSeek
+        self.footage = footage
+        self.restOffset = restOffset
+        self.trace = trace
         self.drawProgress = drawProgress
         self.teachToken = teachToken
         self.showsTip = showsTip
@@ -115,6 +116,7 @@ struct V2ReportInstrument: View {
         self.onRelease = onRelease
         self.onHome = onHome
         self.onScrubStart = onScrubStart
+        self.onScrub = onScrub
         self.onStripVisible = onStripVisible
     }
 
@@ -128,8 +130,9 @@ struct V2ReportInstrument: View {
         VStack(spacing: 0) {
             if session.hasFootage {
                 V2ReportFootage(session: session,
-                                seek: footageSeek,
+                                footage: footage,
                                 posterMoment: first,
+                                restOffset: restOffset,
                                 onPlayPoster: {
                                     if let first { onMoment(first) }
                                 })
@@ -139,13 +142,15 @@ struct V2ReportInstrument: View {
                               start: start,
                               duration: session.duration,
                               car: car,
+                              trace: trace,
                               drawProgress: drawProgress,
                               teachToken: teachToken,
                               showsTip: showsTip,
                               onMoment: onMoment,
                               onRelease: onRelease,
                               onHome: onHome,
-                              onScrubStart: onScrubStart)
+                              onScrubStart: onScrubStart,
+                              onScrub: onScrub)
                 .onScrollVisibilityChange(threshold: 0.8) { visible in
                     onStripVisible(visible)
                 }
@@ -153,254 +158,57 @@ struct V2ReportInstrument: View {
     }
 }
 
-// MARK: - Footage
+// MARK: - Readout bar + scrubbable strip
 
-/// The v1 `DriveFootagePlayer` chain, unchanged in order: the local original
-/// (re-anchored by `resolvedVideoURL`), else a fresh Storage download URL
-/// (never persisted), else "Footage is on the device that recorded this drive".
-/// Before the first play or seek, moment 1's frame sits over the player.
-struct V2ReportFootage: View {
-    let session: DriveSession
-    let seek: V2FootageSeek?
-    let posterMoment: V2Moment?
-    /// Poster tapped: the Report plays moment 1 (car and footage together).
-    let onPlayPoster: () -> Void
+/// Paces scrub seeks: at most 10 a second, and only when the time moved.
+/// A position the 10 Hz cap holds back is kept for one trailing `flush()`,
+/// so a finger that stops moving still gets the frame under the car.
+final class V2ScrubPace {
+    private var lastTime: TimeInterval = -.infinity
+    private var lastSent = Date.distantPast
+    private var held: TimeInterval?
+    private var flushQueued = false
 
-    @State private var checkedLocal = false
-    @State private var localURL: URL?
-    @State private var remoteURL: URL?
-    @State private var failed = false
-    /// Bound to VideoPlayerView, which seeks (with pre-roll) and resets it to nil.
-    @State private var playerSeek: TimeInterval?
-    @State private var playerReady = false
-    @State private var pendingSeek: TimeInterval?
-    @State private var appliedToken: UUID?
-    @State private var poster: UIImage?
-    @State private var posterDismissed = false
-    /// Seeks reported by AVFoundation count only once the player has settled.
-    @State private var posterArmed = false
-
-    /// VideoPlayerView's own player: 230 tall, clipped at DS.Radius.l.
-    private static let playerHeight: CGFloat = 230
-
-    /// Any player item's discontinuous time change (a scrubber drag on
-    /// VideoPlayerView's own track); filtered to this footage's URL.
-    private static let timeJumps = NotificationCenter.default
-        .publisher(for: AVPlayerItem.timeJumpedNotification)
-        .receive(on: DispatchQueue.main)
-
-    /// Any player starting or stopping; filtered to this footage's URL so a
-    /// play from AVKit's own button (before the poster loads) keeps it away.
-    private static let rateChanges = NotificationCenter.default
-        .publisher(for: AVPlayer.rateDidChangeNotification)
-        .receive(on: DispatchQueue.main)
-
-    init(session: DriveSession, seek: V2FootageSeek?, posterMoment: V2Moment? = nil,
-         onPlayPoster: @escaping () -> Void = {}) {
-        self.session = session
-        self.seek = seek
-        self.posterMoment = posterMoment
-        self.onPlayPoster = onPlayPoster
-    }
-
-    var body: some View {
-        VStack(spacing: 0) {
-            if !checkedLocal {
-                Color.clear.frame(height: 64)
-            } else if let localURL {
-                player(localURL)
-            } else if let remoteURL {
-                player(remoteURL)
-            } else if failed {
-                message(symbol: "exclamationmark.triangle", text: "Footage couldn't be loaded", spinner: false)
-            } else if session.videoPath != nil {
-                message(symbol: nil, text: "Loading footage…", spinner: true)
-                    .task { await resolveRemote() }
-            } else if session.footageIsOnAnotherDevice {
-                // Synced drives: say so rather than hiding the section.
-                message(symbol: "info.circle", text: "Footage is on the device that recorded this drive", spinner: false)
-            }
+    func admit(_ t: TimeInterval, now: Date = Date()) -> Bool {
+        guard abs(t - lastTime) >= 0.5 else {
+            // Back near the frame already shown: nothing to catch up.
+            held = nil
+            return false
         }
-        .task(id: session.id) {
-            // `resolvedVideoURL` touches the file system: check once, not per render.
-            localURL = session.resolvedVideoURL
-            checkedLocal = true
+        guard now.timeIntervalSince(lastSent) >= 0.1 else {
+            held = t
+            return false
         }
-        .onAppear { apply(seek) }
-        .onChange(of: seek) { _, newValue in apply(newValue) }
+        lastTime = t
+        lastSent = now
+        held = nil
+        return true
     }
 
-    private func player(_ url: URL) -> some View {
-        VideoPlayerView(videoURL: url,
-                        events: session.metrics?.events ?? [],
-                        seekToOffset: $playerSeek)
-            .overlay(alignment: .top) { posterOverlay }
-            .padding(.horizontal, V2.margin)
-            .padding(.bottom, 12)
-            .task(id: url) {
-                // VideoPlayerView builds its AVPlayer on appear; give it a beat
-                // before handing it a seek it would otherwise drop.
-                playerReady = false
-                try? await Task.sleep(for: .milliseconds(350))
-                guard !Task.isCancelled else { return }
-                playerReady = true
-                if let pending = pendingSeek {
-                    pendingSeek = nil
-                    playerSeek = pending
-                }
-                // Ignore any jump the item reports while it first loads.
-                try? await Task.sleep(for: .milliseconds(650))
-                guard !Task.isCancelled else { return }
-                posterArmed = true
-            }
-            .task(id: posterKey(url)) { await loadPoster(url) }
-            .onReceive(Self.timeJumps) { note in noteJump(note, url: url) }
-            .onReceive(Self.rateChanges) { note in notePlay(note, url: url) }
-            // Pushed away (All events, maneuvers): VideoPlayerView pauses and
-            // rebuilds its AVPlayer on return, so hold any seek until then
-            // rather than restarting the paused player off screen.
-            .onDisappear {
-                playerReady = false
-                posterArmed = false
-            }
+    /// True once per held-back position: the caller schedules one `flush()`.
+    func queueFlush() -> Bool {
+        guard held != nil, !flushQueued else { return false }
+        flushQueued = true
+        return true
     }
 
-    // MARK: Poster (§6.2: poster = moment 1)
-
-    @ViewBuilder
-    private var posterOverlay: some View {
-        if let poster, let moment = posterMoment, !posterDismissed {
-            Button {
-                dismissPoster()
-                onPlayPoster()
-            } label: {
-                posterFace(poster, moment: moment)
-            }
-            .buttonStyle(.plain)
-            .transition(.opacity)
-            .accessibilityLabel("Play footage from moment \(moment.number), \(moment.title.lowercased())")
-        }
+    /// The held-back position, if one is still waiting; it counts as sent.
+    func flush(now: Date = Date()) -> TimeInterval? {
+        flushQueued = false
+        guard let t = held else { return nil }
+        held = nil
+        lastTime = t
+        lastSent = now
+        return t
     }
 
-    private func posterFace(_ image: UIImage, moment: V2Moment) -> some View {
-        let shape = RoundedRectangle(cornerRadius: DS.Radius.l, style: .continuous)
-        return ZStack {
-            // Letterboxed like the player underneath, so lifting it doesn't jump.
-            V2.fixed(0x000000)
-            Image(uiImage: image)
-                .resizable()
-                .scaledToFit()
-            Image(systemName: "play.fill")
-                .font(V2Type.scaled(22, .title2, weight: .semibold))
-                .foregroundStyle(V2.fixed(0xFFFFFF))
-                .frame(width: 56, height: 56)
-                .background(Circle().fill(V2.fixed(0x000000, alpha: 0.55)))
-        }
-        .overlay(alignment: .topLeading) {
-            V2MarkerDisc(number: moment.number, band: moment.band, size: 18)
-                .padding(12)
-        }
-        .frame(maxWidth: .infinity)
-        .frame(height: Self.playerHeight)
-        .clipShape(shape)
-        .contentShape(shape)
-    }
-
-    private func posterKey(_ url: URL) -> String {
-        "\(url.absoluteString)|\(posterMoment?.timeOffset ?? -1)"
-    }
-
-    private func loadPoster(_ url: URL) async {
-        guard let t = posterMoment?.timeOffset, !posterDismissed else { return }
-        let image = await Self.posterFrame(of: url, at: t)
-        // Already playing (or seeked) while the frame decoded: no poster.
-        guard !Task.isCancelled, !posterDismissed else { return }
-        poster = image
-    }
-
-    /// One still at `seconds` (video time = drive offset). AVFoundation decodes
-    /// off the main thread; any failure just means no poster.
-    private static func posterFrame(of url: URL, at seconds: TimeInterval) async -> UIImage? {
-        let generator = AVAssetImageGenerator(asset: AVURLAsset(url: url))
-        generator.appliesPreferredTrackTransform = true
-        generator.maximumSize = CGSize(width: 1280, height: 1280)
-        let tolerance = CMTime(seconds: 0.25, preferredTimescale: 600)
-        generator.requestedTimeToleranceBefore = tolerance
-        generator.requestedTimeToleranceAfter = tolerance
-        let time = CMTime(seconds: max(0, seconds), preferredTimescale: 600)
-        guard let frame = try? await generator.image(at: time) else { return nil }
-        return UIImage(cgImage: frame.image)
-    }
-
-    private func noteJump(_ note: Notification, url: URL) {
-        guard posterArmed, !posterDismissed, poster != nil else { return }
-        guard let item = note.object as? AVPlayerItem,
-              let asset = item.asset as? AVURLAsset,
-              asset.url == url else { return }
-        dismissPoster()
-    }
-
-    private func notePlay(_ note: Notification, url: URL) {
-        guard !posterDismissed,
-              let player = note.object as? AVPlayer, player.rate != 0,
-              let asset = player.currentItem?.asset as? AVURLAsset,
-              asset.url == url else { return }
-        dismissPoster()
-    }
-
-    private func dismissPoster() {
-        guard !posterDismissed else { return }
-        withAnimation(.easeOut(duration: 0.2)) { posterDismissed = true }
-    }
-
-    // MARK: Seeks
-
-    private func apply(_ request: V2FootageSeek?) {
-        guard let request, request.token != appliedToken else { return }
-        appliedToken = request.token
-        // A seek lifts the poster: the footage now shows that moment.
-        dismissPoster()
-        if playerReady {
-            playerSeek = request.offset
-        } else {
-            pendingSeek = request.offset
-        }
-    }
-
-    private func message(symbol: String?, text: String, spinner: Bool) -> some View {
-        HStack(spacing: 10) {
-            if spinner {
-                ProgressView().tint(V2.label2)
-            } else if let symbol {
-                Image(systemName: symbol)
-                    .font(V2Type.subheadSemibold)
-                    .foregroundStyle(V2.label2)
-                    .accessibilityHidden(true)
-            }
-            Text(verbatim: text)
-                .font(V2Type.subhead)
-                .foregroundStyle(V2.label2)
-                .fixedSize(horizontal: false, vertical: true)
-            Spacer(minLength: 0)
-        }
-        .padding(.horizontal, V2.margin)
-        .padding(.vertical, 12)
-        .frame(maxWidth: .infinity, minHeight: 64, alignment: .leading)
-        .background(V2.card)
-        .accessibilityElement(children: .combine)
-    }
-
-    private func resolveRemote() async {
-        guard let path = session.videoPath, remoteURL == nil else { return }
-        do {
-            remoteURL = try await StorageManager.shared.downloadURL(forPath: path)
-        } catch {
-            failed = true
-        }
+    func reset() {
+        lastTime = -.infinity
+        lastSent = .distantPast
+        held = nil
+        flushQueued = false
     }
 }
-
-// MARK: - Readout bar + scrubbable strip
 
 struct V2ReportScrubDeck: View {
     let strip: V2Strip
@@ -408,6 +216,7 @@ struct V2ReportScrubDeck: View {
     let start: Date
     let duration: TimeInterval
     let car: V2ReportCar
+    let trace: [DriveTraceSecond]?
     let drawProgress: Double
     let teachToken: Int
     let showsTip: Bool
@@ -415,9 +224,12 @@ struct V2ReportScrubDeck: View {
     let onRelease: (V2ReportCar, TimeInterval, V2Moment?) -> Void
     let onHome: () -> Void
     let onScrubStart: () -> Void
+    let onScrub: (TimeInterval) -> Void
 
     /// Non-nil only while a finger is down.
     @State private var liveCar: V2ReportCar? = nil
+    /// Paces `onScrub` (a box, so pacing never re-renders the deck).
+    @State private var scrubPace = V2ScrubPace()
     @State private var snapped: Int? = nil
     @State private var lastBucket: Int? = nil
     @State private var curbSide: Int = 0
@@ -429,16 +241,19 @@ struct V2ReportScrubDeck: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     init(strip: V2Strip, moments: [V2Moment], start: Date, duration: TimeInterval, car: V2ReportCar,
+         trace: [DriveTraceSecond]? = nil,
          drawProgress: Double, teachToken: Int = 0, showsTip: Bool = false,
          onMoment: @escaping (V2Moment) -> Void,
          onRelease: @escaping (V2ReportCar, TimeInterval, V2Moment?) -> Void,
          onHome: @escaping () -> Void,
-         onScrubStart: @escaping () -> Void = {}) {
+         onScrubStart: @escaping () -> Void = {},
+         onScrub: @escaping (TimeInterval) -> Void = { _ in }) {
         self.strip = strip
         self.moments = moments
         self.start = start
         self.duration = duration
         self.car = car
+        self.trace = trace
         self.drawProgress = drawProgress
         self.teachToken = teachToken
         self.showsTip = showsTip
@@ -446,6 +261,7 @@ struct V2ReportScrubDeck: View {
         self.onRelease = onRelease
         self.onHome = onHome
         self.onScrubStart = onScrubStart
+        self.onScrub = onScrub
     }
 
     /// L class, Report instrument (§4.3 sizes).
@@ -503,6 +319,15 @@ struct V2ReportScrubDeck: View {
         return text.hasSuffix(" g") ? String(text.dropLast(2)) : text
     }
 
+    /// Away from a moment: the trace speed at the playhead second (v1 parity,
+    /// G2-08). None at P, or where that second had no GPS.
+    private var playheadMPH: Int? {
+        if case .parked = shownCar { return nil }
+        let t = timeOffset(of: shownCar)
+        guard let ms = V2TraceSpeed.speedMS(trace, at: t) else { return nil }
+        return V2Format.mph(fromMS: ms)
+    }
+
     private var readout: some View {
         HStack(spacing: 8) {
             if let m = currentMoment {
@@ -523,7 +348,10 @@ struct V2ReportScrubDeck: View {
                 }
             } else {
                 V2ClockText(start.addingTimeInterval(timeOffset(of: shownCar)), size: 15)
-                Spacer(minLength: 0)
+                Spacer(minLength: 8)
+                if let mph = playheadMPH {
+                    V2ValueUnit("\(mph)", unit: "mph", valueFont: V2Type.measured(17))
+                }
             }
         }
         .padding(.horizontal, V2.margin)
@@ -540,7 +368,9 @@ struct V2ReportScrubDeck: View {
             if let g = m.magnitudeText { parts.append(g) }
             return parts.joined(separator: ", ")
         }
-        return V2Format.clock(start.addingTimeInterval(timeOffset(of: shownCar)))
+        let clock = V2Format.clock(start.addingTimeInterval(timeOffset(of: shownCar)))
+        if let mph = playheadMPH { return "\(clock), \(mph) mph" }
+        return clock
     }
 
     // MARK: Strip block
@@ -730,6 +560,7 @@ struct V2ReportScrubDeck: View {
         if let held = snapped, let marker = strip.markers.first(where: { $0.number == held }) {
             if abs(x - g.centerX(bucket: marker.bucket)) <= 10 {
                 liveCar = .bucket(Double(marker.bucket))
+                feedScrub(markerNumber: held)
                 return
             }
             snapped = nil
@@ -739,6 +570,7 @@ struct V2ReportScrubDeck: View {
             lastBucket = marker.bucket
             liveCar = .bucket(Double(marker.bucket))
             V2Haptics.play(.select)
+            feedScrub(markerNumber: marker.number)
             return
         }
 
@@ -748,6 +580,7 @@ struct V2ReportScrubDeck: View {
             ? V2ReportCar.parked
             : V2ReportCar.bucket(Double(cx / max(0.0001, g.pitch)) - 0.5)
         liveCar = next
+        feedScrub(markerNumber: nil)
 
         // Rumble over bars; calm road is silent.
         let i = g.bucket(atX: cx)
@@ -759,7 +592,32 @@ struct V2ReportScrubDeck: View {
         }
     }
 
+    /// The footage follows the car (G2-02): the moment's own second on a
+    /// snapped marker, else the second under the car. ≤ 10 Hz, ≥ 0.5 s apart.
+    private func feedScrub(markerNumber: Int?) {
+        guard let shown = liveCar else { return }
+        let t: TimeInterval
+        if let n = markerNumber, let m = moments.first(where: { $0.number == n }) {
+            t = m.timeOffset
+        } else {
+            t = timeOffset(of: shown)
+        }
+        if scrubPace.admit(t) {
+            onScrub(t)
+        } else if scrubPace.queueFlush() {
+            // Held back by the 10 Hz cap: send it once the window has passed
+            // (a release first resets the pace, so this never follows it).
+            let pace = scrubPace
+            let send = onScrub
+            Task { @MainActor in
+                try? await Task.sleep(for: .milliseconds(100))
+                if let held = pace.flush() { send(held) }
+            }
+        }
+    }
+
     private func endScrub() {
+        scrubPace.reset()
         guard let dropped = liveCar else { return }
         let held = snapped.flatMap { n in moments.first { $0.number == n } }
         let t = held?.timeOffset ?? timeOffset(of: dropped)

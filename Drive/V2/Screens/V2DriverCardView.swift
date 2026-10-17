@@ -339,29 +339,27 @@ struct V2DriverCardView: View {
 
     // MARK: Graduation
 
-    /// "I got it": the real backend write, then STAMP + crossfade to the
-    /// landscape card. Reduce Motion: the crossfade only.
+    /// "I got it": the real backend write, then the LICENSED STAMP (`stamp`
+    /// haptic at contact) + a 300 ms crossfade to the landscape card. Reduce
+    /// Motion (§3.5): the stamp fades in over 150 ms, the haptic stays, a
+    /// ~500 ms hold, then the same crossfade.
     private func graduate() {
         let stats = library.snapshot.stats
         let line = V2CardCopy.graduationLine(drives: stats.totalDrives, minutes: stats.totalMinutes)
+        let reduced = reduceMotion
         a11yInk = false
-        if reduceMotion {
-            withAnimation(.easeInOut(duration: 0.3)) {
-                V2LicenseChange.graduate()
-                graduationLine = line
-                phase = .licensed
-            }
-            return
-        }
         // Hold the portrait card up (phase) before the type flips underneath it.
         stampLanded = false
         phase = .stamping
         V2LicenseChange.graduate()
         Task { @MainActor in
             try? await Task.sleep(for: .milliseconds(150))
-            withAnimation(V2Motion.stamp) { stampLanded = true }
+            // No withAnimation: `.v2Stamp` carries the token timing.
+            stampLanded = true
+            // Contact ~120 ms after the flip; under Reduce Motion, as the fade ends.
+            try? await Task.sleep(for: .milliseconds(reduced ? 150 : 120))
             V2Haptics.play(.stamp)
-            try? await Task.sleep(for: .milliseconds(700))
+            try? await Task.sleep(for: .milliseconds(reduced ? 500 : 580))
             withAnimation(.easeInOut(duration: 0.3)) {
                 graduationLine = line
                 phase = .licensed
@@ -505,8 +503,7 @@ fileprivate struct V2DriverCardFace: View {
             if let landed = stampLanded {
                 V2LicensedStamp()
                     .rotationEffect(.degrees(-6))
-                    .scaleEffect(landed ? 1 : 1.5)
-                    .opacity(landed ? 1 : 0)
+                    .v2Stamp(landed)
                     .offset(y: 24)
             }
         }

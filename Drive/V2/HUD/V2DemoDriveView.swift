@@ -4,11 +4,13 @@
 //
 //  A 20 s sample drive: the HUD Recording layout fed by the canonical
 //  sample (§6.0: School run, 73 buckets, 88 → 91, 8.3 mi) compressed so a
-//  bucket commits every ~0.27 s, then the Parked reveal. No camera, no
-//  sensors, no Live Activity, nothing saved; the only haptics are Parked's two.
+//  bucket commits every ~0.27 s, then the Parked reveal. A sample Live
+//  Activity follows it (§6.10 P4) and is removed the moment the demo closes.
+//  No camera, no sensors, nothing saved; the only haptics are Parked's two.
 //
 
 import SwiftUI
+import ActivityKit
 
 struct V2DemoDriveView: View {
     private let onClose: () -> Void
@@ -18,6 +20,9 @@ struct V2DemoDriveView: View {
     @State private var elapsed: TimeInterval = 0
     @State private var parked = false
     @State private var parkedContent = V2DemoDrive.parkedContent()
+    /// The sample Live Activity: never carries a drive id (a tap only opens
+    /// the app) and never outlives the demo.
+    @State private var activity: Activity<DriveActivityAttributes>?
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     init(onClose: @escaping () -> Void) {
@@ -34,12 +39,19 @@ struct V2DemoDriveView: View {
         .preferredColorScheme(.dark)
         .statusBarHidden(true)
         .task { await run() }
+        .onDisappear { endActivity() }
+    }
+
+    /// Done / close: the sample activity goes first, immediately.
+    private func close() {
+        endActivity()
+        onClose()
     }
 
     private func content(_ m: V2HUDMetrics) -> some View {
         ZStack(alignment: .topLeading) {
             if parked {
-                V2ParkedView(demo: parkedContent, onDone: onClose)
+                V2ParkedView(demo: parkedContent, onDone: close)
                     .frame(width: m.size.width, height: m.size.height)
                     .transition(.opacity)
                 // Parked's top row is full, so the notice moves under the caption.
@@ -68,7 +80,7 @@ struct V2DemoDriveView: View {
                     .offset(x: m.side, y: V2.hudTop)
                     .transition(.opacity)
 
-                V2HUDCloseButton(action: onClose)
+                V2HUDCloseButton(action: close)
                     .offset(x: m.size.width - m.side - 44, y: V2.hudTop)
                     .transition(.opacity)
             }
@@ -80,6 +92,7 @@ struct V2DemoDriveView: View {
     @MainActor
     private func run() async {
         guard !parked, live.buckets.isEmpty else { return }
+        startActivity()
         let n = V2DemoDrive.bucketCount
         let step = V2DemoDrive.runSeconds / Double(n)
         let commit = V2Motion.reduced(V2Motion.driveLive, reduceMotion: reduceMotion, fallback: nil)
@@ -94,10 +107,58 @@ struct V2DemoDriveView: View {
                 score = s
                 elapsed = Double(i + 1) * V2Strip.bucketSeconds
             }
+            pushActivity()
         }
         try? await Task.sleep(for: .seconds(0.6))
         if Task.isCancelled { return }
         withAnimation(V2Motion.reduced(V2Motion.settle, reduceMotion: reduceMotion)) { parked = true }
+        parkActivity()
+    }
+
+    // MARK: Live Activity (sample)
+
+    private func startActivity() {
+        guard activity == nil, ActivityAuthorizationInfo().areActivitiesEnabled else { return }
+        var state = DriveActivityAttributes.ContentState(score: Int(score), startDate: Date(), isRecording: true)
+        state.bars = []
+        state.distanceM = 0
+        state.elapsedMinutes = 0
+        activity = try? Activity.request(attributes: DriveActivityAttributes(driverName: "Demo"),
+                                         content: ActivityContent(state: state, staleDate: nil))
+    }
+
+    /// Bars, distance, minutes and score, at most every 5 s like a real drive.
+    private func pushActivity() {
+        guard activity != nil else { return }
+        live.coalesceActivityUpdate {
+            guard !parked, let activity else { return }
+            let state = live.liveActivityState(from: activity.content.state, score: Int(score),
+                                               elapsed: elapsed, focusCategory: nil)
+            Task { await activity.update(ActivityContent(state: state, staleDate: nil)) }
+        }
+    }
+
+    /// The sample's Parked state (§6.9): score, route, verdict, the whole strip.
+    private func parkActivity() {
+        guard let activity else { return }
+        let c = parkedContent
+        var state = live.liveActivityState(from: activity.content.state, score: Int(c.score),
+                                           elapsed: elapsed, focusCategory: nil)
+        state.isRecording = false
+        state.endDate = Date()
+        state.parked = true
+        state.routeName = c.name
+        state.routeNumber = c.routeNumber
+        state.verdict = c.verdictText
+        state.verdictWas = c.verdictWas
+        state.bars = V2LiveDrive.fitBars(c.strip.quantised)
+        Task { await activity.update(ActivityContent(state: state, staleDate: nil)) }
+    }
+
+    private func endActivity() {
+        guard let activity else { return }
+        self.activity = nil
+        Task { await activity.end(nil, dismissalPolicy: .immediate) }
     }
 }
 

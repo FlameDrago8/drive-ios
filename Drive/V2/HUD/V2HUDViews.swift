@@ -267,6 +267,44 @@ struct V2HUDPermitLine: View {
     }
 }
 
+/// Ready when Drive can't record (G3-03): the reason in place of the road
+/// check and, when access was declined, a tint "Open Settings".
+struct V2HUDCameraNeeded: View {
+    let access: V2CameraAccess
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            HStack(spacing: 8) {
+                Image(systemName: "video.slash")
+                    .font(V2Type.fixedSize(19, weight: .semibold))
+                    .frame(width: 22, height: 22)
+                    .accessibilityHidden(true)
+                Text(access == .noCamera ? V2Voice.cameraMissing : V2Voice.cameraNeeded)
+                    .font(V2Type.headline)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.7)
+            }
+            .foregroundStyle(V2.label)
+            .frame(height: 22, alignment: .leading)
+            .accessibilityElement(children: .combine)
+            if access == .denied {
+                Button {
+                    guard let url = URL(string: UIApplication.openSettingsURLString) else { return }
+                    UIApplication.shared.open(url)
+                } label: {
+                    Text("Open Settings")
+                        .font(V2Type.headline)
+                        .foregroundStyle(V2.tint)
+                        .frame(minWidth: 44, minHeight: 44, alignment: .leading)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .padding(.leading, 30)
+            }
+        }
+    }
+}
+
 // MARK: - Recording
 
 /// Live score 176 bold tabular + plain grade letter 56 in its band colour,
@@ -367,7 +405,6 @@ struct V2HUDLiveStrip: View {
     let width: CGFloat
     let stampOnAppear: Bool
 
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var stamped = false
 
     static let zone: CGFloat = 28
@@ -400,8 +437,7 @@ struct V2HUDLiveStrip: View {
             .frame(width: width)
             .overlay(alignment: .topLeading) {
                 V2Car(.m, color: V2.label2, knockout: V2.bg)
-                    .scaleEffect(stamped ? 1 : 1.25)
-                    .opacity(stamped ? 1 : 0)
+                    .v2Stamp(stamped)
                     .position(x: headX, y: m.carTopY + car.height / 2)
                     .allowsHitTesting(false)
             }
@@ -409,9 +445,17 @@ struct V2HUDLiveStrip: View {
             .accessibilityLabel(startClock.map { "Drive so far, since \($0)" } ?? "Drive so far")
             .task {
                 guard !stamped else { return }
-                guard stampOnAppear else { stamped = true; return }
+                guard stampOnAppear else {
+                    // Already on the strip: no STAMP.
+                    var still = Transaction()
+                    still.disablesAnimations = true
+                    withTransaction(still) { stamped = true }
+                    return
+                }
                 try? await Task.sleep(for: .milliseconds(150))
-                withAnimation(reduceMotion ? Animation.easeInOut(duration: 0.15) : V2Motion.stamp) { stamped = true }
+                // STAMP token (scale, and a plain fade under Reduce Motion);
+                // set without withAnimation, the modifier owns the timing.
+                stamped = true
             }
     }
 }
@@ -436,6 +480,132 @@ struct V2HUDCompletedStrip: View {
             .frame(width: width)
             .accessibilityElement(children: .ignore)
             .accessibilityLabel(startClock.map { "Drive saved, started \($0)" } ?? "Drive saved")
+    }
+}
+
+/// The finished drive, still neutral, as Analysing / Saved draw it and
+/// Parked takes it over (G3-05): label2 bars and label3 ticks in one Canvas
+/// over the bare lane line (start pin + clock, P plate), car M in label2.
+/// The car rides the strip with the end-of-drive work (G3-06): `carFraction`
+/// 1 is parked at P, and it moves one bucket at a time so nothing drifts
+/// between stages. `sunk` (Parked F1) sinks bars and ticks into the lane
+/// line and fades the car; the caller animates it.
+struct V2HUDFinishedStrip: View {
+    let buckets: [Double?]
+    let ticks: [Int]
+    let startClock: String?
+    let width: CGFloat
+    var carFraction: Double = 1
+    var sunk: Bool = false
+
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    /// Headroom above the lane for the tallest bar's tick (4 + 8).
+    private static let tickRoom: CGFloat = 12
+
+    init(buckets: [Double?], ticks: [Int], startClock: String?, width: CGFloat,
+         carFraction: Double = 1, sunk: Bool = false) {
+        self.buckets = buckets
+        self.ticks = ticks
+        self.startClock = startClock
+        self.width = width
+        self.carFraction = carFraction
+        self.sunk = sunk
+    }
+
+    /// Position it by `baselineY`: the lane line sits on the HUD baseline.
+    static func metrics(hasClock: Bool) -> V2LaneStripMetrics {
+        V2LaneStrip.metrics(zoneHeight: V2HUDLiveStrip.zone, showMarkers: true, hasClocks: hasClock, car: .m,
+                            showBracket: false, hasTicks: false, neutral: true)
+    }
+
+    private var count: Int { max(1, buckets.count) }
+
+    /// The car's fraction snapped down to a whole bucket (1 stays 1).
+    private var carStep: Double {
+        let f = min(1, max(0, carFraction))
+        guard f < 1 else { return 1 }
+        let n = Double(count)
+        return (f * n).rounded(.down) / n
+    }
+
+    var body: some View {
+        let m = Self.metrics(hasClock: startClock != nil)
+        let cls = V2StripClass(zoneHeight: V2HUDLiveStrip.zone)
+        let laneTop = m.baselineY - cls.thickness / 2
+        let car = V2CarSize.m.size
+        let pRight = width - cls.pPlate - 2
+        let step = carStep
+        let carX = max(car.width / 2, CGFloat(step) * pRight - car.width / 2)
+        let room = Self.tickRoom
+        V2LaneStrip(strip: V2Strip(buckets: Array(repeating: nil, count: count), isComplete: true),
+                    zoneHeight: V2HUDLiveStrip.zone, neutral: true, startClock: startClock,
+                    car: V2StripCar(position: .parked, size: .m, color: .clear, knockout: .clear))
+            .frame(width: width)
+            .overlay(alignment: .topLeading) {
+                Canvas { ctx, _ in
+                    drawBars(&ctx, laneTop: laneTop + room)
+                }
+                .frame(width: width, height: laneTop + room)
+                .scaleEffect(x: 1, y: sunk ? 0.001 : 1, anchor: .bottom)
+                .offset(y: -room)
+                .allowsHitTesting(false)
+            }
+            .overlay(alignment: .topLeading) {
+                V2Car(.m, color: V2.label2, knockout: V2.bg)
+                    .position(x: carX, y: m.carTopY + car.height / 2)
+                    .animation(reduceMotion ? nil : V2Motion.driveLive, value: step)
+                    .opacity(sunk ? 0 : 1)
+                    .allowsHitTesting(false)
+            }
+            .accessibilityElement(children: .ignore)
+            .accessibilityLabel(startClock.map { "Drive, started \($0)" } ?? "Drive")
+    }
+
+    /// Bars on the lane line (top corners r min(1.5, w/2)) and ticks 4 pt
+    /// above each bar top, the same geometry as V2LaneStrip's neutral paint.
+    private func drawBars(_ ctx: inout GraphicsContext, laneTop: CGFloat) {
+        guard width > 0 else { return }
+        let g = V2StripGeometry(width: width, count: count)
+        let w = g.barWidth
+        let r = min(1.5, w / 2)
+        var bars = Path()
+        for (i, q) in buckets.enumerated() {
+            guard let h = V2Strip.barHeight(q: q, zone: V2HUDLiveStrip.zone) else { continue }
+            let x = CGFloat(i) * g.pitch + (g.pitch - w) / 2
+            bars.addPath(V2HUDBarPath.topRounded(CGRect(x: x, y: laneTop - h, width: w, height: h), radius: r))
+        }
+        if !bars.isEmpty { ctx.fill(bars, with: .color(V2.label2)) }
+        var tickPath = Path()
+        for i in ticks where i >= 0 && i < buckets.count {
+            let h = V2Strip.barHeight(q: buckets[i], zone: V2HUDLiveStrip.zone) ?? 0
+            let top = laneTop - h - 4 - 8
+            tickPath.addRoundedRect(in: CGRect(x: g.centerX(bucket: i) - 1, y: top, width: 2, height: 8),
+                                    cornerSize: CGSize(width: 1, height: 1), style: .circular)
+        }
+        if !tickPath.isEmpty { ctx.fill(tickPath, with: .color(V2.label3)) }
+    }
+}
+
+/// A strip bar: rounded top corners, flat on the lane line (V2LaneStrip's shape).
+enum V2HUDBarPath {
+    static func topRounded(_ rect: CGRect, radius: CGFloat) -> Path {
+        var p = Path()
+        let rad = max(0, min(radius, rect.width / 2, rect.height))
+        p.move(to: CGPoint(x: rect.minX, y: rect.maxY))
+        if rad > 0 {
+            p.addLine(to: CGPoint(x: rect.minX, y: rect.minY + rad))
+            p.addArc(tangent1End: CGPoint(x: rect.minX, y: rect.minY),
+                     tangent2End: CGPoint(x: rect.minX + rad, y: rect.minY), radius: rad)
+            p.addArc(tangent1End: CGPoint(x: rect.maxX, y: rect.minY),
+                     tangent2End: CGPoint(x: rect.maxX, y: rect.minY + rad), radius: rad)
+        } else {
+            p.addLine(to: CGPoint(x: rect.minX, y: rect.minY))
+            p.addLine(to: CGPoint(x: rect.maxX, y: rect.minY))
+        }
+        p.addLine(to: CGPoint(x: rect.maxX, y: rect.maxY))
+        p.closeSubpath()
+        return p
     }
 }
 
@@ -599,5 +769,34 @@ enum V2HUDSpeech {
         if m > 0 || h > 0 { parts.append(m == 1 ? "1 minute" : "\(m) minutes") }
         parts.append(sec == 1 ? "1 second" : "\(sec) seconds")
         return parts.joined(separator: " ")
+    }
+}
+
+// MARK: - Voice (HUD end states)
+
+extension V2Voice {
+    /// Ready, camera access declined (G3-03).
+    static let cameraNeeded = "Drive needs the camera to see the road."
+    /// Ready, no camera at all (e.g. the Simulator).
+    static let cameraMissing = "Drive can't find a camera on this device."
+
+    /// Saved after iOS stopped the camera mid-drive: Drive left the screen
+    /// (Maps, a call, the side button) or, in front, a thermal shutdown.
+    static func interruptedSave(duration: TimeInterval, leftScreen: Bool) -> String {
+        let minutes = Int(max(0, duration) / 60)
+        let saved = minutes >= 1 ? "Saved the first \(minutes) min." : "Saved what was recorded."
+        let cause = leftScreen ? "Recording stopped when Drive left the screen." : "Recording stopped early."
+        return "\(cause) \(saved)"
+    }
+
+    /// The end state when no usable video came back (G3-02, G3-03).
+    static func recordingFailed(cameraUnavailable: Bool, interrupted: Bool) -> (title: String, body: String) {
+        if cameraUnavailable {
+            return ("Couldn't record this drive.", "The camera didn't start, so nothing was recorded.")
+        }
+        if interrupted {
+            return ("Couldn't save this drive.", "Recording stopped when Drive left the screen, and the video couldn't be saved.")
+        }
+        return ("Couldn't save this drive.", "The camera stopped before the video was saved.")
     }
 }

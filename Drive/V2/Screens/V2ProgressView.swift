@@ -20,12 +20,18 @@ struct V2ProgressView: View {
     @ObservedObject private var gc = GameCenterManager.shared
     @ObservedObject private var storage = DriveStorage.shared
     @ObservedObject private var profile = ProfileManager.shared
+    @ObservedObject private var gcStatus = V2GameCenterStatus.shared
 
     @State private var period: V2Period = .week
     /// Places moved since the board was last seen (+ up), by row id. Only shown
     /// while `rankOwner` is still the signed-in account.
     @State private var rankChanges: [String: Int] = [:]
     @State private var rankOwner = ""
+    /// The trend slot whose drives are listed under the chart ("0"…), if any.
+    @State private var trendSelection: String? = nil
+    /// The friends module is on screen (the rank-move haptic waits for it).
+    @State private var friendsOnScreen = false
+    @State private var rankHapticPending = false
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     init() {}
@@ -43,7 +49,16 @@ struct V2ProgressView: View {
                     skillsModule(now: now)
                 }
                 badgesModule(snapshot.badges)
-                friendsModule(now: now)
+                VStack(alignment: .leading, spacing: 0) {
+                    friendsModule(now: now)
+                }
+                .onScrollVisibilityChange(threshold: 0.5) { visible in
+                    friendsOnScreen = visible
+                    if visible && rankHapticPending {
+                        rankHapticPending = false
+                        V2Haptics.play(.light)
+                    }
+                }
                 if !snapshot.facts.isEmpty {
                     routesModule
                     logbookRow(snapshot.stats)
@@ -69,7 +84,11 @@ struct V2ProgressView: View {
             if signedIn { Task { await refreshFriends() } }
         }
         .onChange(of: period) { _, _ in
+            trendSelection = nil
             V2Haptics.play(.select)
+        }
+        .onChange(of: trendSelection) { _, selected in
+            if selected != nil { V2Haptics.play(.select) }
         }
     }
 
@@ -92,6 +111,9 @@ struct V2ProgressView: View {
         VStack(alignment: .leading, spacing: 0) {
             hero(average: average.avg, previous: average.previous, snapshot: snapshot)
             trendCard(points: points, average: average.avg, now: now)
+            if period == .week {
+                weekRoutesCard(snapshot: snapshot, now: now)
+            }
         }
         // SETTLE on a period switch; instant under Reduce Motion.
         .animation(V2Motion.reduced(V2Motion.settle, reduceMotion: reduceMotion, fallback: nil), value: period)
@@ -153,11 +175,66 @@ struct V2ProgressView: View {
                 }
             }
             V2ProgressTrendChart(points: points, average: average, period: period, now: now,
-                                 licenseChangedAt: period == .allTime ? Self.licenseChangedAt() : nil)
+                                 licenseChangedAt: period == .allTime ? Self.licenseChangedAt() : nil,
+                                 selection: $trendSelection)
                 .frame(height: 162)
+            slotDrives(points: points)
         }
         .v2Card()
         .padding(.top, 32)
+    }
+
+    /// The selected slot's drives under the chart (v1's tap-a-day): up to five
+    /// rows that open the Report, then "N more in Drives".
+    @ViewBuilder
+    private func slotDrives(points: [V2TrendPoint]) -> some View {
+        if let key = trendSelection, let i = Int(key), points.indices.contains(i) {
+            let start = points[i].id
+            let end = Self.slotEnd(start, period: period)
+            let drives = library.snapshot.facts.filter { $0.end >= start && $0.end < end }
+            V2TrendSlotDrives(title: Self.slotTitle(start, period: period), period: period,
+                              drives: drives,
+                              onOpen: { id in router.push(.report(id)) },
+                              onMore: {
+                                  // Drop a route hand-off still filtering Drives.
+                                  router.drivesSearch = ""
+                                  router.tab = .drives
+                              })
+        }
+    }
+
+    /// The end of a trend slot: a day (Week), a week (Month) or a month (All Time),
+    /// the same windows V2StatsBuilder.trend averages.
+    private static func slotEnd(_ start: Date, period: V2Period) -> Date {
+        let cal = Calendar.current
+        switch period {
+        case .week:
+            return cal.date(byAdding: .day, value: 1, to: start) ?? start.addingTimeInterval(86_400)
+        case .month:
+            return cal.date(byAdding: .weekOfYear, value: 1, to: start) ?? start.addingTimeInterval(7 * 86_400)
+        case .allTime:
+            return cal.date(byAdding: .month, value: 1, to: start) ?? start.addingTimeInterval(31 * 86_400)
+        }
+    }
+
+    /// "Tuesday" · "Week of Oct 12" · "October 2026".
+    private static func slotTitle(_ start: Date, period: V2Period) -> String {
+        switch period {
+        case .week:    return V2Format.weekday(start)
+        case .month:   return "Week of \(V2Format.monthDay(start))"
+        case .allTime: return start.formatted(Date.FormatStyle.dateTime.month(.wide).year())
+        }
+    }
+
+    // MARK: - This week's routes (v1 "Routes this week")
+
+    /// Hidden until a drive this week has GPS (two or more points).
+    @ViewBuilder
+    private func weekRoutesCard(snapshot: V2Snapshot, now: Date) -> some View {
+        let routes = V2WeekRoute.thisWeek(snapshot.facts, now: now)
+        if !routes.isEmpty {
+            V2WeekRoutesCard(routes: routes)
+        }
     }
 
     /// When this user moved from Permit to License (the Driver Card writes
@@ -276,7 +353,9 @@ struct V2ProgressView: View {
                     .background(V2.card)
                     .clipShape(RoundedRectangle(cornerRadius: V2.radiusCard, style: .continuous))
             } else {
-                V2FriendsHeader(Self.friendsHeader(rows, change: changes[V2FriendBoard.meID]))
+                V2FriendsHeader(gcStatus.fetchFailed && rows.count <= 1
+                                ? "Your friends this week."
+                                : Self.friendsHeader(rows, change: changes[V2FriendBoard.meID]))
                 VStack(spacing: 0) {
                     ForEach(Array(shown.enumerated()), id: \.element.id) { i, row in
                         if i > 0 && !row.isMe && !shown[i - 1].isMe {
@@ -289,12 +368,18 @@ struct V2ProgressView: View {
                         if !rows.isEmpty {
                             V2FriendSeparator()
                         }
-                        Text("Game Center friends who use Drive show up here.")
-                            .font(V2Type.subhead)
-                            .foregroundStyle(V2.label2)
-                            .fixedSize(horizontal: false, vertical: true)
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                            .padding(16)
+                        if gcStatus.fetchFailed {
+                            V2GameCenterUnreachableRow {
+                                Task { await refreshFriends() }
+                            }
+                        } else {
+                            Text("Game Center friends who use Drive show up here.")
+                                .font(V2Type.subhead)
+                                .foregroundStyle(V2.label2)
+                                .fixedSize(horizontal: false, vertical: true)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                                .padding(16)
+                        }
                     }
                     V2FriendSeparator()
                     Button {
@@ -326,9 +411,10 @@ struct V2ProgressView: View {
     /// Week scope on every appearance (the beta fetched on appear too). Rank
     /// change = the per-user last-seen rank minus today's; the new ranks are
     /// stored. A change seen earlier this session stays until the rank moves.
+    /// A move up plays `light` once (§3.5), when the board is on screen.
     private func refreshFriends() async {
         let center = GameCenterManager.shared
-        await center.fetchFriends(timeScope: .week)
+        await V2GameCenterStatus.shared.refresh(.week)
         guard center.isAuthenticated else { return }
         let rows = V2FriendBoard.merged(scope: .week)
         guard !rows.isEmpty else { return }
@@ -349,6 +435,13 @@ struct V2ProgressView: View {
         UserDefaults.standard.set(seen, forKey: key)
         rankChanges = changes
         rankOwner = owner
+        if let me = rows.first(where: { $0.isMe }), let was = stored[me.id], was > me.rank {
+            if friendsOnScreen {
+                V2Haptics.play(.light)
+            } else {
+                rankHapticPending = true
+            }
+        }
     }
 
     // MARK: - Routes shelf (§4.11)
@@ -364,7 +457,7 @@ struct V2ProgressView: View {
                 HStack(alignment: .top, spacing: 12) {
                     ForEach(routes) { route in
                         V2RouteCard(route: route) {
-                            router.tab = .drives
+                            router.showDrives(route: route.name)
                         }
                     }
                 }
@@ -478,6 +571,8 @@ fileprivate struct V2ProgressTrendChart: View {
     let now: Date
     /// All Time only: the Permit → License date.
     let licenseChangedAt: Date?
+    /// The tapped slot's key ("0"…); the other bars dim while one is selected.
+    @Binding var selection: String?
 
     private struct Slot: Identifiable {
         let id: String
@@ -528,8 +623,41 @@ fileprivate struct V2ProgressTrendChart: View {
         .chartXAxis { xAxis(keys, byKey) }
         .chartYAxis { yAxis }
         .chartLegend(.hidden)
+        // A tap picks a slot and keeps it (the default drag selection would
+        // clear on lift and fight the scroll view).
+        .chartXSelection(value: $selection)
+        .chartGesture { proxy in
+            SpatialTapGesture()
+                .onEnded { value in
+                    proxy.selectXValue(at: value.location.x)
+                }
+        }
         .accessibilityElement(children: .ignore)
         .accessibilityLabel(spokenSummary(slots))
+        .accessibilityValue(selectedSpoken(byKey))
+        .accessibilityHint("Swipe up or down to list a slot's drives")
+        .accessibilityAdjustableAction { direction in
+            adjustSelection(direction, count: keys.count)
+        }
+    }
+
+    private func selectedSpoken(_ byKey: [String: Slot]) -> String {
+        guard let key = selection, let slot = byKey[key] else { return "" }
+        return slot.spoken
+    }
+
+    /// VoiceOver: step the selected slot left or right.
+    private func adjustSelection(_ direction: AccessibilityAdjustmentDirection, count: Int) {
+        guard count > 0 else { return }
+        let current = selection.flatMap { Int($0) }
+        switch direction {
+        case .increment:
+            selection = "\(min(count - 1, (current ?? -1) + 1))"
+        case .decrement:
+            selection = "\(max(0, (current ?? count) - 1))"
+        default:
+            break
+        }
     }
 
     @ChartContentBuilder
@@ -540,6 +668,7 @@ fileprivate struct V2ProgressTrendChart: View {
                     yEnd: .value("Score", max(score, lo)),
                     width: width)
                 .foregroundStyle(Self.barColor(score))
+                .opacity(selection == nil || selection == slot.id ? 1 : 0.4)
                 .clipShape(UnevenRoundedRectangle(topLeadingRadius: 4, topTrailingRadius: 4, style: .continuous))
                 .annotation(position: .top, alignment: .center, spacing: 4) {
                     if slot.isPB {
@@ -664,6 +793,127 @@ fileprivate struct V2ProgressTrendChart: View {
         if let pb = slots.last(where: { $0.isPB }) { text += " \(pb.spoken) has your personal best." }
         if let license = slots.first(where: { $0.isLicense }) { text += " License from \(license.spoken)." }
         return text
+    }
+}
+
+// MARK: - Selected slot's drives (G4-07)
+
+/// Under the trend chart: "Tuesday" + "2 drives", then up to five rows (route
+/// shield, name, time, score) that open the Report, and "N more in Drives".
+fileprivate struct V2TrendSlotDrives: View {
+    let title: String
+    let period: V2Period
+    let drives: [V2DriveFacts]
+    let onOpen: (UUID) -> Void
+    let onMore: () -> Void
+
+    private static let limit = 5
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            HStack(alignment: .firstTextBaseline, spacing: 8) {
+                Text(verbatim: title)
+                    .font(V2Type.subheadSemibold)
+                    .foregroundStyle(V2.label)
+                Spacer(minLength: 8)
+                if !drives.isEmpty {
+                    Text(verbatim: drives.count == 1 ? "1 drive" : "\(drives.count) drives")
+                        .font(V2Type.footnoteNumbers)
+                        .foregroundStyle(V2.label2)
+                }
+            }
+            .padding(.bottom, 4)
+            .accessibilityElement(children: .combine)
+            if drives.isEmpty {
+                Text(verbatim: emptyLine)
+                    .font(V2Type.subhead)
+                    .foregroundStyle(V2.label2)
+                    .frame(minHeight: V2.rowMin, alignment: .leading)
+            } else {
+                ForEach(Array(drives.prefix(Self.limit))) { facts in
+                    V2TrendSlotRow(facts: facts, period: period) {
+                        onOpen(facts.id)
+                    }
+                }
+                if drives.count > Self.limit {
+                    Button(action: onMore) {
+                        Text(verbatim: "\(drives.count - Self.limit) more in Drives")
+                            .font(V2Type.body)
+                            .foregroundStyle(V2.tint)
+                            .frame(minHeight: V2.rowMin)
+                    }
+                    .buttonStyle(.plain)
+                }
+            }
+        }
+        .padding(.top, 4)
+    }
+
+    private var emptyLine: String {
+        switch period {
+        case .week:    return "No drives that day."
+        case .month:   return "No drives that week."
+        case .allTime: return "No drives that month."
+        }
+    }
+}
+
+fileprivate struct V2TrendSlotRow: View {
+    let facts: V2DriveFacts
+    let period: V2Period
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            HStack(spacing: 10) {
+                if let number = facts.routeNumber {
+                    V2Plate.route(number, size: 20)
+                }
+                VStack(alignment: .leading, spacing: 1) {
+                    Text(verbatim: facts.name)
+                        .font(V2Type.subheadSemibold)
+                        .foregroundStyle(V2.label)
+                        .lineLimit(1)
+                    Text(verbatim: "\(when) \u{00B7} \(facts.minutes) min")
+                        .font(V2Type.footnoteNumbers)
+                        .foregroundStyle(V2.label2)
+                        .lineLimit(1)
+                }
+                Spacer(minLength: 8)
+                if facts.isScored {
+                    V2RowScore(score: facts.score)
+                } else {
+                    Text("Not scored")
+                        .font(V2Type.footnote)
+                        .foregroundStyle(V2.label2)
+                }
+                Image(systemName: "chevron.right")
+                    .font(V2Type.footnoteSemibold)
+                    .foregroundStyle(V2.label3)
+            }
+            .padding(.vertical, 6)
+            .frame(minHeight: V2.rowMin)
+        }
+        .buttonStyle(V2RowButtonStyle())
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(spoken)
+        .accessibilityHint("Opens the report")
+        .accessibilityAddTraits(.isButton)
+    }
+
+    /// "3:28 PM" (a day), "Tue 3:28 PM" (a week), "Oct 3 3:28 PM" (a month).
+    private var when: String {
+        let clock = V2Format.clock(facts.start)
+        switch period {
+        case .week:    return clock
+        case .month:   return "\(V2Format.shortWeekday(facts.start)) \(clock)"
+        case .allTime: return "\(V2Format.monthDay(facts.start)) \(clock)"
+        }
+    }
+
+    private var spoken: String {
+        let score = facts.isScored ? V2Voice.scoreText(facts.score) : "not scored"
+        return "\(facts.name), \(when), \(facts.minutes) minutes, \(score)."
     }
 }
 
@@ -821,7 +1071,7 @@ fileprivate struct V2RouteCard: View {
             .background(V2.card, in: RoundedRectangle(cornerRadius: V2.radiusCard, style: .continuous))
             .accessibilityElement(children: .ignore)
             .accessibilityLabel(spoken)
-            .accessibilityHint("Opens Drives")
+            .accessibilityHint("Shows this route's drives")
         }
         .buttonStyle(V2PressableCardStyle())
     }

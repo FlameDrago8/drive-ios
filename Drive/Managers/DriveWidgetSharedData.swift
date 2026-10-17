@@ -17,7 +17,7 @@ import Foundation
 // 3. Do the same for the DriveWidgetExtension target using the EXACT same string.
 // 4. Paste that string below.
 
-let driveAppGroupID  = "group.YOUR_BUNDLE_ID"   // ← update this
+let driveAppGroupID  = "group.com.venkatgunupuru.Driv"   // must match both targets' App Groups entitlement
 let driveWidgetKey   = "drive.widget.summary"
 
 // MARK: - Shared Data Model

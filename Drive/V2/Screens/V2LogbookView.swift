@@ -39,7 +39,7 @@ struct V2LogbookView: View {
                         pageView(item, atRest: atRest)
                             .tag(i)
                     }
-                    V2LogbookEndpaper(book: book)
+                    V2LogbookEndpaper(book: book, bestStreak: library.snapshot.stats.bestStreak)
                         .tag(pages.count)
                 }
                 .tabViewStyle(.page(indexDisplayMode: .never))
@@ -98,8 +98,8 @@ struct V2LogbookView: View {
         }
     }
 
-    /// STAMP (§4.13): 1.25× / opacity 0 → 1 on the stamp spring, one `.stamp`
-    /// haptic per page at contact. Reduce Motion: a 150 ms fade, haptic kept.
+    /// STAMP (§4.13, `.v2Stamp`): one `.stamp` haptic per page at contact
+    /// (~120 ms after the flip). Reduce Motion: a 150 ms fade, haptic kept.
     /// Swiping on before they land leaves them for next time.
     private func landStamps(onPage index: Int) async {
         guard pages.indices.contains(index), let week = pages[index].week else { return }
@@ -108,9 +108,8 @@ struct V2LogbookView: View {
         guard !pending.isEmpty else { return }
         try? await Task.sleep(for: .milliseconds(350))
         guard !Task.isCancelled else { return }
-        withAnimation(reduceMotion ? Animation.easeOut(duration: 0.15) : V2Motion.stamp) {
-            landed.formUnion(pending)
-        }
+        // No withAnimation: the stamp modifier carries its own timing.
+        landed.formUnion(pending)
         persist(pending)
         try? await Task.sleep(for: .milliseconds(120))
         V2Haptics.play(.stamp)
@@ -373,8 +372,7 @@ fileprivate struct V2LogbookRow: View {
                 let shown = atRest.contains(key)
                 V2Plate.badgeStamp(badge, size: 44)
                     .rotationEffect(.degrees(V2LogbookStamp.angle(key)))
-                    .scaleEffect(shown || reduceMotion ? 1 : 1.25)
-                    .opacity(shown ? 1 : 0)
+                    .v2Stamp(shown)
             }
         }
         .padding(.trailing, -4)
@@ -417,6 +415,8 @@ fileprivate struct V2LogbookRule: View {
 /// Lifetime miles in odometer cells, the named stats, and the footnote.
 fileprivate struct V2LogbookEndpaper: View {
     let book: V2Logbook
+    /// Longest run of consecutive driving days (V2Stats.bestStreak).
+    let bestStreak: Int
 
     var body: some View {
         ScrollView {
@@ -442,6 +442,7 @@ fileprivate struct V2LogbookEndpaper: View {
                 V2LogbookRule()
                 statRow("Hours behind the wheel", book.hoursText)
                 statRow("Night hours", book.nightText)
+                statRow("Longest streak", streakText)
                 statRow("Longest clean stretch", book.longestCleanText ?? "\u{2013}")
                 statRow("Softest stop", book.softestStopText ?? "\u{2013}")
                 mostDrivenRow
@@ -464,6 +465,12 @@ fileprivate struct V2LogbookEndpaper: View {
             .frame(maxWidth: .infinity, alignment: .leading)
             .padding(.bottom, 32)
         }
+    }
+
+    /// "12 days", "1 day"; a dash before the first counted drive.
+    private var streakText: String {
+        guard bestStreak > 0 else { return "\u{2013}" }
+        return bestStreak == 1 ? "1 day" : "\(bestStreak) days"
     }
 
     private func statRow(_ label: String, _ value: String) -> some View {

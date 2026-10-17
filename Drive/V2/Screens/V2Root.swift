@@ -6,10 +6,13 @@
 //  NavigationStack bound to V2Router, the full-screen HUD, the Profile sheet
 //  and the Badge Earned sheet. It also carries HomeView's root side effects:
 //  the streak reminder, the badge-unlock queue, the per-user router reset,
-//  and the `drive://` URL scheme.
+//  and the `drive://` URL scheme. After a drive it asks, upright and in this
+//  order: "Name this route?", Badge Earned, then the App Store review (the
+//  HUD is drawn rotated, so anything system-drawn over it appears sideways).
 //
 
 import SwiftUI
+import StoreKit
 import FirebaseAuth
 #if canImport(GoogleSignIn)
 import GoogleSignIn
@@ -31,6 +34,20 @@ struct V2Root: View {
     @State private var appeared = false
     /// A `drive://` URL arrived before the first appear: don't reset over it.
     @State private var handledEarlyURL = false
+
+    // "Name this route?" for the drive Parked just showed (V2RouteNaming).
+    @State private var namingID: UUID?
+    @State private var showingNameAlert = false
+    @State private var routeInput = ""
+    @State private var nameMessage = ""
+    @State private var routeChoices: [V2RouteNaming.Choice] = []
+
+    /// An account switch: re-check the device-wide alternate icon against the
+    /// new account's badges once its drives have loaded.
+    @State private var iconCheckPending = false
+
+    @Environment(\.requestReview) private var requestReview
+    @Environment(\.scenePhase) private var scenePhase
 
     init(splashVisible: Bool) {
         self.splashVisible = splashVisible
@@ -72,9 +89,33 @@ struct V2Root: View {
                 .presentationDetents([.medium])
                 .v2AppScheme()
         }
+        .alert("Name this route?", isPresented: $showingNameAlert) {
+            TextField("School run", text: $routeInput)
+            // One tap for the most-driven routes, then a typed name.
+            ForEach(routeChoices) { choice in
+                Button(choice.label) { saveRouteName(choice.name) }
+            }
+            Button("Save") { saveRouteName(routeInput) }
+            Button("Not now", role: .cancel) {}
+        } message: {
+            Text(nameMessage)
+        }
+        .onChange(of: showingNameAlert) { wasShowing, isShowing in
+            // Badge Earned, then the review, wait for the alert. (Its state is
+            // reset when it is next presented, never here: a button's action
+            // may run after the dismissal.)
+            if wasShowing && !isShowing { badgeCheck &+= 1 }
+        }
         .onAppear(perform: rootAppeared)
         .onChange(of: userManager.user?.uid) { _, _ in
             userChanged()
+        }
+        // §6.9: the Parked Live Activity goes when the app opens.
+        .onChange(of: scenePhase) { _, phase in
+            if phase == .active, !router.isDriving { V2LiveActivityJanitor.endParkedOnOpen() }
+        }
+        .task(id: iconCheckKey) {
+            await recheckAppIcon()
         }
         // Badge Earned timing (§4.13): the first time the app is in front after
         // Parked, never over the HUD or another sheet.
@@ -116,13 +157,65 @@ struct V2Root: View {
         if !handledEarlyURL { router.reset() }
         V2BadgeTracker.shared.seedIfNeeded(library.snapshot.badges)
         NotificationManager.shared.startSchoolGoalWatcher()
+        if !router.isDriving { V2LiveActivityJanitor.endParkedOnOpen() }
+        // Signing out removes this root, so a different account arrives as
+        // a fresh root rather than through userChanged().
+        noteSignedInAccount()
     }
 
     private func userChanged() {
         router.reset()
         earned = []
         showingEarned = false
+        showingNameAlert = false
+        // The last account's drive must not post a Parked notification.
+        V2ParkingWatch.shared.cancel()
+        noteSignedInAccount()
         badgeCheck &+= 1
+    }
+
+    // MARK: - App icon (account switch)
+
+    /// Device-wide (not per user): the account the icon was last checked for.
+    private static let iconAccountKey = "v2_appIconAccount"
+
+    /// A different account than last time on this device: re-check the icon.
+    private func noteSignedInAccount() {
+        guard let uid = userManager.user?.uid else { return }
+        let defaults = UserDefaults.standard
+        guard defaults.string(forKey: Self.iconAccountKey) != uid else { return }
+        defaults.set(uid, forKey: Self.iconAccountKey)
+        iconCheckPending = true
+    }
+
+    /// Restarts the settle wait whenever the new account's drives or badges move.
+    private var iconCheckKey: String {
+        "\(iconCheckPending)|\(library.snapshot.facts.count)|\(earnedBadgeKey)"
+    }
+
+    /// Every alternate icon is unlocked by a badge, and the icon is
+    /// device-wide: after a switch, fall back to the default when the new
+    /// account hasn't unlocked the one on the Home Screen. Waits until its
+    /// local drives and the Firestore merge have settled (4 s unchanged).
+    @MainActor
+    private func recheckAppIcon() async {
+        guard iconCheckPending else { return }
+        try? await Task.sleep(for: .seconds(4))
+        guard !Task.isCancelled, iconCheckPending, userManager.user?.uid != nil else { return }
+        iconCheckPending = false
+        let icon = V2AppIcons.current
+        guard icon != .standard, !V2AppIcons.isUnlocked(icon, badges: library.snapshot.badges) else { return }
+        // Its own task: clearing the flag above restarts (cancels) this one.
+        Task { @MainActor in
+            _ = await V2AppIcons.apply(.standard)
+        }
+    }
+
+    // MARK: - Name this route
+
+    private func saveRouteName(_ typed: String) {
+        guard let id = namingID else { return }
+        V2RouteNaming.save(typed, for: id)
     }
 
     // MARK: - Badge Earned
@@ -135,20 +228,39 @@ struct V2Root: View {
             .joined(separator: ",")
     }
 
+    /// After a drive, one at a time once the HUD has closed: "Name this
+    /// route?", then Badge Earned, then the App Store review (3rd drive).
     @MainActor
     private func presentNewBadgesIfAllowed() async {
         // Let a dismissing cover or sheet finish; a newer trigger cancels this one.
         try? await Task.sleep(for: .milliseconds(600))
         guard !Task.isCancelled else { return }
         guard !splashVisible, !router.isDriving, !router.showingProfile,
-              !showingEarned, earned.isEmpty else { return }
+              !showingEarned, earned.isEmpty, !showingNameAlert else { return }
+        if let id = router.pendingRouteNaming {
+            router.pendingRouteNaming = nil
+            if V2RouteNaming.shouldAsk(id) {
+                namingID = id
+                routeInput = ""
+                nameMessage = V2RouteNaming.message()
+                routeChoices = V2RouteNaming.choices()
+                showingNameAlert = true
+                return
+            }
+        }
         let badges = library.snapshot.badges
         let tracker = V2BadgeTracker.shared
         tracker.seedIfNeeded(badges)
         let fresh = tracker.unseen(badges)
-        guard !fresh.isEmpty else { return }
-        earned = fresh
-        showingEarned = true
+        if !fresh.isEmpty {
+            earned = fresh
+            showingEarned = true
+            return
+        }
+        if router.pendingReviewPrompt {
+            router.pendingReviewPrompt = false
+            requestReview()
+        }
     }
 
     private func badgesDismissed() {
