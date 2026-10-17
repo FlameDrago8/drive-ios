@@ -54,7 +54,7 @@ struct V2ProgressView: View {
                 }
                 .onScrollVisibilityChange(threshold: 0.5) { visible in
                     friendsOnScreen = visible
-                    if visible && rankHapticPending {
+                    if friendsInView && rankHapticPending {
                         rankHapticPending = false
                         V2Haptics.play(.light)
                     }
@@ -198,6 +198,7 @@ struct V2ProgressView: View {
                               onMore: {
                                   // Drop a route hand-off still filtering Drives.
                                   router.drivesSearch = ""
+                                  router.drivesPath = []
                                   router.tab = .drives
                               })
         }
@@ -404,6 +405,13 @@ struct V2ProgressView: View {
         return V2Voice.leaderboardHeader(rank: me.rank, of: rows.count, change: change)
     }
 
+    /// The friends board is in front of the user. The scroll-visibility flag
+    /// goes stale behind another tab, a pushed screen or the HUD (no haptics
+    /// while recording), so those are checked too.
+    private var friendsInView: Bool {
+        friendsOnScreen && router.tab == .progress && router.progressPath.isEmpty && !router.isDriving
+    }
+
     private var currentUID: String {
         UserManager.shared.user?.uid ?? "anon"
     }
@@ -436,7 +444,7 @@ struct V2ProgressView: View {
         rankChanges = changes
         rankOwner = owner
         if let me = rows.first(where: { $0.isMe }), let was = stored[me.id], was > me.rank {
-            if friendsOnScreen {
+            if friendsInView {
                 V2Haptics.play(.light)
             } else {
                 rankHapticPending = true

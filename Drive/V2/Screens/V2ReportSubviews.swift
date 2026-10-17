@@ -603,6 +603,8 @@ enum V2TipCopy {
     /// line of their own; anything else takes the Focus job's line for its category.
     static func title(_ tip: V2Tip) -> String {
         if let line = titles[tip.title.lowercased()] { return line }
+        // Not Scored rows ("Not Enough To Score") aren't coaching: sentence case only.
+        if !V2FocusEngine.isActionable(tip.category) { return v2rSentenceCase(tip.title) }
         return V2FocusEngine.title(for: tip.category, tipTitle: tip.title)
     }
 

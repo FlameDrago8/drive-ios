@@ -95,7 +95,6 @@ struct V2WeekRoutesCard: View {
                 .equatable()
                 .frame(height: 180)
                 .background(V2.card2)
-                .clipShape(RoundedRectangle(cornerRadius: V2.radiusPhoto, style: .continuous))
                 .overlay {
                     // Everything but MapLibre's attribution corner opens the map.
                     Button {
@@ -108,6 +107,8 @@ struct V2WeekRoutesCard: View {
                     .accessibilityLabel("Map of this week's routes, \(countText)")
                     .accessibilityHint("Opens a larger map")
                 }
+                // Clip after the overlay so the press wash keeps the map's corners.
+                .clipShape(RoundedRectangle(cornerRadius: V2.radiusPhoto, style: .continuous))
         }
         .v2Card()
         .padding(.top, V2.moduleGap)
@@ -162,6 +163,8 @@ fileprivate struct V2MapPressStyle: ButtonStyle {
     func makeBody(configuration: Configuration) -> some View {
         configuration.label
             .background(V2.fill.opacity(configuration.isPressed ? 1 : 0))
+            // The whole button hit-tests as the tap area, so the attribution corner stays the map's.
+            .contentShape(V2MapTapArea())
             .animation(.easeOut(duration: 0.18), value: configuration.isPressed)
     }
 }

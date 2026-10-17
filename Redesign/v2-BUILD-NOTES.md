@@ -160,6 +160,13 @@ and Release settings point `CODE_SIGN_ENTITLEMENTS` at its file. What's left is 
    missing or mismatched entitlement, so if the widgets still read "No drives yet" after a
    drive, check that the group string is identical on both targets and in
    `DriveWidgetSharedData.swift`.
+6. Once the widgets show data, check the taps (`drive://report/<id>`, handled in `V2Root`):
+   - Medium and Lock Screen rectangular open the last drive's Report. Small Score, Lock
+     Screen circular and Streak just open the app.
+   - The Parked Live Activity (Lock Screen and Dynamic Island) opens that drive's Report;
+     while recording it just opens the app.
+   - Right after a save, a tap can open the app instead until the library rebuild writes the
+     new drive's id.
 
 ## Behaviour that intentionally differs from the launch beta
 

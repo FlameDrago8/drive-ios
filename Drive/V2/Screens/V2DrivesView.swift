@@ -24,6 +24,10 @@ struct V2DrivesView: View {
     @State private var renameHadRoute = false
     @State private var showingRename = false
     @State private var draftName = ""
+    /// What the last route hand-off put in the field, kept so it can be told
+    /// apart from the user's own search without re-deriving it from a
+    /// snapshot that may have changed since (late load, account switch).
+    @State private var handoff: V2DrivesHandoff? = nil
 
     init() {}
 
@@ -46,13 +50,17 @@ struct V2DrivesView: View {
         .navigationTitle("Drives")
         .navigationBarTitleDisplayMode(.large)
         .onAppear { applyRouterSearch() }
-        .onChange(of: router.drivesSearch) { old, new in
+        .onChange(of: router.drivesSearch) { _, new in
             if !new.isEmpty {
                 applyRouterSearch()
-            } else if showsRouterSearch(old) {
-                // Cleared by the router (account switch): drop the filter it set.
+            } else if showsHandoff {
+                // Cleared by the router (account switch, "more in Drives"):
+                // drop the filter it set.
+                handoff = nil
                 tokens = []
                 searchText = ""
+            } else {
+                handoff = nil
             }
         }
         .onChange(of: searchText) { _, _ in endRouterSearchIfEdited() }
@@ -117,29 +125,28 @@ struct V2DrivesView: View {
 
     /// The search a route hand-off stands for: the route's shield as a token
     /// when it has a number (exact, unlike the name's words), else the name.
-    private func routerSearch(_ route: String) -> (tokens: [V2DrivesRouteToken], text: String) {
-        guard let clean = V2DriveFacts.cleanRouteName(route) else { return ([], "") }
+    private func routerSearch(_ route: String) -> V2DrivesHandoff? {
+        guard let clean = V2DriveFacts.cleanRouteName(route) else { return nil }
         let numbers = library.snapshot.routeNumbers
         if let number = numbers[clean] {
-            return ([V2DrivesRouteToken(id: number, name: clean)], "")
+            return V2DrivesHandoff(tokens: [V2DrivesRouteToken(id: number, name: clean)], text: "")
         }
         let key = V2DriveFacts.routeKey(clean)
         if let match = numbers.first(where: { V2DriveFacts.routeKey($0.key) == key }) {
-            return ([V2DrivesRouteToken(id: match.value, name: match.key)], "")
+            return V2DrivesHandoff(tokens: [V2DrivesRouteToken(id: match.value, name: match.key)], text: "")
         }
-        return ([], clean)
+        return V2DrivesHandoff(tokens: [], text: clean)
     }
 
-    /// True while the field still shows exactly what the hand-off for `route` put there.
-    private func showsRouterSearch(_ route: String) -> Bool {
-        guard !route.isEmpty else { return false }
-        let search = routerSearch(route)
-        return tokens == search.tokens && searchText == search.text
+    /// True while the field still shows exactly what the last hand-off put there.
+    private var showsHandoff: Bool {
+        guard let handoff else { return false }
+        return tokens == handoff.tokens && searchText == handoff.text
     }
 
     private func applyRouterSearch() {
-        let search = routerSearch(router.drivesSearch)
-        guard !search.tokens.isEmpty || !search.text.isEmpty else { return }
+        guard let search = routerSearch(router.drivesSearch) else { return }
+        handoff = search
         tokens = search.tokens
         searchText = search.text
     }
@@ -147,9 +154,9 @@ struct V2DrivesView: View {
     /// Clearing (or otherwise editing) the search ends the hand-off, so the
     /// next tap on the same route card filters again.
     private func endRouterSearchIfEdited() {
-        let route = router.drivesSearch
-        guard !route.isEmpty, !showsRouterSearch(route) else { return }
-        router.drivesSearch = ""
+        guard handoff != nil, !showsHandoff else { return }
+        handoff = nil
+        if !router.drivesSearch.isEmpty { router.drivesSearch = "" }
     }
 
     // MARK: Rename (DriveStorage.updateRouteTag, same as the Report)
@@ -192,6 +199,12 @@ struct V2DrivesView: View {
 fileprivate struct V2DrivesRouteToken: Identifiable, Hashable {
     let id: Int
     let name: String
+}
+
+/// The search a route hand-off (V2Router.drivesSearch) filled in.
+fileprivate struct V2DrivesHandoff: Equatable {
+    let tokens: [V2DrivesRouteToken]
+    let text: String
 }
 
 // MARK: - Section header
