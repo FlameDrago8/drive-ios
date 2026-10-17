@@ -28,7 +28,7 @@ struct V2StripCar: Equatable {
     var position: Position
     var size: V2CarSize
     var color: Color
-    /// The surface under the car, for its window and wheel knockouts
+    /// The surface under the car, for its window knockouts
     /// (`V2.card` on the Report instrument).
     var knockout: Color = V2.bg
 }
