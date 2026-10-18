@@ -709,6 +709,12 @@ struct DriveView: View {
         if newPhase == .saved, oldPhase != .saved, let id = lastSavedSessionID {
             V2ParkingWatch.shared.start(sessionID: id, fallback: lastSavedSession)
         }
+        // Parked replaced Saved: the watch has nothing left to do (a no-op
+        // once it found the car; a reveal on return stops it here, so it
+        // can't post a Parked notification for a drive already revealed).
+        if case .parked = newPhase, oldPhase == .saved {
+            V2ParkingWatch.shared.cancel()
+        }
         V2ParkingWatch.shared.setHUDShowing(newPhase == .saved ? lastSavedSessionID : nil)
     }
 
@@ -734,10 +740,18 @@ struct DriveView: View {
         case .active:
             V2ParkedNotifier.endBackgroundTime()
             cameraAccess = .current
-            // Back before the save landed: the reveal plays as normal.
+            // Back before the save landed: the reveal plays as normal. Saved
+            // while locked after a hold at rest: the reveal plays now, as it
+            // would have in front, instead of Saved waiting another 30 s
+            // (the suspended watch restarts its count) for a parked car.
             if let was = revealHeldWhileLocked {
                 revealHeldWhileLocked = nil
-                if phase == .analysing { savedWhileMoving = was }
+                if phase == .analysing {
+                    savedWhileMoving = was
+                } else if phase == .saved, !was {
+                    parkedRevealPending = false
+                    savedWhileMoving = false
+                }
             }
             if parkedRevealPending, phase == .saved {
                 parkedRevealPending = false
