@@ -589,7 +589,8 @@ struct V2TipPraise: Equatable {
         guard Double(speeds.count) >= (to - from) * 0.6 else { return nil }
         let mean = speeds.reduce(0, +) / Double(speeds.count)
         guard mean.isFinite, mean >= 8.9 else { return nil }
-        let variance = speeds.reduce(0) { $0 + ($1 - mean) * ($1 - mean) } / Double(speeds.count)
+        let squares: Double = speeds.reduce(0.0) { acc, s in acc + (s - mean) * (s - mean) }
+        let variance = squares / Double(speeds.count)
         guard variance.squareRoot() / mean <= 0.15 else { return nil }
         return V2Format.mph(fromMS: mean)
     }

@@ -56,6 +56,15 @@ struct CameraView: UIViewRepresentable {
         }
     }
 
+    /// The HUD closed with the recording still on (Discard, or the cover
+    /// going away mid-drive): stop the camera and drop the movie. Without
+    /// this the abandoned recording ran on until iOS interrupted it, and an
+    /// interrupted-but-finished movie now counts as a finished drive, so a
+    /// discarded drive would have been saved.
+    static func dismantleUIView(_ uiView: CameraPreviewView, coordinator: Coordinator) {
+        coordinator.discardIfRecording()
+    }
+
     // MARK: - Coordinator
 
     class Coordinator: NSObject, AVCaptureFileOutputRecordingDelegate,
@@ -81,6 +90,9 @@ struct CameraView: UIViewRepresentable {
         private static let maxStartAttempts = 10
         /// A start was asked for and the movie output hasn't begun yet.
         private var startPending = false
+        /// The HUD closed mid-recording: the movie is deleted, never reported.
+        /// Set on the main thread before the output is stopped.
+        private var discarded = false
 
         private let frameQueue = DispatchQueue(label: "com.drive.framequeue", qos: .userInitiated)
 
@@ -183,6 +195,18 @@ struct CameraView: UIViewRepresentable {
             movieOutput.stopRecording()
         }
 
+        /// Main thread (dismantleUIView). A no-op unless a recording was
+        /// still wanted: closing during Analysing keeps the finished drive.
+        func discardIfRecording() {
+            guard lastRecordingState else { return }
+            lastRecordingState = false
+            startPending = false
+            startAttempts = 0
+            discarded = true
+            recordingStartDate = nil
+            if movieOutput.isRecording { movieOutput.stopRecording() }
+        }
+
         /// Async so it never lands inside a SwiftUI view update.
         private func reportUnavailable() {
             startAttempts = 0
@@ -196,6 +220,11 @@ struct CameraView: UIViewRepresentable {
                         didFinishRecordingTo outputFileURL: URL,
                         from connections: [AVCaptureConnection],
                         error: Error?) {
+            // Discarded with the HUD: nothing is saved or shown.
+            guard !discarded else {
+                try? FileManager.default.removeItem(at: outputFileURL)
+                return
+            }
             // An interruption (Drive leaving the screen: Maps, a call, the side
             // button) ends the recording with an error, but the movie is
             // usually finalised and playable: that is a finished drive.

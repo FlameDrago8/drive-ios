@@ -57,10 +57,12 @@ struct V2WeekRoute: Identifiable, Equatable {
     }
 
     private static func coordinates(_ route: [RoutePoint]) -> [CLLocationCoordinate2D] {
-        route
-            .filter { $0.lat.isFinite && $0.lng.isFinite && abs($0.lat) <= 90 && abs($0.lng) <= 180
-                && !($0.lat == 0 && $0.lng == 0) }
-            .map { CLLocationCoordinate2D(latitude: $0.lat, longitude: $0.lng) }
+        // Conditions one per guard clause, so the type checker solves them separately.
+        route.compactMap { p -> CLLocationCoordinate2D? in
+            guard p.lat.isFinite, p.lng.isFinite, abs(p.lat) <= 90, abs(p.lng) <= 180,
+                  !(p.lat == 0 && p.lng == 0) else { return nil }
+            return CLLocationCoordinate2D(latitude: p.lat, longitude: p.lng)
+        }
     }
 }
 
