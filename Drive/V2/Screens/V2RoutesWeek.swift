@@ -136,7 +136,8 @@ fileprivate struct V2WeekRoutesMap: View, Equatable {
             items: routes.map { r in
                 MapLibreMultiRouteRepresentable.Item(coords: r.coords, color: r.uiColor(colorScheme))
             },
-            colorScheme: colorScheme
+            colorScheme: colorScheme,
+            glow: false   // flat lines, no glow (DESIGN_LANGUAGE)
         )
         .accessibilityHidden(true)
     }

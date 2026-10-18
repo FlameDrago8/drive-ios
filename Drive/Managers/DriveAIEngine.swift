@@ -383,12 +383,15 @@ final class DriveAIEngine {
 
     /// Build a `DriveEvaluation` from accumulated model data.
     /// Must be called after `stop()` (on any queue; blocks briefly).
+    /// `progress` reports 0…1 as the scoring stages finish, on the calling
+    /// queue (v2's Analysing car). It never changes the result.
     func buildEvaluation(
         samples: [SensorSample],
         route: [RoutePoint],
         driverType: DriverType,
         duration: TimeInterval,
-        history: [DriveSession] = []
+        history: [DriveSession] = [],
+        progress: ((Double) -> Void)? = nil
     ) -> DriveEvaluation {
         // Derive speed stats from GPS
         let validSpeeds = route.filter { $0.speed >= 0 }.map(\.speed)
@@ -412,10 +415,13 @@ final class DriveAIEngine {
         // own the dynamics; the vision model contributes events + context.
         let sensor = SensorScoring.score(samples: scoringSamples, route: route,
                                          driverType: driverType, hz: hz)
+        progress?(0.4)
 
         // ── Layers 1 & 2: the continuous curve and the maneuver rubric ──────
         let quality   = DriveQuality.compute(samples: scoringSamples, hz: hz)
+        progress?(0.6)
         let maneuvers = ManeuverDetector.analyze(samples: scoringSamples, hz: hz)
+        progress?(0.8)
 
         // ── Not scorable? ────────────────────────────────────────────────────
         // Motion decides this, not the camera. A phone sitting on a desk still
@@ -614,6 +620,7 @@ final class DriveAIEngine {
             driverType: driverType, overallScore: overall, context: context
         )
         tips = Self.applyManeuverCoaching(tips, analysis: maneuvers)
+        progress?(1)
 
         return DriveEvaluation(
             overallScore: overall,

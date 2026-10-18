@@ -88,6 +88,9 @@ struct DriveView: View {
     /// front: the notification posted, and the Parked reveal waits for the
     /// driver to come back (so it isn't spent unseen).
     @State private var parkedRevealPending = false
+    /// Locked during Analysing: savedWhileMoving as it was, while the reveal
+    /// is held for the parking watch (restored if the driver comes back first).
+    @State private var revealHeldWhileLocked: Bool? = nil
     @Environment(\.scenePhase) private var scenePhase
     /// Ready's camera check: Start is disabled when Drive can't record.
     /// Refreshed on appear and whenever the app is active again.
@@ -163,7 +166,12 @@ struct DriveView: View {
                     route: route,
                     driverType: ProfileManager.shared.driverType,
                     duration: duration,
-                    history: driveStorage.sessions
+                    history: driveStorage.sessions,
+                    // G3-06: the Analysing car moves with the real stages
+                    // (0.1 → 0.7 across the evaluation).
+                    progress: { stage in
+                        DispatchQueue.main.async { advanceAnalysis(to: 0.1 + 0.6 * stage) }
+                    }
                 )
 
                 // No road in view / too little usable footage — tell the user why
@@ -592,6 +600,9 @@ struct DriveView: View {
         guard !isRecording else { return }
         // A new drive: the last drive's parking watch stops.
         V2ParkingWatch.shared.cancel()
+        // ...and its ended Parked Live Activity (15 min dismissal) goes now,
+        // so the Lock Screen never shows two drives. Running ones are left.
+        V2LiveActivityJanitor.endParkedOnOpen()
         captureEndedEarly = false
         captureInterrupted = false
         analysisProgress = 0
@@ -599,6 +610,7 @@ struct DriveView: View {
         awaitingFinish = false
         savedWhileMoving = false
         parkedRevealPending = false
+        revealHeldWhileLocked = nil
         newBadge = nil
         driveStartDate = Date()
         isRecording = true
@@ -722,6 +734,11 @@ struct DriveView: View {
         case .active:
             V2ParkedNotifier.endBackgroundTime()
             cameraAccess = .current
+            // Back before the save landed: the reveal plays as normal.
+            if let was = revealHeldWhileLocked {
+                revealHeldWhileLocked = nil
+                if phase == .analysing { savedWhileMoving = was }
+            }
             if parkedRevealPending, phase == .saved {
                 parkedRevealPending = false
                 savedWhileMoving = false
@@ -731,6 +748,18 @@ struct DriveView: View {
             // and save what was captured instead of losing it. (Saved's
             // grace period is V2ParkingWatch's.)
             if phase == .recording { endDriveWithoutHold() }
+            // Locked straight after the hold: ask for the short grace period
+            // so the movie finalises and the drive evaluates and saves before
+            // iOS suspends the app (ended on return or by iOS). The save then
+            // lands on Saved, so the Parked reveal waits for the driver (the
+            // parking watch posts the notification) instead of playing unseen.
+            else if phase == .analysing {
+                V2ParkedNotifier.beginBackgroundTime()
+                if revealHeldWhileLocked == nil {
+                    revealHeldWhileLocked = savedWhileMoving
+                    savedWhileMoving = true
+                }
+            }
         default:
             break
         }

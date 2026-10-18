@@ -216,8 +216,10 @@ struct MapLibreMultiRouteRepresentable: UIViewRepresentable {
 
     let items: [Item]
     let colorScheme: ColorScheme
+    /// The blurred underlay. v2 (flat, no glow) passes false; v1 keeps the default.
+    var glow: Bool = true
 
-    func makeCoordinator() -> Coordinator { Coordinator(items: items, scheme: colorScheme) }
+    func makeCoordinator() -> Coordinator { Coordinator(items: items, scheme: colorScheme, glow: glow) }
 
     func makeUIView(context: Context) -> MLNMapView {
         let mapView = MLNMapView(frame: .zero, styleURL: TelemetryMap.styleURL(for: colorScheme))
@@ -236,6 +238,7 @@ struct MapLibreMultiRouteRepresentable: UIViewRepresentable {
 
     func updateUIView(_ mapView: MLNMapView, context: Context) {
         context.coordinator.items = items
+        context.coordinator.glow = glow
         if context.coordinator.scheme != colorScheme {
             context.coordinator.scheme = colorScheme
             mapView.styleURL = TelemetryMap.styleURL(for: colorScheme)
@@ -247,10 +250,12 @@ struct MapLibreMultiRouteRepresentable: UIViewRepresentable {
     final class Coordinator: NSObject, MLNMapViewDelegate {
         var items: [Item]
         var scheme: ColorScheme
+        var glow: Bool
 
-        init(items: [Item], scheme: ColorScheme) {
+        init(items: [Item], scheme: ColorScheme, glow: Bool = true) {
             self.items = items
             self.scheme = scheme
+            self.glow = glow
         }
 
         func mapView(_ mapView: MLNMapView, didFinishLoading style: MLNStyle) {
@@ -276,13 +281,15 @@ struct MapLibreMultiRouteRepresentable: UIViewRepresentable {
                 let src = MLNShapeSource(identifier: "wr-src-\(i)", shape: polyline, options: nil)
                 style.addSource(src)
 
-                let glow = MLNLineStyleLayer(identifier: "wr-glow-\(i)", source: src)
-                glow.lineColor = NSExpression(forConstantValue: item.color.withAlphaComponent(0.22))
-                glow.lineWidth = NSExpression(forConstantValue: 7)
-                glow.lineBlur = NSExpression(forConstantValue: 4)
-                glow.lineCap = NSExpression(forConstantValue: "round")
-                glow.lineJoin = NSExpression(forConstantValue: "round")
-                style.addLayer(glow)
+                if glow {
+                    let underlay = MLNLineStyleLayer(identifier: "wr-glow-\(i)", source: src)
+                    underlay.lineColor = NSExpression(forConstantValue: item.color.withAlphaComponent(0.22))
+                    underlay.lineWidth = NSExpression(forConstantValue: 7)
+                    underlay.lineBlur = NSExpression(forConstantValue: 4)
+                    underlay.lineCap = NSExpression(forConstantValue: "round")
+                    underlay.lineJoin = NSExpression(forConstantValue: "round")
+                    style.addLayer(underlay)
+                }
 
                 let core = MLNLineStyleLayer(identifier: "wr-line-\(i)", source: src)
                 core.lineColor = NSExpression(forConstantValue: item.color)

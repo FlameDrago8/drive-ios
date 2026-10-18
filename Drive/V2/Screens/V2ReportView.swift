@@ -182,7 +182,7 @@ private struct V2ReportContent: View {
             Button("Save") { saveRouteName() }
             Button("Cancel", role: .cancel) {}
         } message: {
-            Text("Drives with the same name share a route number.")
+            Text(verbatim: renameMessage)
         }
         .sheet(isPresented: $showingMap) {
             V2RouteMapSheet(route: m.session.route, title: m.facts.name)
@@ -575,6 +575,13 @@ private struct V2ReportContent: View {
 
     private func renameTitle(_ f: V2DriveFacts) -> String {
         f.routeName == nil ? "Name this route" : "Rename route"
+    }
+
+    /// G7-02: the number the typed name will get, from the route registry
+    /// (same copy as Drives and "Name this route?").
+    private var renameMessage: String {
+        let route = library.resolveRoute(draftName, renaming: sessionID)
+        return route.isNew ? "It'll be Route \(route.number)." : "That's Route \(route.number)."
     }
 
     /// Saves the route's existing spelling when the name matches one (case,
