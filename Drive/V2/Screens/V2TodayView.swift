@@ -42,14 +42,6 @@ struct V2TodayView: View {
 
         ScrollView {
             VStack(alignment: .leading, spacing: 0) {
-                if showsDateLine {
-                    Text(verbatim: V2Format.longDate(now))
-                        .font(V2Type.subhead)
-                        .foregroundStyle(V2.label2)
-                        .padding(.horizontal, 4)
-                        .padding(.bottom, 16)
-                }
-
                 heroSection(hero, snapshot: snapshot)
                     .id(heroID)
                     .transition(.opacity)
@@ -79,12 +71,7 @@ struct V2TodayView: View {
         .background(V2.bg.ignoresSafeArea())
         .navigationTitle("Today")
         .navigationBarTitleDisplayMode(.large)
-        .modifier(V2TodaySubtitle(text: V2Format.longDate(now)))
-        .toolbar {
-            ToolbarItem(placement: .topBarTrailing) {
-                avatarButton(snapshot)
-            }
-        }
+        .modifier(V2TodayAvatarItem(avatar: avatarButton))
         .fullScreenCover(isPresented: $showingDemo) {
             V2DemoDriveView(onClose: { showingDemo = false })
         }
@@ -453,22 +440,18 @@ struct V2TodayView: View {
 
     // MARK: - Avatar
 
-    private func avatarButton(_ snapshot: V2Snapshot) -> some View {
-        // Ring = the highest tier earned on any tiered badge.
-        let tier = snapshot.badges
-            .filter { !$0.isOneTime }
-            .compactMap { $0.currentTier }
-            .max()
-        return Button {
+    /// No tier ring or PERMIT tab up here: at nav-bar size they clipped and
+    /// read as a stray white rim. The Profile sheet still shows both.
+    private var avatarButton: some View {
+        Button {
             V2Haptics.play(.light)
             router.showingProfile = true
         } label: {
             V2Avatar(imageData: profile.avatarImageData,
                      seed: UserManager.shared.user?.uid ?? "",
                      name: displayName,
-                     size: 40,
-                     ring: tier.map { V2.tierColor($0) },
-                     permit: isPermit)
+                     size: 34)
+                .contentShape(Circle())
         }
         .buttonStyle(.plain)
         .accessibilityLabel("Profile and settings")
@@ -491,10 +474,6 @@ struct V2TodayView: View {
             && !showingDemo && router.tab == .today && router.todayPath.isEmpty
     }
 
-    private var showsDateLine: Bool {
-        if #available(iOS 26.0, *) { return false }
-        return true
-    }
 
     private var snapshotKey: String {
         let s = library.snapshot
@@ -591,15 +570,23 @@ struct V2TodayView: View {
 
 /// iOS 26 shows the date as the large title's subtitle; earlier systems get a
 /// 15 pt label2 line at the top of the scroll instead (see `showsDateLine`).
-private struct V2TodaySubtitle: ViewModifier {
-    let text: String
+/// The profile avatar, top right: a plain disc like Apple's own account
+/// buttons. On iOS 26 the toolbar's shared glass bubble is hidden, so the
+/// disc isn't framed by a glass rim (or clipped by it).
+private struct V2TodayAvatarItem<Avatar: View>: ViewModifier {
+    let avatar: Avatar
 
     @ViewBuilder
     func body(content: Content) -> some View {
         if #available(iOS 26.0, *) {
-            content.navigationSubtitle(Text(verbatim: text))
+            content.toolbar {
+                ToolbarItem(placement: .topBarTrailing) { avatar }
+                    .sharedBackgroundVisibility(.hidden)
+            }
         } else {
-            content
+            content.toolbar {
+                ToolbarItem(placement: .topBarTrailing) { avatar }
+            }
         }
     }
 }
