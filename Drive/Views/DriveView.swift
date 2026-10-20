@@ -59,13 +59,13 @@ struct DriveView: View {
 
     // Road detection — true once the model confirms the camera sees a road.
     // Recording only: CameraView hands frames to the model only while
-    // recording, so Ready shows the road check as an instruction instead.
+    // recording, so Ready shows an instruction pill instead.
     @State private var isOnRoad: Bool = true
 
     // v2 HUD
     /// Buckets, ticks, grade hysteresis, distance and Live Activity coalescing.
     @StateObject private var liveDrive = V2LiveDrive()
-    /// Today's job for the Ready panel (snapshot.focus.current).
+    /// Today's job for Ready's job plate (snapshot.focus.current).
     @ObservedObject private var library = V2Library.shared
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     /// Stop was held and the video is finalising: Analysing until the finish
@@ -104,6 +104,18 @@ struct DriveView: View {
     @State private var analysisProgress: Double = 0
     /// Saved's parking watch; it outlives the HUD (Done keeps it running).
     @ObservedObject private var parkingWatch = V2ParkingWatch.shared
+    /// Peek (§5.9): a REC plate tap at a stop opens the scrim on the camera
+    /// for 5 s. `peekToken` restarts the 5 s close for each new peek. UI
+    /// only: recording, scoring and the Live Activity carry on underneath.
+    @State private var peeking = false
+    @State private var peekToken = 0
+    /// A peek tap while moving: the plate reads "Stop to peek" for 2 s instead.
+    @State private var peekRefused = false
+    @State private var peekRefusedToken = 0
+    /// Peek is a check at a stop (≈ 5 mph); faster, the tap only says so.
+    private static let peekMaxSpeedMS: Double = 2.2
+    /// No GPS fix for this long reads as stopped (10 m filter / 5 s < 2.2 m/s).
+    private static let peekStaleFixSeconds: TimeInterval = 5
 
     private var phase: HUDPhase {
         switch uploadStatus {
@@ -126,8 +138,9 @@ struct DriveView: View {
 
             // The one CameraView: full-bleed, in a fixed position for every
             // phase (its Coordinator.parent is never refreshed, and rebuilding
-            // it mid-drive would tear down the capture session). Ready shows it
-            // through a window in the HUD scrim; every other phase covers it.
+            // it mid-drive would tear down the capture session). Ready (with a
+            // camera) and Peek open the HUD scrim over it; every other phase
+            // covers it.
             CameraView(isRecording: $isRecording, onRecordingFinished: { tempVideoURL in
                 // The capture can end without the hold (iOS stopped the camera
                 // when Drive left the screen): stop the model before the
@@ -344,121 +357,29 @@ struct DriveView: View {
 
     // MARK: – HUD (landscape coordinates, board 874 × 402)
 
+    /// The HUD back to front (§4): scrim, finished strip, aim guides, Ready's
+    /// furniture, the phase content, ONE start control (ignition → hold), the
+    /// peek catcher, the REC plate, ONE Close, the discard confirm. A peek
+    /// hides the instruments by opacity, never removal, so the strip's car
+    /// doesn't re-STAMP and the hold keeps its state.
     private func hud(_ m: V2HUDMetrics) -> some View {
         let phase = self.phase
-        let slide: AnyTransition = reduceMotion
-            ? .opacity
-            : .move(edge: .leading).combined(with: .opacity)
-        let parkedNow: Bool = {
-            if case .parked = phase { return true }
-            return false
-        }()
-        let finishedMetrics = V2HUDFinishedStrip.metrics(hasClock: startClock != nil)
         return ZStack(alignment: .topLeading) {
-            V2HUDScrim(size: m.size, window: m.cardRect, open: phase == .ready)
-
-            // One finished strip from Analysing through Saved, the car riding
-            // it with the end-of-drive work. Parked mounts the same strip in
-            // the same place and takes it over, so this one leaves unanimated
-            // then (any other exit fades).
-            ZStack(alignment: .topLeading) {
-                if phase == .analysing || phase == .saved {
-                    V2HUDFinishedStrip(buckets: liveDrive.buckets, ticks: liveDrive.ticks,
-                                       startClock: startClock, width: m.contentWidth,
-                                       carFraction: analysisProgress)
-                        .offset(x: m.side, y: m.hudBaselineY - finishedMetrics.baselineY)
-                        .transition(.opacity)
-                }
-            }
-            .frame(width: m.size.width, height: m.size.height, alignment: .topLeading)
-            .transaction { t in
-                if parkedNow { t.animation = nil }
-            }
+            backdrop(m, phase: phase)
 
             if phase == .ready {
-                V2HUDCameraGuides()
-                    .frame(width: m.cardRect.width, height: m.cardRect.height)
-                    .clipShape(RoundedRectangle(cornerRadius: V2.radiusCard, style: .continuous))
-                    .accessibilityElement()
-                    .accessibilityLabel("Camera preview")
-                    .offset(x: m.cardRect.minX, y: m.cardRect.minY)
-                    .transition(.opacity)
-
-                // Today's job: crossfades out in 200 ms when the drive starts.
-                if let job = library.snapshot.focus.current {
-                    V2HUDJobBlock(job: job)
-                        .frame(width: m.leftWidth, alignment: .leading)
-                        .offset(x: m.side, y: 84 + m.dy)
-                        .transition(.opacity.animation(.easeOut(duration: 0.2)))
-                }
-
-                readyPanel(m)
-                    .transition(slide)
+                readyFurniture(m)
+                    .animation(hudFade, value: cameraAccess)    // declined prompt / back from Settings
+                    .accessibilityElement(children: .contain)
+                    .accessibilitySortPriority(4)
+                    .transition(.opacity.animation(hudFade))
             }
 
-            switch phase {
-            case .ready:
-                EmptyView()
-            case .recording:
-                V2HUDRecordingLayer(metrics: m, score: currentScore,
-                                    gradeScore: liveDrive.displayScore(live: currentScore),
-                                    elapsed: elapsed, distanceM: liveDrive.distanceM,
-                                    buckets: liveDrive.buckets, ticks: liveDrive.ticks,
-                                    capacity: liveDrive.capacity, startClock: startClock,
-                                    cameraBlocked: !isOnRoad) {
-                    V2HoldToEnd { stopDrive() }
-                }
-                .transition(.opacity)
-            case .analysing:
-                messageLayer(m, title: "Analysing your drive", message: nil, onDone: nil, strip: nil)
-                    .transition(.opacity)
-            case .saved:
-                messageLayer(m, title: V2Voice.speedGate.title, message: savedMessage,
-                             onDone: { finish() }, strip: nil)
-                    .transition(.opacity)
-            case .parked(let id):
-                V2ParkedView(sessionID: id, fallback: lastSavedSession, newBadge: newBadge,
-                             handoff: V2ParkedHandoff(buckets: liveDrive.buckets, ticks: liveDrive.ticks,
-                                                      startClock: startClock, carFraction: analysisProgress),
-                             onSeeReport: { reportID in
-                                 V2Router.shared.openReport(reportID)
-                                 finish()
-                             },
-                             onDone: { finish() })
-                    .frame(width: m.size.width, height: m.size.height)
-                    // No crossfade in: Parked draws the finished strip where
-                    // it was and fades its own chrome (§7 M3 F1).
-                    .transition(.asymmetric(insertion: .identity, removal: .opacity))
-            case .tooShort(let duration):
-                let copy = tooShortCopy(duration)
-                messageLayer(m, title: copy.title, message: copy.body,
-                             onDone: { isDriving = false }, strip: .short(duration))
-                    .transition(.opacity)
-            case .notScored(let reason):
-                messageLayer(m, title: "Not scored.", message: reason,
-                             onDone: { isDriving = false }, strip: nil)
-                    .transition(.opacity)
-            case .failed(let title, let message):
-                messageLayer(m, title: title, message: message,
-                             onDone: { isDriving = false }, strip: nil)
-                    .transition(.opacity)
-            }
+            phaseContent(m, phase: phase)
 
-            // Close: Ready (nothing to lose) and Analysing (an escape if the
-            // camera never delivers a file). The drive keeps saving if closed.
-            // While recording it discards the drive, as the launch beta's X
-            // did, but only after an in-HUD confirmation so a stray tap on a
-            // mounted phone can't throw a drive away.
-            if phase == .ready || phase == .analysing {
-                V2HUDCloseButton { isDriving = false }
-                    .offset(x: m.side, y: V2.hudTop)
-                    .transition(.opacity)
-            } else if phase == .recording, !showDiscardConfirm {
-                V2HUDCloseButton { showDiscardConfirm = true }
-                    .accessibilityLabel("Discard drive")
-                    .offset(x: m.side, y: V2.hudTop)
-                    .transition(.opacity)
-            }
+            startControl(m, phase: phase)
+            recControls(m, phase: phase)
+            closeControl(m, phase: phase)
 
             if phase == .recording, showDiscardConfirm {
                 discardConfirm
@@ -467,7 +388,269 @@ struct DriveView: View {
             }
         }
         .frame(width: m.size.width, height: m.size.height, alignment: .topLeading)
+        .accessibilityElement(children: .contain)
         .animation(V2Motion.reduced(.smooth(duration: 0.35), reduceMotion: reduceMotion), value: phase)
+        // A peek closes itself 5 s after it opened (a newer peek restarts it).
+        .task(id: peekToken) {
+            guard peekToken > 0 else { return }
+            try? await Task.sleep(for: .seconds(5))
+            guard !Task.isCancelled else { return }
+            peeking = false
+        }
+        .task(id: peekRefusedToken) {
+            guard peekRefusedToken > 0 else { return }
+            try? await Task.sleep(for: .seconds(2))
+            guard !Task.isCancelled else { return }
+            peekRefused = false
+        }
+        .onChange(of: showDiscardConfirm) { _, on in
+            if on { peeking = false }
+        }
+    }
+
+    // MARK: – HUD layers
+
+    /// The HUD's crossfade: settle, or the 0.2 s fade under Reduce Motion.
+    private var hudFade: Animation? {
+        V2Motion.reduced(V2Motion.settle, reduceMotion: reduceMotion)
+    }
+
+    /// A peek is showing. Only ever while recording, so a phase change can't
+    /// open the scrim for the update before the force-close lands.
+    private var peekOpen: Bool { peeking && phase == .recording }
+
+    /// The scrim is open: Ready with a camera feed, or a peek.
+    private var scrimOpen: Bool {
+        (phase == .ready && cameraAccess == .available) || peekOpen
+    }
+
+    /// Peek: the instruments hide at once and return 100 ms after the picture
+    /// starts closing...
+    private var instrumentsFade: Animation {
+        if reduceMotion { return .easeInOut(duration: 0.2) }
+        return peekOpen ? V2Motion.settle : V2Motion.settle.delay(0.1)
+    }
+
+    /// ...and the guides do the opposite.
+    private var guidesFade: Animation {
+        if reduceMotion { return .easeInOut(duration: 0.2) }
+        return peekOpen ? V2Motion.settle.delay(0.1) : V2Motion.settle
+    }
+
+    private var canRecord: Bool {
+        cameraAccess == .available || cameraAccess == .notDetermined
+    }
+
+    /// z1–3: the scrim over the camera, the finished strip, the aim guides.
+    @ViewBuilder
+    private func backdrop(_ m: V2HUDMetrics, phase: HUDPhase) -> some View {
+        let open = scrimOpen
+        V2HUDScrim(open: open)
+            .animation(hudFade, value: open)
+
+        finishedStrip(m, phase: phase)
+
+        // Always mounted, opacity only: they never draw on black.
+        V2HUDAimGuides(metrics: m)
+            .opacity(open ? 1 : 0)
+            .animation(guidesFade, value: open)
+            .accessibilityElement()
+            .accessibilityLabel("Camera preview")
+            .accessibilityAddTraits(.isImage)
+            .accessibilityHidden(!(phase == .ready && cameraAccess == .available))
+            .accessibilitySortPriority(3)
+    }
+
+    /// One finished strip from Analysing through Saved, the car riding it
+    /// with the end-of-drive work. Parked mounts the same strip in the same
+    /// place and takes it over, so this one leaves unanimated then (any
+    /// other exit fades).
+    private func finishedStrip(_ m: V2HUDMetrics, phase: HUDPhase) -> some View {
+        let parkedNow: Bool = {
+            if case .parked = phase { return true }
+            return false
+        }()
+        let finishedMetrics = V2HUDFinishedStrip.metrics(hasClock: startClock != nil)
+        return ZStack(alignment: .topLeading) {
+            if phase == .analysing || phase == .saved {
+                V2HUDFinishedStrip(buckets: liveDrive.buckets, ticks: liveDrive.ticks,
+                                   startClock: startClock, width: m.contentWidth,
+                                   carFraction: analysisProgress)
+                    .offset(x: m.side, y: m.hudBaselineY - finishedMetrics.baselineY)
+                    .transition(.opacity)
+            }
+        }
+        .frame(width: m.size.width, height: m.size.height, alignment: .topLeading)
+        .transaction { t in
+            if parkedNow { t.animation = nil }
+        }
+    }
+
+    /// z4, Ready: the job plate, then the instruction pill or, when Drive
+    /// can't record, the reason (and Settings) under the plate.
+    private func readyFurniture(_ m: V2HUDMetrics) -> some View {
+        let canRecord = self.canRecord
+        let permit = ProfileManager.shared.driverType == .learner
+        let job = library.snapshot.focus.current
+        let plateH = V2HUDJobPlate.height(hasJob: job != nil, permit: permit)
+        return ZStack(alignment: .topLeading) {
+            if plateH > 0 {
+                V2HUDJobPlate(job: job, permit: permit)
+                    .offset(x: m.plateOrigin.x, y: m.plateOrigin.y)
+            }
+            if canRecord {
+                V2HUDBanner(systemImage: "road.lanes", text: "Point the camera at the road.")
+                    .frame(width: m.contentWidth)
+                    .offset(x: m.side, y: m.pillY)
+            } else {
+                // Never runs under the ignition.
+                V2HUDCameraNeeded(access: cameraAccess)
+                    .frame(width: max(0, m.controlRect.minX - m.side - 24), alignment: .leading)
+                    .offset(x: m.side, y: m.plateOrigin.y + (plateH > 0 ? plateH + 20 : 0))
+            }
+        }
+        .frame(width: m.size.width, height: m.size.height, alignment: .topLeading)
+    }
+
+    /// z5: what the phase shows (Ready's furniture and the controls are
+    /// their own layers).
+    @ViewBuilder
+    private func phaseContent(_ m: V2HUDMetrics, phase: HUDPhase) -> some View {
+        switch phase {
+        case .ready:
+            EmptyView()
+        case .recording:
+            recordingLayer(m)
+        case .analysing:
+            messageLayer(m, title: "Analysing your drive", message: nil, onDone: nil, strip: nil)
+                .transition(.opacity)
+        case .saved:
+            messageLayer(m, title: V2Voice.speedGate.title, message: savedMessage,
+                         onDone: { finish() }, strip: nil)
+                .transition(.opacity)
+        case .parked(let id):
+            V2ParkedView(sessionID: id, fallback: lastSavedSession, newBadge: newBadge,
+                         handoff: V2ParkedHandoff(buckets: liveDrive.buckets, ticks: liveDrive.ticks,
+                                                  startClock: startClock, carFraction: analysisProgress),
+                         onSeeReport: { reportID in
+                             V2Router.shared.openReport(reportID)
+                             finish()
+                         },
+                         onDone: { finish() })
+                .frame(width: m.size.width, height: m.size.height)
+                // No crossfade in: Parked draws the finished strip where
+                // it was and fades its own chrome (§7 M3 F1).
+                .transition(.asymmetric(insertion: .identity, removal: .opacity))
+        case .tooShort(let duration):
+            let copy = tooShortCopy(duration)
+            messageLayer(m, title: copy.title, message: copy.body,
+                         onDone: { isDriving = false }, strip: .short(duration))
+                .transition(.opacity)
+        case .notScored(let reason):
+            messageLayer(m, title: "Not scored.", message: reason,
+                         onDone: { isDriving = false }, strip: nil)
+                .transition(.opacity)
+        case .failed(let title, let message):
+            messageLayer(m, title: title, message: message,
+                         onDone: { isDriving = false }, strip: nil)
+                .transition(.opacity)
+        }
+    }
+
+    /// Recording's instrument: live score, distance, strip, camera banner.
+    /// Its clock is the REC plate's and its hold is the start control's, so
+    /// those slots stay empty here. It arrives after the ignition's MORPH
+    /// has begun (300 ms) and its car STAMPs at 450 ms.
+    private func recordingLayer(_ m: V2HUDMetrics) -> some View {
+        let peek = peekOpen
+        let arrive: Animation = reduceMotion ? .easeInOut(duration: 0.2) : V2Motion.settle.delay(0.3)
+        return V2HUDRecordingLayer(metrics: m, score: currentScore,
+                                   gradeScore: liveDrive.displayScore(live: currentScore),
+                                   elapsed: elapsed, distanceM: liveDrive.distanceM,
+                                   buckets: liveDrive.buckets, ticks: liveDrive.ticks,
+                                   capacity: liveDrive.capacity, startClock: startClock,
+                                   cameraBlocked: !isOnRoad,
+                                   showsElapsed: false, stampDelay: .milliseconds(450)) {
+            EmptyView()
+        }
+        .opacity(peek ? 0 : 1)
+        .allowsHitTesting(!peek)
+        .animation(instrumentsFade, value: peek)
+        .accessibilityElement(children: .contain)
+        .accessibilitySortPriority(4)
+        .accessibilityHidden(peek)
+        .transition(AnyTransition.asymmetric(insertion: AnyTransition.opacity.animation(arrive),
+                                             removal: .opacity))
+    }
+
+    /// z6: ONE start control for Ready and Recording, in one `if`, so its
+    /// identity survives the Start tap and the ignition → hold MORPH plays
+    /// in place on the hold ring's frame.
+    @ViewBuilder
+    private func startControl(_ m: V2HUDMetrics, phase: HUDPhase) -> some View {
+        let recording = phase == .recording
+        if phase == .ready || recording {
+            let peek = peekOpen
+            V2HUDStartControl(mode: recording ? .hold : .ignition(enabled: canRecord),
+                              startHint: startHint,
+                              onStart: { startTapped() },
+                              onEnd: { stopDrive() })
+                .offset(x: m.controlRect.minX, y: m.controlRect.minY)
+                .animation(hudFade, value: cameraAccess)        // enabled ↔ dimmed
+                .opacity(peek ? 0 : 1)
+                .allowsHitTesting(!peek)
+                .animation(instrumentsFade, value: peek)
+                .accessibilityElement(children: .contain)
+                .accessibilitySortPriority(recording ? 3 : 2)
+                .accessibilityHidden(peek)
+                .transition(.opacity)
+        }
+    }
+
+    /// z7–8, Recording: the peek's tap-anywhere catcher (a second tap closes
+    /// it early), then the REC plate on top of it.
+    @ViewBuilder
+    private func recControls(_ m: V2HUDMetrics, phase: HUDPhase) -> some View {
+        if peekOpen {
+            Color.clear
+                .contentShape(Rectangle())
+                .onTapGesture { peeking = false }
+                .accessibilityHidden(true)
+        }
+        if phase == .recording {
+            V2HUDRecPlate(elapsed: elapsed, peeking: peekOpen, stopNotice: peekRefused) {
+                togglePeek()
+            }
+            .frame(width: m.size.width)                 // centred on W/2
+            .offset(y: V2.hudTop)                       // hit row 24–68, plate 28–64
+            .accessibilitySortPriority(5)
+            .transition(.asymmetric(insertion: .identity, removal: .opacity))
+        }
+    }
+
+    /// z9: ONE Close from Ready through Analysing, so Start never crossfades
+    /// two buttons; only the label and the action change. Ready (nothing to
+    /// lose) and Analysing (an escape if the camera never delivers a file;
+    /// the drive keeps saving) close the HUD. While recording it discards the
+    /// drive, as the launch beta's X did, but only after an in-HUD
+    /// confirmation so a stray tap on a mounted phone can't throw a drive away.
+    @ViewBuilder
+    private func closeControl(_ m: V2HUDMetrics, phase: HUDPhase) -> some View {
+        let recording = phase == .recording
+        if phase == .ready || recording || phase == .analysing {
+            let peek = peekOpen
+            let hidden = peek || (recording && showDiscardConfirm)
+            V2HUDCloseButton(label: recording ? "Discard drive" : "Close") {
+                if self.phase == .recording { showDiscardConfirm = true } else { isDriving = false }
+            }
+            .opacity(hidden ? 0 : 1)
+            .allowsHitTesting(!hidden)
+            .animation(instrumentsFade, value: peek)
+            .accessibilitySortPriority(recording ? 1 : 5)
+            .accessibilityHidden(hidden)
+            .offset(x: m.side, y: V2.hudTop)
+            .transition(.opacity)
+        }
     }
 
     /// "Discard this drive?" drawn inside the landscape HUD (a system dialog
@@ -514,32 +697,45 @@ struct DriveView: View {
         }
     }
 
-    /// Ready's left column under the job: road check, PERMIT line, Start.
-    /// Without a usable camera: the reason (and Settings), Start disabled.
-    private func readyPanel(_ m: V2HUDMetrics) -> some View {
-        let canRecord = cameraAccess == .available || cameraAccess == .notDetermined
-        return ZStack(alignment: .topLeading) {
-            if canRecord {
-                V2HUDRoadCheck(mode: .instruction)
-                    .frame(height: 22)
-                    .offset(x: m.side, y: 200 + m.dy)
-                if ProfileManager.shared.driverType == .learner {
-                    V2HUDPermitLine()
-                        .frame(height: 20)
-                        .offset(x: m.side, y: 236 + m.dy)
-                }
-            } else {
-                V2HUDCameraNeeded(access: cameraAccess)
-                    .frame(width: m.leftWidth, alignment: .leading)
-                    .offset(x: m.side, y: 200 + m.dy)
-            }
-            V2StartDriveButton(height: 72) { startTapped() }
-                .frame(width: 240)
-                .disabled(!canRecord)
-                .opacity(canRecord ? 1 : 0.35)
-                .offset(x: m.side, y: 292 + m.dy)
+    /// The ignition's VoiceOver hint for the camera state.
+    private var startHint: String {
+        switch cameraAccess {
+        case .available:     return "Starts recording this drive."
+        case .notDetermined: return "Asks for the camera, then starts recording."
+        case .denied:        return "Unavailable. Drive needs the camera."
+        case .noCamera:      return V2Voice.cameraMissing
         }
-        .frame(width: m.size.width, height: m.size.height, alignment: .topLeading)
+    }
+
+    /// A REC plate tap (or VoiceOver activate). Peeking: close it. At a stop
+    /// (or speed unknown): open the 5 s camera view. Moving: no peek, a light
+    /// tap and "Stop to peek" for 2 s. Speed is read once, here: a peek that
+    /// is open stays open to its 5 s end whatever the speed does.
+    @MainActor
+    private func togglePeek() {
+        if peeking {
+            peeking = false
+            return
+        }
+        guard phase == .recording, !showDiscardConfirm else { return }
+        // Median of recent GPS (refreshDrivingSpeed), -1 when unknown. That
+        // median freezes at a stop: the 10 m distance filter sends no new
+        // fixes, so it keeps reading the approach. No fix for 5 s means under
+        // 10 m in 5 s (< 2.2 m/s), so a stale reading counts as stopped, as in
+        // V2LiveDrive.isMoving. No fixes at all is unknown: peek allowed.
+        let lastFix = locationManager.snapshot().route.last
+        let stale = lastFix.map { Date().timeIntervalSince($0.timestamp) > Self.peekStaleFixSeconds } ?? true
+        guard stale || aiEngine.currentSpeedMS < Self.peekMaxSpeedMS else {
+            V2Haptics.play(.light)
+            peekRefused = true
+            peekRefusedToken &+= 1
+            UIAccessibility.post(notification: .announcement, argument: V2Voice.stopToPeek)
+            return
+        }
+        peekRefused = false
+        peeking = true
+        peekToken &+= 1
+        UIAccessibility.post(notification: .announcement, argument: "Camera view. Closes in 5 seconds.")
     }
 
     /// Saved's line: the speed gate's, or why the recording ended early.
@@ -592,7 +788,7 @@ struct DriveView: View {
     // MARK: – Start / stop
 
     /// The beta's start sequence, in its order. Its heavy impact is now the
-    /// `start` haptic V2StartDriveButton plays.
+    /// `start` haptic the ignition (V2HUDStartControl) plays.
     private func startDrive() {
         // The beta's single Start/Stop button could never start twice; this
         // one can be tapped again mid slide-out, which would orphan the first
@@ -706,6 +902,11 @@ struct DriveView: View {
     /// it keeps running after Done so the Parked notification still posts.
     @MainActor
     private func phaseChanged(from oldPhase: HUDPhase, to newPhase: HUDPhase) {
+        // Peek is a Recording view only.
+        if newPhase != .recording {
+            peeking = false
+            peekRefused = false
+        }
         if newPhase == .saved, oldPhase != .saved, let id = lastSavedSessionID {
             V2ParkingWatch.shared.start(sessionID: id, fallback: lastSavedSession)
         }
@@ -736,6 +937,8 @@ struct DriveView: View {
 
     @MainActor
     private func scenePhaseChanged(_ newPhase: ScenePhase) {
+        // A peek never outlives the app leaving the front.
+        if newPhase != .active { peeking = false }
         switch newPhase {
         case .active:
             V2ParkedNotifier.endBackgroundTime()

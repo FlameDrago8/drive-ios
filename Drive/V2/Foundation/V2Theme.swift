@@ -59,6 +59,13 @@ enum V2 {
     /// Digits on markers, letters on solid grade plates.
     static let markerInk = dynamic(dark: 0x000000, light: 0xFFFFFF)
 
+    // HUD
+    /// REC dot (HUD). Never text, never a larger fill.
+    static let rec        = dynamic(dark: 0xFF453A, light: 0xFF3B30)
+    /// Aim guides over the live camera: same in both modes (they sit on video).
+    static let aimInk     = fixed(0xFFFFFF)
+    static let aimKeyline = fixed(0x000000, alpha: 0.55)
+
     // Road inks (what the coach, the road or your collection is)
     /// Focus Sign only. The one yellow object in the app.
     static let signYellow = dynamic(dark: 0xFFD60A, light: 0xFFCC00)

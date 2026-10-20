@@ -3,10 +3,12 @@
 //  Drive — v2 "Road Furniture"
 //
 //  Building blocks of the live HUD (§6.5): the fake-landscape container, the
-//  camera window, the Ready column, the recording instrument (live score,
-//  readouts, neutral strip, camera banner) and the end-of-drive messages.
-//  DriveView and the Demo drive compose them; neither owns layout math of
-//  its own. Everything here is dark-only (callers force `.dark`).
+//  scrim and aim guides over the camera, Ready's job plate and ignition (which
+//  becomes the hold-to-end in place), the REC plate and Peek, the recording
+//  instrument (live score, readouts, neutral strip, camera banner) and the
+//  end-of-drive messages. DriveView and the Demo drive compose them; neither
+//  owns layout math of its own. Everything here is dark-only (callers force
+//  `.dark`).
 //
 
 import SwiftUI
@@ -51,12 +53,23 @@ struct V2HUDMetrics {
     var dy: CGFloat { max(0, (size.height - 402) / 2) }
     /// The strip width (board: x 62 to 812).
     var contentWidth: CGFloat { max(0, size.width - 2 * side) }
-    /// Ready's left column (board 360), narrowed on small phones.
+    /// A left column (board 360), narrowed on small phones (the Demo's notice).
     var leftWidth: CGFloat { min(360, max(0, (contentWidth - 30) / 2)) }
-    /// Ready's camera window (board: 360 × 354 at (452, 24), r22).
-    var cardRect: CGRect {
-        let w = min(360, max(0, contentWidth - leftWidth - 30))
-        return CGRect(x: size.width - side - w, y: V2.hudTop, width: w, height: max(0, size.height - 2 * V2.hudTop))
+    /// The hold ring's 128 × 128 frame. Ready's ignition uses exactly this frame.
+    var controlRect: CGRect { CGRect(x: size.width - side - 128, y: 86 + dy, width: 128, height: 128) }
+    /// Ready's job plate origin (board (62, 86)).
+    var plateOrigin: CGPoint { CGPoint(x: side, y: 86 + dy) }
+    /// Top of Ready's 44 pt bottom-centre instruction pill.
+    var pillY: CGFloat { size.height - V2.hudBottom - 44 }
+    /// Top of the 44 pt camera banner on the readout row.
+    var messageY: CGFloat { 234 + dy }
+    /// Top of the 36 pt REC plate (its 44 pt hit row starts at V2.hudTop).
+    var recPlateY: CGFloat { V2.hudTop + 4 }
+    /// Aim guides are drawn in board points (874 × 402), scaled about the centre.
+    var aimScale: CGFloat { size.width / 874 }
+    func aim(_ p: CGPoint) -> CGPoint {
+        CGPoint(x: size.width / 2 + (p.x - 437) * aimScale,
+                y: size.height / 2 + (p.y - 201) * aimScale)
     }
     /// Live / Saved strip lane line (board y 360).
     var hudBaselineY: CGFloat { size.height - 42 }
@@ -67,67 +80,89 @@ struct V2HUDMetrics {
     var rightColumnWidth: CGFloat { min(342, max(0, contentWidth - 360)) }
 }
 
-// MARK: - Camera window
+// MARK: - Scrim and aim guides
 
-/// Black everywhere except a rounded window onto the live camera behind it.
-/// Ready opens the window; every other phase closes it by fading a black
-/// plate over it, so the CameraView itself never moves or changes.
+/// One full-container black plate over the CameraView behind the HUD. Ready
+/// (with a camera) and Peek open it; every other phase closes it, so the
+/// CameraView itself never moves or changes. The caller animates `open`.
 struct V2HUDScrim: View {
-    let size: CGSize
-    let window: CGRect
     let open: Bool
 
     var body: some View {
-        ZStack(alignment: .topLeading) {
-            V2HUDWindowShape(window: window, radius: V2.radiusCard)
-                .fill(V2.bg, style: FillStyle(eoFill: true))
-                .frame(width: size.width, height: size.height)
-            RoundedRectangle(cornerRadius: V2.radiusCard, style: .continuous)
-                .fill(V2.bg)
-                .frame(width: window.width, height: window.height)
-                .offset(x: window.minX, y: window.minY)
-                .opacity(open ? 0 : 1)
-        }
-        .frame(width: size.width, height: size.height, alignment: .topLeading)
-        .allowsHitTesting(false)
-        .accessibilityHidden(true)
+        V2.bg
+            .opacity(open ? 0 : 1)
+            .allowsHitTesting(false)
+            .accessibilityHidden(true)
     }
 }
 
-struct V2HUDWindowShape: Shape {
-    var window: CGRect
-    var radius: CGFloat
+/// Parking-camera aim guides (§5.3): two solid rails a car-width apart, inward
+/// ticks at three distances, and a + at the aim point (the rails' vanishing
+/// point). Board points mapped through `metrics.aim`, strokes × `aimScale`.
+/// White ink over a black keyline: they sit on video in both modes.
+struct V2HUDAimGuides: View {
+    let metrics: V2HUDMetrics
 
-    func path(in rect: CGRect) -> Path {
-        var p = Path(rect)
-        p.addRoundedRect(in: window, cornerSize: CGSize(width: radius, height: radius), style: .continuous)
-        return p
-    }
-}
-
-/// Two converging 2 pt dashed lane guides at 60 % (board: (90, 354) → (165, 160)
-/// and (270, 354) → (195, 160) in a 360 × 354 card), scaled to the window.
-struct V2HUDCameraGuides: View {
     var body: some View {
-        Canvas { ctx, size in
-            let sx = size.width / 360, sy = size.height / 354
-            var p = Path()
-            p.move(to: CGPoint(x: 90 * sx, y: 354 * sy))
-            p.addLine(to: CGPoint(x: 165 * sx, y: 160 * sy))
-            p.move(to: CGPoint(x: 270 * sx, y: 354 * sy))
-            p.addLine(to: CGPoint(x: 195 * sx, y: 160 * sy))
-            ctx.stroke(p, with: .color(V2.paint), style: StrokeStyle(lineWidth: 2, dash: [6, 4]))
+        Canvas { ctx, _ in
+            let m = metrics
+            let paths = V2HUDAimGeometry.paths(m)
+            func style(_ w: CGFloat) -> StrokeStyle {
+                StrokeStyle(lineWidth: w * m.aimScale, lineCap: .round, lineJoin: .round)
+            }
+            ctx.stroke(paths.lines, with: .color(V2.aimKeyline), style: style(5.5))
+            ctx.stroke(paths.plus,  with: .color(V2.aimKeyline), style: style(4.5))
+            ctx.stroke(paths.lines, with: .color(V2.aimInk),     style: style(3))
+            ctx.stroke(paths.plus,  with: .color(V2.aimInk),     style: style(2))
         }
-        .opacity(0.6)
+        .frame(width: metrics.size.width, height: metrics.size.height)
         .allowsHitTesting(false)
-        .accessibilityHidden(true)
+    }
+}
+
+/// The aim guides' board geometry (874 × 402). Kept out of the View so the
+/// Canvas renderer can read it from any isolation.
+enum V2HUDAimGeometry {
+    static let rails: [(CGPoint, CGPoint)] = [
+        (CGPoint(x: 358, y: 318), CGPoint(x: 407, y: 222)),   // left
+        (CGPoint(x: 516, y: 318), CGPoint(x: 467, y: 222)),   // right
+    ]
+    /// Near, mid and far ticks: board y and inward length.
+    static let ticks: [(y: CGFloat, length: CGFloat)] = [(318, 20), (275, 14), (222, 10)]
+    static let aimPoint = CGPoint(x: 437, y: 163)
+    static let arm: CGFloat = 7
+
+    /// Rails + ticks as one path, the + as another, in container points.
+    static func paths(_ m: V2HUDMetrics) -> (lines: Path, plus: Path) {
+        var lines = Path()
+        for (i, rail) in rails.enumerated() {
+            let (a, b) = rail
+            lines.move(to: m.aim(a))
+            lines.addLine(to: m.aim(b))
+            let inward: CGFloat = i == 0 ? 1 : -1
+            for t in ticks {
+                // The rail's x at the tick's y.
+                let x = a.x + (b.x - a.x) * (t.y - a.y) / (b.y - a.y)
+                lines.move(to: m.aim(CGPoint(x: x, y: t.y)))
+                lines.addLine(to: m.aim(CGPoint(x: x + inward * t.length, y: t.y)))
+            }
+        }
+        let c = aimPoint, r = arm
+        var plus = Path()
+        plus.move(to: m.aim(CGPoint(x: c.x - r, y: c.y)))
+        plus.addLine(to: m.aim(CGPoint(x: c.x + r, y: c.y)))
+        plus.move(to: m.aim(CGPoint(x: c.x, y: c.y - r)))
+        plus.addLine(to: m.aim(CGPoint(x: c.x, y: c.y + r)))
+        return (lines, plus)
     }
 }
 
 // MARK: - Chrome
 
-/// Glass close circle 44 (`xmark`). Liquid Glass on iOS 26, material before.
+/// Solid close circle 44 (`xmark`). Solid, not glass: it sits on live video in
+/// Ready. `label` is what VoiceOver reads ("Close", or "Discard drive").
 struct V2HUDCloseButton: View {
+    var label: String = "Close"
     let action: () -> Void
 
     var body: some View {
@@ -136,25 +171,16 @@ struct V2HUDCloseButton: View {
                 .font(V2Type.fixedSize(18, weight: .semibold))
                 .foregroundStyle(V2.label)
                 .frame(width: 44, height: 44)
-                .modifier(V2HUDGlassCircle())
+                .background(V2.card, in: Circle())
                 .contentShape(Circle())
         }
         .buttonStyle(.plain)
-        .accessibilityLabel("Close")
+        .accessibilityLabel(label)
     }
 }
 
-struct V2HUDGlassCircle: ViewModifier {
-    func body(content: Content) -> some View {
-        if #available(iOS 26.0, *) {
-            content.glassEffect(.regular.interactive(), in: Circle())
-        } else {
-            content.background(.ultraThinMaterial, in: Circle())
-        }
-    }
-}
-
-/// Top-centre status capsule: card2, 44 tall, r22 (camera banner, demo banner).
+/// Status capsule: card2, 44 tall, r22 (Ready's instruction pill, camera
+/// banner, demo banner).
 struct V2HUDBanner: View {
     let systemImage: String
     let text: String
@@ -181,73 +207,66 @@ struct V2HUDBanner: View {
 
 // MARK: - Ready
 
-/// "Today's job" + Focus Sign 64 + the job's short title (28/34 bold, ≤ 2 lines).
-struct V2HUDJobBlock: View {
-    let job: V2FocusJob
+/// Ready's road-sign plate (§5.2): card r18, 2 pt label rim inset 6 (r12),
+/// "Today's job", Focus Sign 64 + title 28 bold in a 176 box, PERMIT line.
+/// Fixed sizes so the aim guides pass clear of it on both phones.
+struct V2HUDJobPlate: View {
+    let job: V2FocusJob?
+    let permit: Bool
+
+    static let width: CGFloat = 304
+    /// Job + PERMIT 176, job only 140, PERMIT only 60; neither: no plate (0).
+    static func height(hasJob: Bool, permit: Bool) -> CGFloat {
+        hasJob ? (permit ? 176 : 140) : (permit ? 60 : 0)
+    }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            Text("Today's job")
-                .font(V2Type.headline)
-                .foregroundStyle(V2.label2)
-                .frame(height: 22, alignment: .leading)
-            HStack(spacing: 16) {
-                V2FocusSign(category: job.category, size: 64)
-                Text(job.shortTitle)
-                    .font(V2Type.scaled(28, .title1, weight: .bold))
-                    .foregroundStyle(V2.label)
-                    .lineLimit(2)
-                    .minimumScaleFactor(0.8)
-                    .frame(maxWidth: 230, alignment: .leading)
-                    .fixedSize(horizontal: false, vertical: true)
+        VStack(alignment: .leading, spacing: 0) {
+            if let job {
+                Text("Today's job")
+                    .font(V2Type.headline)
+                    .foregroundStyle(V2.label2)
+                    .lineLimit(1)
+                    .frame(height: 22, alignment: .leading)
+                HStack(spacing: 16) {
+                    V2FocusSign(category: job.category, size: 64)
+                    // 176 = 304 − 24 − 64 − 16 − 24: every short title sets in ≤ 2 lines.
+                    Text(job.shortTitle)
+                        .font(V2Type.scaled(28, .title1, weight: .bold))
+                        .tracking(-0.4)
+                        .foregroundStyle(V2.label)
+                        .lineLimit(2)
+                        .minimumScaleFactor(0.8)
+                        .frame(width: 176, alignment: .leading)
+                }
+                .frame(height: 68)
+                .padding(.top, 6)                       // row at y 50
             }
-            .frame(height: 64, alignment: .leading)
+            if permit {
+                V2HUDPermitLine()
+                    .frame(height: 20)
+                    .padding(.top, job == nil ? 0 : 16) // y 134 (or 20 without a job)
+            }
+        }
+        .padding(.leading, 24)
+        .padding(.top, job == nil ? 20 : 22)
+        .frame(width: Self.width, height: Self.height(hasJob: job != nil, permit: permit), alignment: .topLeading)
+        .background {
+            ZStack {
+                RoundedRectangle(cornerRadius: 18, style: .continuous).fill(V2.card)
+                RoundedRectangle(cornerRadius: 12, style: .continuous)
+                    .strokeBorder(V2.label, lineWidth: 2)
+                    .padding(6)
+            }
         }
         .accessibilityElement(children: .ignore)
-        .accessibilityLabel("Today's job: \(job.shortTitle)")
-    }
-}
-
-/// `road.lanes` + "Road in view", or slashed + "Point the camera at the road."
-/// `.instruction` is Ready's honest default: the road model only sees frames
-/// while recording, so before Start the line asks rather than claims.
-struct V2HUDRoadCheck: View {
-    enum Mode: Equatable { case inView, blocked, instruction }
-
-    let mode: Mode
-
-    init(mode: Mode) {
-        self.mode = mode
+        .accessibilityLabel(accessibilityText)
     }
 
-    init(onRoad: Bool) {
-        self.mode = onRoad ? .inView : .blocked
-    }
-
-    var body: some View {
-        HStack(spacing: 8) {
-            ZStack {
-                Image(systemName: "road.lanes")
-                    .font(V2Type.fixedSize(19, weight: .semibold))
-                if mode == .blocked {
-                    Canvas { ctx, size in
-                        var slash = Path()
-                        slash.move(to: CGPoint(x: size.width * 0.15, y: size.height * 0.15))
-                        slash.addLine(to: CGPoint(x: size.width * 0.85, y: size.height * 0.85))
-                        ctx.stroke(slash, with: .color(V2.bg), style: StrokeStyle(lineWidth: 5, lineCap: .round))
-                        ctx.stroke(slash, with: .color(V2.label), style: StrokeStyle(lineWidth: 2, lineCap: .round))
-                    }
-                }
-            }
-            .frame(width: 22, height: 22)
-            .accessibilityHidden(true)
-            Text(mode == .inView ? "Road in view" : "Point the camera at the road.")
-                .font(V2Type.headline)
-                .lineLimit(1)
-                .minimumScaleFactor(0.8)
-        }
-        .foregroundStyle(V2.label)
-        .accessibilityElement(children: .combine)
+    private var accessibilityText: String {
+        let p = "Permit. Scoring is tuned for learners."
+        guard let job else { return p }
+        return permit ? "Today's job: \(job.shortTitle). \(p)" : "Today's job: \(job.shortTitle)"
     }
 }
 
@@ -267,8 +286,8 @@ struct V2HUDPermitLine: View {
     }
 }
 
-/// Ready when Drive can't record (G3-03): the reason in place of the road
-/// check and, when access was declined, a tint "Open Settings".
+/// Ready when Drive can't record (G3-03): the reason under the job plate
+/// and, when access was declined, a tint "Open Settings".
 struct V2HUDCameraNeeded: View {
     let access: V2CameraAccess
 
@@ -302,6 +321,322 @@ struct V2HUDCameraNeeded: View {
                 .padding(.leading, 30)
             }
         }
+    }
+}
+
+/// Ready's push-to-start ignition, which becomes V2HoldToEnd in place (§5.5).
+/// Mount ONE instance for Ready and Recording at `controlRect.origin`;
+/// `mode` going .ignition → .hold plays the MORPH (§7.1): the blue face
+/// shrinks into the stop glyph, the rim fades and the track draws in, so
+/// nothing moves under the finger. Mounted directly in `.hold` (a rebuild
+/// mid-drive) it shows the hold at rest.
+struct V2HUDStartControl: View {
+    enum Mode: Equatable { case ignition(enabled: Bool), hold }
+
+    let mode: Mode
+    let startHint: String
+    let onStart: () -> Void
+    let onEnd: () -> Void
+
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @AccessibilityFocusState private var holdFocused: Bool
+
+    // MORPH state. Ignition at rest: all false, reveal 0. Hold at rest: all true, reveal 1.
+    @State private var labelsGone: Bool
+    @State private var rimGone: Bool
+    @State private var shrunk: Bool
+    @State private var whiteFace: Bool
+    @State private var faceGone: Bool
+    @State private var holdShown: Bool
+    @State private var reveal: CGFloat
+
+    init(mode: Mode, startHint: String, onStart: @escaping () -> Void, onEnd: @escaping () -> Void) {
+        self.mode = mode
+        self.startHint = startHint
+        self.onStart = onStart
+        self.onEnd = onEnd
+        let atHold = mode == .hold          // mounted mid-drive: the hold at rest, no MORPH
+        _labelsGone = State(initialValue: atHold)
+        _rimGone    = State(initialValue: atHold)
+        _shrunk     = State(initialValue: atHold)
+        _whiteFace  = State(initialValue: atHold)
+        _faceGone   = State(initialValue: atHold)
+        _holdShown  = State(initialValue: atHold)
+        _reveal     = State(initialValue: atHold ? 1 : 0)
+    }
+
+    private var isIgnition: Bool { mode != .hold }
+    private var enabled: Bool { mode == .ignition(enabled: true) }
+
+    var body: some View {
+        ZStack(alignment: .top) {
+            // 1 Bezel: seats the button on any picture, vanishes on the closed scrim.
+            Circle().fill(V2.bg)
+                .frame(width: 128, height: 128)
+                .allowsHitTesting(false)
+                .accessibilityHidden(true)
+
+            // 2 Hold (unchanged component)
+            if mode == .hold {
+                V2HoldToEnd(onComplete: onEnd)
+                    .frame(width: 128)
+                    .opacity(holdShown ? 1 : 0)
+                    .accessibilityFocused($holdFocused)
+                    .transition(.identity)
+            }
+
+            // 3 Track-reveal cover
+            trackCover
+
+            // 4 Rim: outer edge at r64, the hold track's outer edge.
+            Circle().strokeBorder(V2.label, lineWidth: 2)
+                .frame(width: 128, height: 128)
+                .opacity(rimGone ? 0 : 1)
+                .allowsHitTesting(false)
+                .accessibilityHidden(true)
+
+            // 5 Face + glyph: the button. Its label spans the whole 128 × 165.
+            ignitionButton
+
+            // 6 "Start drive" tab
+            startTab
+        }
+        .frame(width: 128, height: 165, alignment: .top)
+        .opacity(mode == .ignition(enabled: false) ? 0.35 : 1)
+        .onChange(of: mode) { old, new in
+            if old != .hold, new == .hold { morph() }
+            if old == .hold, new != .hold { resetToIgnition() }   // defensive; not expected
+        }
+    }
+
+    /// Hides the hold's track until `reveal` sweeps clockwise from 12
+    /// o'clock; at `reveal == 1` it draws nothing.
+    private var trackCover: some View {
+        Circle().inset(by: 3)
+            .trim(from: reveal, to: 1)
+            .rotation(.degrees(-90))
+            .stroke(V2.bg, lineWidth: 7)
+            .frame(width: 128, height: 128)
+            .clipShape(Circle())
+            .allowsHitTesting(false)
+            .accessibilityHidden(true)
+    }
+
+    /// "Start drive" on a black tab under the face: its centre (y 150) is
+    /// "Hold to end"'s centre.
+    private var startTab: some View {
+        Text("Start drive")
+            .font(V2Type.headline)
+            .foregroundStyle(V2.label)
+            .lineLimit(1)
+            .minimumScaleFactor(0.8)
+            .padding(.horizontal, 12)
+            .frame(height: 30)
+            .background(V2.bg, in: Capsule())
+            .offset(y: 135)
+            .opacity(labelsGone ? 0 : 1)
+            .allowsHitTesting(false)
+            .accessibilityHidden(true)
+    }
+
+    private var ignitionButton: some View {
+        Button {
+            V2Haptics.play(.start)
+            onStart()
+        } label: {
+            face
+        }
+        .buttonStyle(V2HUDIgnitionStyle())
+        .disabled(!enabled)
+        // From the MORPH on, V2HoldToEnd takes the touches.
+        .allowsHitTesting(isIgnition)
+        .accessibilityLabel("Start drive")
+        .accessibilityHint(startHint)
+        .accessibilityHidden(!isIgnition)
+    }
+
+    private var face: some View {
+        let side: CGFloat = shrunk ? 32 : 104
+        return ZStack {
+            RoundedRectangle(cornerRadius: shrunk ? 7 : 52, style: .circular)
+                .fill(whiteFace ? V2.label : V2.tintFill)
+                .frame(width: side, height: side)
+            Image(systemName: "steeringwheel")
+                .font(V2Type.fixedSize(40, weight: .semibold))
+                .foregroundStyle(V2.fixed(0xFFFFFF))
+                .scaleEffect(shrunk ? CGFloat(32) / 104 : 1)
+                .opacity(labelsGone ? 0 : 1)
+                .accessibilityHidden(true)
+        }
+        .frame(width: 128, height: 128)
+        .opacity(faceGone ? 0 : 1)
+        .frame(width: 128, height: 165, alignment: .top)
+        .contentShape(Rectangle())
+    }
+
+    /// Ignition → hold. Runs a render after the phase change, so the HUD's
+    /// phase animation never touches these; each change carries its own.
+    private func morph() {
+        if reduceMotion {
+            // A crossfade: no shrink, no colour change, no track draw.
+            var still = Transaction()
+            still.disablesAnimations = true
+            withTransaction(still) { reveal = 1 }
+            withAnimation(.easeInOut(duration: 0.2)) {
+                labelsGone = true; rimGone = true; faceGone = true; holdShown = true
+            }
+        } else {
+            withAnimation(.easeOut(duration: 0.1))             { labelsGone = true }
+            withAnimation(V2Motion.settle)                      { rimGone = true }
+            withAnimation(V2Motion.morph)                       { shrunk = true }
+            withAnimation(V2Motion.settle.delay(0.1))           { holdShown = true }
+            withAnimation(V2Motion.draw(buckets: 0).delay(0.1)) { reveal = 1 }
+            withAnimation(.easeIn(duration: 0.15).delay(0.25))  { whiteFace = true }
+            withAnimation(.easeOut(duration: 0.1).delay(0.4))   { faceGone = true }
+        }
+        // VoiceOver: focus moves to End drive once the MORPH has landed.
+        guard UIAccessibility.isVoiceOverRunning else { return }
+        let wait = reduceMotion ? 200 : 500
+        Task { @MainActor in
+            try? await Task.sleep(for: .milliseconds(wait))
+            holdFocused = true
+        }
+    }
+
+    private func resetToIgnition() {
+        var still = Transaction()
+        still.disablesAnimations = true
+        withTransaction(still) {
+            labelsGone = false; rimGone = false; shrunk = false; whiteFace = false
+            faceGone = false; holdShown = false; reveal = 0
+        }
+    }
+}
+
+/// The ignition's press: the face scales to 0.94 about its own centre
+/// (the label is 128 × 165, the face centre is at y 64), like V2HoldToEnd's disc.
+struct V2HUDIgnitionStyle: ButtonStyle {
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .scaleEffect(configuration.isPressed ? 0.94 : 1, anchor: UnitPoint(x: 0.5, y: 64.0 / 165.0))
+            .animation(V2Motion.press, value: configuration.isPressed)
+    }
+}
+
+// MARK: - REC plate and Peek
+
+/// Top-centre REC plate (§5.7): red dot, REC, drive clock, on a plate fill.
+/// Nothing blinks; the clock's digits are the only motion. A tap asks for a
+/// Peek (the caller decides). `stopNotice` shows "Stop to peek" over REC and
+/// the clock for a refused tap, in the same plate width. Centres itself in
+/// the width it is given.
+struct V2HUDRecPlate: View {
+    let elapsed: TimeInterval
+    let peeking: Bool
+    let stopNotice: Bool
+    let action: () -> Void
+
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @State private var stamped = false
+
+    init(elapsed: TimeInterval, peeking: Bool, stopNotice: Bool = false, action: @escaping () -> Void) {
+        self.elapsed = elapsed
+        self.peeking = peeking
+        self.stopNotice = stopNotice
+        self.action = action
+    }
+
+    var body: some View {
+        let slot = elapsed >= 3600 ? "0:00:00" : "00:00"
+        let spoken = V2HUDSpeech.duration(elapsed)
+        let fade = V2Motion.reduced(V2Motion.settle, reduceMotion: reduceMotion)
+        Button(action: action) {
+            plate(slot: slot, fade: fade)
+                .frame(height: 44)                         // hit row y 24–68
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(V2PressableCardStyle())
+        .accessibilityLabel(peeking ? "Camera view. Recording, \(spoken)" : "Recording, \(spoken)")
+        .accessibilityHint(peeking ? "Double-tap to close the camera view."
+                                   : "Shows the camera for 5 seconds when you're stopped.")
+        .accessibilityAddTraits(.updatesFrequently)
+        .v2Stamp(stamped, delay: reduceMotion ? 0 : 0.25)
+        .frame(maxWidth: .infinity)
+        // 59:59 → 1:00:00: the slot grows once, the plate widens centred.
+        .animation(fade, value: slot)
+        .task { stamped = true }                           // no withAnimation: the modifier owns it
+    }
+
+    private func plate(slot: String, fade: Animation?) -> some View {
+        HStack(spacing: 0) {
+            Circle().fill(V2.rec).frame(width: 10, height: 10)
+            legend(slot: slot)
+                .opacity(stopNotice ? 0 : 1)
+                // A refused peek: the words sit where REC and the clock were,
+                // condensed like the clock so they fit the plate as it is.
+                .overlay(alignment: .leading) {
+                    if stopNotice {
+                        Text(V2Voice.stopToPeek)
+                            .font(V2Type.subheadSemibold.width(.condensed))
+                            .minimumScaleFactor(0.7)
+                            .transition(.opacity)
+                    }
+                }
+                .padding(.leading, 7)
+        }
+        .foregroundStyle(V2.label)
+        .lineLimit(1)
+        .fixedSize()
+        .animation(fade, value: stopNotice)
+        .padding(.leading, 12)
+        .padding(.trailing, 14)
+        .frame(height: 36)
+        .background(V2.plate, in: RoundedRectangle(cornerRadius: V2.radiusPhoto, style: .continuous))
+        .overlay(alignment: .bottom) {
+            if peeking {
+                V2HUDDrainRule()
+                    .padding(.horizontal, 10)
+                    .padding(.bottom, 2)
+                    .transition(.opacity)
+            }
+        }
+        .animation(fade, value: peeking)
+    }
+
+    /// "REC", 10 pt, then the clock right-aligned in a slot sized by "00:00"
+    /// ("0:00:00" from 1 h): the width holds for the first hour and the colon
+    /// never moves.
+    private func legend(slot: String) -> some View {
+        let clockFont = V2Type.measured(20, relativeTo: .title3)
+        return HStack(spacing: 0) {
+            Text(verbatim: "REC")
+                .font(V2Type.plate(15, weight: .heavy))
+                .tracking(0.9)
+            Text(verbatim: slot)
+                .font(clockFont)
+                .hidden()
+                .overlay(alignment: .trailing) {
+                    Text(verbatim: V2Format.elapsed(elapsed)).font(clockFont)
+                }
+                .padding(.leading, 10)
+        }
+    }
+}
+
+/// Peek's 5 s countdown along the REC plate's base: a 2 pt label rule that
+/// runs out once, linearly. Inserted fresh each peek, so its state is too.
+/// It is information, like the hold ring, so it runs under Reduce Motion too.
+struct V2HUDDrainRule: View {
+    @State private var k: CGFloat = 1
+
+    var body: some View {
+        GeometryReader { g in
+            Capsule().fill(V2.label)
+                .frame(width: max(0, g.size.width * k), height: 2)
+        }
+        .frame(height: 2)
+        .task { withAnimation(.linear(duration: 5)) { k = 0 } }
+        .accessibilityHidden(true)
     }
 }
 
@@ -345,16 +680,21 @@ struct V2HUDLiveScore: View {
 }
 
 /// "12:48" + "4.2 mi", measured 34 with the unit at 20 in label2, 32 apart.
+/// `showsElapsed == false` (the live HUD, whose clock is on the REC plate):
+/// distance only.
 struct V2HUDReadouts: View {
     let elapsed: TimeInterval
     let distanceM: Double
+    var showsElapsed: Bool = true
 
     var body: some View {
         let d = V2HUDDistance(metres: distanceM)
         HStack(alignment: .firstTextBaseline, spacing: 32) {
-            Text(verbatim: V2Format.elapsed(elapsed))
-                .font(V2Type.measured(34))
-                .foregroundStyle(V2.label)
+            if showsElapsed {
+                Text(verbatim: V2Format.elapsed(elapsed))
+                    .font(V2Type.measured(34))
+                    .foregroundStyle(V2.label)
+            }
             HStack(alignment: .firstTextBaseline, spacing: 0) {
                 Text(verbatim: d.value)
                     .font(V2Type.measured(34))
@@ -367,7 +707,9 @@ struct V2HUDReadouts: View {
         .lineLimit(1)
         .minimumScaleFactor(0.7)
         .accessibilityElement(children: .ignore)
-        .accessibilityLabel("\(V2HUDSpeech.duration(elapsed)), \(d.value) \(d.spokenUnit)")
+        .accessibilityLabel(showsElapsed
+            ? "\(V2HUDSpeech.duration(elapsed)), \(d.value) \(d.spokenUnit)"
+            : "\(d.value) \(d.spokenUnit)")
     }
 }
 
@@ -396,7 +738,7 @@ struct V2HUDDistance {
 /// M in label2 at the head. The car is drawn here (the strip gets an
 /// invisible one for its layout) so it can STAMP onto the start pin when the
 /// drive starts and advance one pitch per commit inside the caller's
-/// `driveLive` transaction.
+/// `driveLive` transaction. `stampDelay` is the wait after it appears.
 struct V2HUDLiveStrip: View {
     let buckets: [Double?]
     let ticks: [Int]
@@ -404,19 +746,21 @@ struct V2HUDLiveStrip: View {
     let startClock: String?
     let width: CGFloat
     let stampOnAppear: Bool
+    let stampDelay: Duration
 
     @State private var stamped = false
 
     static let zone: CGFloat = 28
 
     init(buckets: [Double?], ticks: [Int], capacity: Int, startClock: String?,
-         width: CGFloat, stampOnAppear: Bool = true) {
+         width: CGFloat, stampOnAppear: Bool = true, stampDelay: Duration = .milliseconds(150)) {
         self.buckets = buckets
         self.ticks = ticks
         self.capacity = capacity
         self.startClock = startClock
         self.width = width
         self.stampOnAppear = stampOnAppear
+        self.stampDelay = stampDelay
     }
 
     static func metrics(hasTicks: Bool, hasClock: Bool) -> V2LaneStripMetrics {
@@ -452,7 +796,7 @@ struct V2HUDLiveStrip: View {
                     withTransaction(still) { stamped = true }
                     return
                 }
-                try? await Task.sleep(for: .milliseconds(150))
+                try? await Task.sleep(for: stampDelay)
                 // STAMP token (scale, and a plain fade under Reduce Motion);
                 // set without withAnimation, the modifier owns the timing.
                 stamped = true
@@ -647,8 +991,11 @@ struct V2HUDHoldReplica: View {
 }
 
 /// The recording instrument (§6.5 Recording): live score top-left, readouts
-/// under it, the hold control right, the neutral strip along the bottom and
-/// the camera banner top-centre. No Focus, plates or colour while recording.
+/// under it, the hold slot right (`controlRect`; the live HUD passes
+/// EmptyView, its hold lives in V2HUDStartControl), the neutral strip along
+/// the bottom and the camera banner on the readout row. No Focus, plates or
+/// colour while recording. The live HUD passes `showsElapsed: false` (its
+/// clock is on the REC plate); the Demo keeps the defaults.
 struct V2HUDRecordingLayer<Hold: View>: View {
     let metrics: V2HUDMetrics
     let score: Double
@@ -661,13 +1008,16 @@ struct V2HUDRecordingLayer<Hold: View>: View {
     let startClock: String?
     let cameraBlocked: Bool
     var stampCar: Bool = true
+    var showsElapsed: Bool = true
+    var stampDelay: Duration = .milliseconds(150)
     let hold: Hold
 
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     init(metrics: V2HUDMetrics, score: Double, gradeScore: Double, elapsed: TimeInterval,
          distanceM: Double, buckets: [Double?], ticks: [Int], capacity: Int, startClock: String?,
-         cameraBlocked: Bool, stampCar: Bool = true, @ViewBuilder hold: () -> Hold) {
+         cameraBlocked: Bool, stampCar: Bool = true, showsElapsed: Bool = true,
+         stampDelay: Duration = .milliseconds(150), @ViewBuilder hold: () -> Hold) {
         self.metrics = metrics
         self.score = score
         self.gradeScore = gradeScore
@@ -679,6 +1029,8 @@ struct V2HUDRecordingLayer<Hold: View>: View {
         self.startClock = startClock
         self.cameraBlocked = cameraBlocked
         self.stampCar = stampCar
+        self.showsElapsed = showsElapsed
+        self.stampDelay = stampDelay
         self.hold = hold()
     }
 
@@ -689,22 +1041,24 @@ struct V2HUDRecordingLayer<Hold: View>: View {
             V2HUDLiveScore(score: score, gradeScore: gradeScore)
                 .offset(x: m.side, y: 54 + m.dy)
 
-            V2HUDReadouts(elapsed: elapsed, distanceM: distanceM)
+            V2HUDReadouts(elapsed: elapsed, distanceM: distanceM, showsElapsed: showsElapsed)
                 .frame(height: 41, alignment: .bottomLeading)
                 .offset(x: m.side, y: 236 + m.dy)
 
             hold
-                .frame(width: 128)
-                .offset(x: m.size.width - m.side - 128, y: 86 + m.dy)
+                .frame(width: m.controlRect.width)
+                .offset(x: m.controlRect.minX, y: m.controlRect.minY)
 
             V2HUDLiveStrip(buckets: buckets, ticks: ticks, capacity: capacity,
-                           startClock: startClock, width: m.contentWidth, stampOnAppear: stampCar)
+                           startClock: startClock, width: m.contentWidth, stampOnAppear: stampCar,
+                           stampDelay: stampDelay)
                 .offset(x: m.side, y: m.hudBaselineY - sm.baselineY)
 
+            // On the readout row, centred under the REC plate (which has the top centre).
             if cameraBlocked {
                 V2HUDBanner(systemImage: "video.slash", text: "Camera can't see the road. Scoring continues.")
                     .frame(width: m.contentWidth)
-                    .offset(x: m.side, y: V2.hudTop)
+                    .offset(x: m.side, y: m.messageY)
                     .transition(.opacity)
             }
         }
@@ -775,6 +1129,8 @@ enum V2HUDSpeech {
 // MARK: - Voice (HUD end states)
 
 extension V2Voice {
+    /// REC plate, a peek tap while moving: Peek is a check at a stop.
+    static let stopToPeek = "Stop to peek"
     /// Ready, camera access declined (G3-03).
     static let cameraNeeded = "Drive needs the camera to see the road."
     /// Ready, no camera at all (e.g. the Simulator).
