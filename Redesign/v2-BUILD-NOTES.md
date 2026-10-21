@@ -278,6 +278,17 @@ Swift 6 concurrency warnings are expected throughout (the app is in Swift 5 mode
 - The alternate app icon is re-checked after a switch. iOS shows its own "icon changed" alert. The check waits until the new account's drives and badges have been still for 4 s, so slow Firestore loading could reset an icon the new account did unlock.
 - A search you typed yourself in Drives survives a switch that keeps the Drives view alive (unchanged from earlier v2).
 
+### New drive screen and Today header (2026-10-20)
+
+Spec and board: the full-bleed Ready, the push-to-start ignition, the REC plate and the camera peek.
+
+- **Simulator:** it reports no camera, so Ready shows "Drive can't find a camera on this device." on black with the ignition dimmed. The ignition-to-hold change, the REC plate and the peek can only be tried on a phone (or the Demo drive for the recording layout).
+- **Ready:** the camera fills the screen, the job sits on a sign plate, and the parking-camera aim rails sit on the road. Check that they read as an overlay, not lane paint. With the camera denied, the screen is black with Open Settings and no rails, from the very first frame (no fade on entry).
+- **Start:** the round blue ignition turns into the hold ring in place. Check that the hold track draws clockwise from 12 o'clock on the mounted phone; gauge arcs have shipped upside-down twice.
+- **Recording:** a solid red REC plate with the drive clock sits at the top centre, the row under the score shows distance only, and nothing blinks.
+- **Peek:** tap REC when stopped and the camera shows for 5 s, with a thin rule running down; tap again to close. While moving, the plate reads "Stop to peek" for 2 s instead. Right after stopping, GPS may still read the approach for up to 10 s. With no GPS (garage), the motion sensors decide, and their threshold is untuned. During a peek, Close and the hold ring can't be tapped.
+- **Today:** the title is just "Today", with no date. The avatar at the top right is a plain 34 pt disc with no ring and, on iOS 26, no glass bubble around it. Check it isn't clipped.
+
 ## App Group setup (widgets stay empty until this is done, same as the launch beta)
 
 The code side is done: `driveAppGroupID` is `group.com.venkatgunupuru.Driv`
