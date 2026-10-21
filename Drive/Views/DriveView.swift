@@ -93,8 +93,9 @@ struct DriveView: View {
     @State private var revealHeldWhileLocked: Bool? = nil
     @Environment(\.scenePhase) private var scenePhase
     /// Ready's camera check: Start is disabled when Drive can't record.
-    /// Refreshed on appear and whenever the app is active again.
-    @State private var cameraAccess: V2CameraAccess = .available
+    /// Seeded with the real state so the first frame is already right (no
+    /// open-then-close flash); refreshed on appear and on every return.
+    @State private var cameraAccess: V2CameraAccess = .current
     /// The capture ended without the hold (iOS stopped the camera, e.g. a
     /// thermal shutdown), and whether that was Drive leaving the screen.
     @State private var captureEndedEarly = false
@@ -316,7 +317,12 @@ struct DriveView: View {
             scenePhaseChanged(newPhase)
         }
         .onAppear {
-            cameraAccess = .current
+            // The first read lands unanimated: the HUD opens in its real
+            // Ready state instead of fading out of the seeded `.available`
+            // (guides on black, a dimming ignition). Later reads still fade.
+            var firstRead = Transaction()
+            firstRead.disablesAnimations = true
+            withTransaction(firstRead) { cameraAccess = .current }
             locationManager.requestPermission()
             aiEngine.onScoreUpdate = { score in
                 // Ignore any update that lands after the drive has ended, and
