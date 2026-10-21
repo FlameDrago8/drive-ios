@@ -112,10 +112,6 @@ struct DriveView: View {
     /// A peek tap while moving: the plate reads "Stop to peek" for 2 s instead.
     @State private var peekRefused = false
     @State private var peekRefusedToken = 0
-    /// Peek is a check at a stop (≈ 5 mph); faster, the tap only says so.
-    private static let peekMaxSpeedMS: Double = 2.2
-    /// No GPS fix for this long reads as stopped (10 m filter / 5 s < 2.2 m/s).
-    private static let peekStaleFixSeconds: TimeInterval = 5
 
     private var phase: HUDPhase {
         switch uploadStatus {
@@ -718,14 +714,12 @@ struct DriveView: View {
             return
         }
         guard phase == .recording, !showDiscardConfirm else { return }
-        // Median of recent GPS (refreshDrivingSpeed), -1 when unknown. That
-        // median freezes at a stop: the 10 m distance filter sends no new
-        // fixes, so it keeps reading the approach. No fix for 5 s means under
-        // 10 m in 5 s (< 2.2 m/s), so a stale reading counts as stopped, as in
-        // V2LiveDrive.isMoving. No fixes at all is unknown: peek allowed.
-        let lastFix = locationManager.snapshot().route.last
-        let stale = lastFix.map { Date().timeIntervalSince($0.timestamp) > Self.peekStaleFixSeconds } ?? true
-        guard stale || aiEngine.currentSpeedMS < Self.peekMaxSpeedMS else {
+        // Peek is a check at a stop (under 5 mph). Saved/Parked's motion test:
+        // a fresh GPS fix (last 10 s) over 5 mph, else the IMU, which covers
+        // lost GPS in tunnels and garages. (The engine's speed median freezes
+        // at a stop: the 10 m distance filter sends no new fixes.)
+        let moving = locationManager.snapshot()
+        guard !V2LiveDrive.isMoving(route: moving.route, samples: moving.samples) else {
             V2Haptics.play(.light)
             peekRefused = true
             peekRefusedToken &+= 1
