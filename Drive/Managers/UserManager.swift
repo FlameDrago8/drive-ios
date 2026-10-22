@@ -82,6 +82,15 @@ class UserManager: ObservableObject {
             completion(AccountDeletionError.needsRecentLogin)
             return
         }
+        // Apple-linked accounts need this session's Apple code to revoke the
+        // tokens (5.1.1(v)); without one, re-authenticate through the Apple
+        // sheet first (reauthProviderID prefers it), which provides it.
+        if !skipFreshnessCheck,
+           user.providerData.contains(where: { $0.providerID == "apple.com" }),
+           appleRevocation?.uid != user.uid {
+            completion(AccountDeletionError.needsRecentLogin)
+            return
+        }
         let uid = user.uid
         let db = Firestore.firestore()
         // Spent here either way: a code only ever revokes the account it
@@ -222,12 +231,19 @@ class UserManager: ObservableObject {
     // MARK: – Apple Sign-In
 
     func signInWithApple(completion: @escaping (Error?) -> Void) {
-        appleCredential { result, _ in
+        appleCredential { [weak self] result, code in
             switch result {
             case .failure(let error):
                 completion(error)
             case .success(let credential):
-                Auth.auth().signIn(with: credential) { _, error in completion(error) }
+                Auth.auth().signIn(with: credential) { authResult, error in
+                    // Kept for a deletion straight after sign-in (the code
+                    // lasts 5 minutes, longer than the 4-minute freshness).
+                    if error == nil, let uid = authResult?.user.uid, let code {
+                        self?.appleRevocation = (uid, code)
+                    }
+                    completion(error)
+                }
             }
         }
     }
@@ -303,10 +319,11 @@ class UserManager: ObservableObject {
     // MARK: – Re-authentication (needed before sensitive ops like deletion)
 
     /// Provider to re-auth with, favoring one-tap OAuth over a password prompt
-    /// when the account has several linked.
+    /// when the account has several linked. Apple first: its sheet also gives
+    /// the code that revokes the Apple tokens on deletion.
     var reauthProviderID: String? {
         let providers = Auth.auth().currentUser?.providerData.map(\.providerID) ?? []
-        for preferred in ["google.com", "apple.com", "password"] where providers.contains(preferred) {
+        for preferred in ["apple.com", "google.com", "password"] where providers.contains(preferred) {
             return preferred
         }
         return providers.first
