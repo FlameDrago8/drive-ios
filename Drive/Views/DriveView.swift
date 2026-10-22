@@ -266,6 +266,9 @@ struct DriveView: View {
                     // would land sideways.
                     if driveStorage.sessions.count == 3 {
                         V2Router.shared.pendingReviewPrompt = true
+                        // Kept on disk too: a held prompt (closed from Saved)
+                        // must survive the app being killed before it shows.
+                        UserDefaults.standard.set(true, forKey: V2UserKey.scoped("pendingReview"))
                     }
                 }
             }, onRecordingError: { error in

@@ -289,8 +289,10 @@ struct V2Root: View {
             showingEarned = true
             return
         }
-        if router.pendingReviewPrompt {
+        let reviewKey = V2UserKey.scoped("pendingReview")
+        if router.pendingReviewPrompt || UserDefaults.standard.bool(forKey: reviewKey) {
             router.pendingReviewPrompt = false
+            UserDefaults.standard.removeObject(forKey: reviewKey)
             requestReview()
         }
     }
@@ -326,7 +328,9 @@ struct V2Root: View {
     /// request is lost), once the watch found that drive parked, or on a
     /// return from the background after the watch is over (it gives up
     /// 10 min after the HUD closed). Never dropped: they wait for the next
-    /// return.
+    /// return. Deliberately not released by the watch giving up while the
+    /// app stays in front: the phone may still be on the mount, driving.
+    /// (Badges and the review flag are on disk, so a kill loses neither.)
     private func parkingHoldReleased() -> Bool {
         guard let hold = parkingHold else { return true }
         guard scenePhase == .active else { return false }
