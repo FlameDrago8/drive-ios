@@ -18,6 +18,11 @@ final class LocationManager: NSObject, ObservableObject, CLLocationManagerDelega
 
     // MARK: – Location
     private let clManager = CLLocationManager()
+    /// Appended on the main thread (CL delegate) but read and cleared by
+    /// snapshot() / stopAndFlush(), which the capture thread can call while
+    /// the HUD's 1 s Timer is still snapshotting. Only touch it under
+    /// `locationLock`, and never set `lastLocation` while holding it (NSLock
+    /// isn't recursive).
     private var route: [RoutePoint] = []
 
     // Written on the main thread (CL delegate) but read from the motion
@@ -46,7 +51,7 @@ final class LocationManager: NSObject, ObservableObject, CLLocationManagerDelega
     }
 
     func startTracking() {
-        route = []
+        locationLock.lock(); route = []; locationLock.unlock()
         lastLocation = nil
         sampleQueue.sync { samples = [] }
 
@@ -57,7 +62,11 @@ final class LocationManager: NSObject, ObservableObject, CLLocationManagerDelega
     /// Non-destructive snapshot of what's been collected so far, for live
     /// in-drive scoring. The final report uses stopAndFlush() instead.
     func snapshot() -> (route: [RoutePoint], samples: [SensorSample]) {
-        (route, sampleQueue.sync { samples })
+        // The lock is released before sampleQueue.sync, so the two never nest.
+        locationLock.lock()
+        let currentRoute = route
+        locationLock.unlock()
+        return (currentRoute, sampleQueue.sync { samples })
     }
 
     /// Powers down GPS + motion without touching the collected buffers.
@@ -77,10 +86,13 @@ final class LocationManager: NSObject, ObservableObject, CLLocationManagerDelega
         clManager.stopUpdatingLocation()
         motionManager.stopDeviceMotionUpdates()
 
-        let flushedRoute   = route
+        // Read and cleared in one hold, so no fix lands in between and is lost.
+        locationLock.lock()
+        let flushedRoute = route
+        route = []
+        locationLock.unlock()
         let flushedSamples = sampleQueue.sync { samples }
 
-        route = []
         lastLocation = nil
         sampleQueue.async { self.samples = [] }
 
@@ -100,7 +112,7 @@ final class LocationManager: NSObject, ObservableObject, CLLocationManagerDelega
             timestamp: loc.timestamp,
             accuracy:  loc.horizontalAccuracy
         )
-        route.append(pt)
+        locationLock.lock(); route.append(pt); locationLock.unlock()
     }
 
     // MARK: – CMMotion

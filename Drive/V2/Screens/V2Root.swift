@@ -9,6 +9,8 @@
 //  and the `drive://` URL scheme. After a drive it asks, upright and in this
 //  order: "Name this route?", Badge Earned, then the App Store review (the
 //  HUD is drawn rotated, so anything system-drawn over it appears sideways).
+//  A drive closed from Saved (saved while moving) holds all three until the
+//  car is known parked.
 //
 
 import SwiftUI
@@ -25,6 +27,8 @@ struct V2Root: View {
     @ObservedObject private var library = V2Library.shared
     @ObservedObject private var userManager = UserManager.shared
     @ObservedObject private var profile = ProfileManager.shared
+    /// Saved's parking watch, which outlives the HUD: it releases the held prompts.
+    @ObservedObject private var parkingWatch = V2ParkingWatch.shared
 
     /// Badges on the Badge Earned sheet right now (several page inside it).
     @State private var earned: [Badge] = []
@@ -45,6 +49,20 @@ struct V2Root: View {
     /// An account switch: re-check the device-wide alternate icon against the
     /// new account's badges once its drives have loaded.
     @State private var iconCheckPending = false
+
+    /// The HUD closed from Saved (§6.5: saved while moving, Parked never
+    /// played), so the driver may still be on the road: the post-drive
+    /// prompts wait for the parking watch.
+    @State private var parkingHold: ParkingHold?
+
+    private struct ParkingHold {
+        let sessionID: UUID
+        /// When the HUD closed; the watch gives up `maxSecondsAfterHUD` later.
+        let since: Date
+        /// The app has been in the background since the hold was last
+        /// checked, so a check in front follows a return.
+        var wasAway = false
+    }
 
     @Environment(\.requestReview) private var requestReview
     @Environment(\.scenePhase) private var scenePhase
@@ -113,6 +131,9 @@ struct V2Root: View {
         // §6.9: the Parked Live Activity goes when the app opens.
         .onChange(of: scenePhase) { _, phase in
             if phase == .active, !router.isDriving { V2LiveActivityJanitor.endParkedOnOpen() }
+            // Held prompts: a return from the background may release them.
+            if phase == .background, parkingHold != nil { parkingHold?.wasAway = true }
+            if phase == .active, parkingHold != nil { badgeCheck &+= 1 }
         }
         .task(id: iconCheckKey) {
             await recheckAppIcon()
@@ -120,7 +141,13 @@ struct V2Root: View {
         // Badge Earned timing (§4.13): the first time the app is in front after
         // Parked, never over the HUD or another sheet.
         .onChange(of: router.isDriving) { wasDriving, isDriving in
-            if wasDriving && !isDriving { badgeCheck &+= 1 }
+            if wasDriving && !isDriving {
+                holdPromptsIfStillMoving()
+                badgeCheck &+= 1
+            }
+        }
+        .onChange(of: parkingWatch.lastParked) { _, parked in
+            if parked != nil, parkingHold != nil { badgeCheck &+= 1 }
         }
         .onChange(of: router.parkedDismissedAt) { _, dismissedAt in
             if dismissedAt != nil { badgeCheck &+= 1 }
@@ -168,6 +195,7 @@ struct V2Root: View {
         earned = []
         showingEarned = false
         showingNameAlert = false
+        parkingHold = nil
         // The last account's drive must not post a Parked notification.
         V2ParkingWatch.shared.cancel()
         noteSignedInAccount()
@@ -231,13 +259,16 @@ struct V2Root: View {
 
     /// After a drive, one at a time once the HUD has closed: "Name this
     /// route?", then Badge Earned, then the App Store review (3rd drive).
+    /// Closed from Saved: none of them until the car is known parked.
     @MainActor
     private func presentNewBadgesIfAllowed() async {
-        // Let a dismissing cover or sheet finish; a newer trigger cancels this one.
+        // Let a dismissing cover or sheet finish; a newer trigger cancels this
+        // one. (It also lets a parking watch resumed by the return wind up.)
         try? await Task.sleep(for: .milliseconds(600))
         guard !Task.isCancelled else { return }
         guard !splashVisible, !router.isDriving, !router.showingProfile,
               !showingEarned, earned.isEmpty, !showingNameAlert else { return }
+        guard parkingHoldReleased() else { return }
         if let id = router.pendingRouteNaming {
             router.pendingRouteNaming = nil
             if V2RouteNaming.shouldAsk(id) {
@@ -262,6 +293,54 @@ struct V2Root: View {
             router.pendingReviewPrompt = false
             requestReview()
         }
+    }
+
+    /// The HUD just closed. Saved's watch still running: it closed from
+    /// Saved, so hold the prompts for that drive (an unused HUD reopened over
+    /// it keeps the first close's clock). Closed from Parked: the car is
+    /// parked, so nothing is held. Any other close keeps a hold, and a trip
+    /// away during that HUD doesn't count as the return.
+    private func holdPromptsIfStillMoving() {
+        if let id = parkingWatch.sessionID {
+            if parkingHold?.sessionID != id {
+                parkingHold = ParkingHold(sessionID: id, since: Date())
+            }
+        } else if parkingHold != nil {
+            if closedFromParked {
+                parkingHold = nil
+            } else {
+                parkingHold?.wasAway = false
+            }
+        }
+    }
+
+    /// DriveView's finish() (Done or See report after a save) stamps
+    /// parkedDismissedAt in the same call that closes the HUD. With no watch
+    /// running, that close was from Parked (Saved's watch outlives Done).
+    private var closedFromParked: Bool {
+        guard let dismissedAt = router.parkedDismissedAt else { return false }
+        return Date().timeIntervalSince(dismissedAt) < 2
+    }
+
+    /// Held prompts go, always with the app in front (an unseen review
+    /// request is lost), once the watch found that drive parked, or on a
+    /// return from the background after the watch is over (it gives up
+    /// 10 min after the HUD closed). Never dropped: they wait for the next
+    /// return.
+    private func parkingHoldReleased() -> Bool {
+        guard let hold = parkingHold else { return true }
+        guard scenePhase == .active else { return false }
+        let parked = parkingWatch.lastParked?.sessionID == hold.sessionID
+        let watchOver = parkingWatch.sessionID != hold.sessionID
+            || Date().timeIntervalSince(hold.since) >= V2ParkingWatch.maxSecondsAfterHUD
+        if parked || (hold.wasAway && watchOver) {
+            parkingHold = nil
+            return true
+        }
+        // Back while the watch still runs: it may yet find the car parked;
+        // if it gives up instead, the next return releases them.
+        if hold.wasAway { parkingHold?.wasAway = false }
+        return false
     }
 
     private func badgesDismissed() {

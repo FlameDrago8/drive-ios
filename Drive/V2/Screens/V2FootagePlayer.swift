@@ -92,7 +92,7 @@ final class V2FootagePlayer: ObservableObject {
 
     /// Rest: paused 3 s before `offset`, so AVKit's play starts where the car is.
     func cue(at offset: TimeInterval) {
-        guard ready, let player else {
+        guard seekable, let player else {
             restOffset = offset
             return
         }
@@ -114,7 +114,7 @@ final class V2FootagePlayer: ObservableObject {
     func jump(to offset: TimeInterval) {
         atRest = false
         lift()
-        guard ready, let player else {
+        guard seekable, let player else {
             pending = .jump(offset)
             return
         }
@@ -127,7 +127,7 @@ final class V2FootagePlayer: ObservableObject {
     func scrub(to offset: TimeInterval) {
         atRest = false
         lift()
-        guard ready, let player else {
+        guard seekable, let player else {
             pending = .scrub(offset)
             return
         }
@@ -159,6 +159,20 @@ final class V2FootagePlayer: ObservableObject {
         CMTime(seconds: max(0, seconds.isFinite ? seconds : 0), preferredTimescale: 600)
     }
 
+    /// AVFoundation throws on a seek unless the item is readyToPlay. `ready`
+    /// trails the item by the KVO hop to main, so ask the item too.
+    private var seekable: Bool {
+        ready && player?.currentItem?.status == .readyToPlay
+    }
+
+    /// The item failed to load or to keep playing: nothing may seek it again
+    /// (a waiting request survives for the next URL in the chain).
+    private func markFailed() {
+        ready = false
+        chaseTarget = nil
+        failed = true
+    }
+
     private func teardown() {
         cancellables.removeAll()
         player?.pause()
@@ -186,7 +200,7 @@ final class V2FootagePlayer: ObservableObject {
             .sink { [weak self] _ in
                 MainActor.assumeIsolated {
                     guard let self else { return }
-                    self.failed = true
+                    self.markFailed()
                 }
             }
             .store(in: &cancellables)
@@ -227,7 +241,7 @@ final class V2FootagePlayer: ObservableObject {
                 cue(at: rest)
             }
         case .failed:
-            failed = true
+            markFailed()
         case .unknown:
             break
         @unknown default:
@@ -262,7 +276,7 @@ final class V2FootagePlayer: ObservableObject {
     }
 
     private func chase() {
-        guard let player, let target = chaseTarget else {
+        guard seekable, let player, let target = chaseTarget else {
             chasing = false
             return
         }

@@ -31,6 +31,12 @@ class UserManager: ObservableObject {
 
     private var authHandle: AuthStateDidChangeListenerHandle?
     private static var appleCoordinator: AppleSignInCoordinator?
+    /// The Apple sheet's one-time authorization code from the latest Apple
+    /// re-authentication, and the account it confirmed. `deleteAccount`
+    /// spends it to revoke that account's Sign in with Apple tokens
+    /// (Guideline 5.1.1(v)); Apple honours a code once, for about 5 minutes.
+    /// Main thread only.
+    private var appleRevocation: (uid: String, code: String)?
 
     private init() {
         self.user = Auth.auth().currentUser
@@ -78,10 +84,29 @@ class UserManager: ObservableObject {
         }
         let uid = user.uid
         let db = Firestore.firestore()
+        // Spent here either way: a code only ever revokes the account it
+        // re-authenticated.
+        let appleCode = appleRevocation?.uid == uid ? appleRevocation?.code : nil
+        appleRevocation = nil
 
         // Clean up the user's data across collections BEFORE deleting the Auth
         // account — security rules require the user to still be authenticated.
         Task {
+            // Sign in with Apple: revoke the app's Apple tokens first, while
+            // the code is fresh (the cleanup below can take a while) and the
+            // user can still authenticate the request. Firebase never answers
+            // when nobody is signed in, hence the check. A failure never
+            // blocks the deletion.
+            if let appleCode, Auth.auth().currentUser != nil {
+                do {
+                    try await Auth.auth().revokeToken(withAuthorizationCode: appleCode)
+                } catch {
+                    #if DEBUG
+                    print("UserManager: Apple token revocation failed: \(error)")
+                    #endif
+                }
+            }
+
             // Drives subcollection (not auto-removed with the parent doc)
             if let drives = try? await db.collection("users").document(uid)
                 .collection("drives").getDocuments() {
@@ -104,7 +129,7 @@ class UserManager: ObservableObject {
             // The user document itself
             try? await db.collection("users").document(uid).delete()
 
-            // On-device per-user caches
+            // On-device per-user caches (this task runs off the main thread)
             Self.removeLocalUserFiles(uid: uid)
 
             // Finally the Auth account. Can fail with `requiresRecentLogin` if the
@@ -112,7 +137,13 @@ class UserManager: ObservableObject {
             // fresh sign-in and retry.
             do {
                 try await user.delete()
-                await MainActor.run { self.user = nil; completion(nil) }
+                await MainActor.run {
+                    self.user = nil
+                    // After `user` is nil, so nothing still on screen can
+                    // write one back under this uid.
+                    Self.removeUserDefaults(uid: uid)
+                    completion(nil)
+                }
             } catch {
                 let nsError = error as NSError
                 let needsReauth = nsError.domain == AuthErrorDomain
@@ -124,13 +155,44 @@ class UserManager: ObservableObject {
         }
     }
 
-    /// Removes the signed-out user's local drive cache and avatar so nothing
-    /// lingers on disk after account deletion.
+    /// Removes the signed-out user's local drive cache, their drives' movie
+    /// files and their avatar so nothing lingers on disk after account
+    /// deletion. Movie names carry no uid, so they're found through the
+    /// cache before it goes: this account's drives only. Off the main thread.
     private static func removeLocalUserFiles(uid: String) {
-        guard let docs = FileManager.default
+        let fileManager = FileManager.default
+        guard let docs = fileManager
             .urls(for: .documentDirectory, in: .userDomainMask).first else { return }
-        try? FileManager.default.removeItem(at: docs.appendingPathComponent("drives-\(uid).json"))
-        try? FileManager.default.removeItem(at: docs.appendingPathComponent("profile_avatar_\(uid).jpg"))
+        let cache = docs.appendingPathComponent("drives-\(uid).json")
+        // Re-anchored by filename like `DriveSession.resolvedVideoURL` (the
+        // container path changes on reinstall); only DriveView's drive_*.mov.
+        if let data = try? Data(contentsOf: cache),
+           let drives = try? JSONDecoder().decode([CachedDriveVideo].self, from: data) {
+            for name in drives.compactMap({ $0.videoURL?.lastPathComponent })
+            where name.hasPrefix("drive_") && name.hasSuffix(".mov") {
+                try? fileManager.removeItem(at: docs.appendingPathComponent(name))
+            }
+        }
+        try? fileManager.removeItem(at: cache)
+        try? fileManager.removeItem(at: docs.appendingPathComponent("profile_avatar_\(uid).jpg"))
+    }
+
+    /// The one field of a cached drive (`drives-<uid>.json`, DriveStorage's
+    /// JSON of `DriveSession`) that account deletion needs.
+    private struct CachedDriveVideo: Decodable {
+        let videoURL: URL?
+    }
+
+    /// Every per-user v2 key (`V2UserKey.scoped(_:)` builds
+    /// "v2_<name>_<uid>"): this account's only.
+    private static func removeUserDefaults(uid: String) {
+        guard !uid.isEmpty else { return }
+        let defaults = UserDefaults.standard
+        let suffix = "_\(uid)"
+        for key in defaults.dictionaryRepresentation().keys
+        where key.hasPrefix("v2_") && key.hasSuffix(suffix) {
+            defaults.removeObject(forKey: key)
+        }
     }
 
     func reloadUser(completion: @escaping () -> Void) {
@@ -160,7 +222,7 @@ class UserManager: ObservableObject {
     // MARK: – Apple Sign-In
 
     func signInWithApple(completion: @escaping (Error?) -> Void) {
-        appleCredential { result in
+        appleCredential { result, _ in
             switch result {
             case .failure(let error):
                 completion(error)
@@ -171,13 +233,14 @@ class UserManager: ObservableObject {
     }
 
     /// Runs the Apple sign-in sheet and returns a Firebase credential, usable
-    /// for both first sign-in and re-authentication.
-    private func appleCredential(completion: @escaping (Result<AuthCredential, Error>) -> Void) {
+    /// for both first sign-in and re-authentication, with the sheet's
+    /// one-time authorization code (for revoking the tokens on deletion).
+    private func appleCredential(completion: @escaping (Result<AuthCredential, Error>, String?) -> Void) {
         let coordinator = AppleSignInCoordinator()
         UserManager.appleCoordinator = coordinator
-        coordinator.start { result in
+        coordinator.start { result, authorizationCode in
             UserManager.appleCoordinator = nil
-            completion(result)
+            completion(result, authorizationCode)
         }
     }
 
@@ -267,7 +330,21 @@ class UserManager: ObservableObject {
     }
 
     func reauthenticateWithApple(completion: @escaping (Error?) -> Void) {
-        reauthenticate(acquire: appleCredential, completion: completion)
+        let uid = Auth.auth().currentUser?.uid
+        var authorizationCode: String?
+        reauthenticate(acquire: { deliver in
+            self.appleCredential { result, code in
+                authorizationCode = code
+                deliver(result)
+            }
+        }, completion: { [weak self] error in
+            // Confirmed: deleteAccount revokes this account's Apple tokens
+            // with the sheet's code before deleting it.
+            if error == nil, let uid, let authorizationCode {
+                self?.appleRevocation = (uid, authorizationCode)
+            }
+            completion(error)
+        })
     }
 
     private func reauthenticate(
@@ -309,10 +386,11 @@ private class AppleSignInCoordinator: NSObject,
     ASAuthorizationControllerDelegate,
     ASAuthorizationControllerPresentationContextProviding
 {
-    var completion: ((Result<AuthCredential, Error>) -> Void)?
+    /// The credential, plus the sheet's authorization code when Apple gave one.
+    var completion: ((Result<AuthCredential, Error>, String?) -> Void)?
     private var currentNonce: String?
 
-    func start(completion: @escaping (Result<AuthCredential, Error>) -> Void) {
+    func start(completion: @escaping (Result<AuthCredential, Error>, String?) -> Void) {
         self.completion = completion
         let nonce = randomNonceString()
         currentNonce = nonce
@@ -337,19 +415,21 @@ private class AppleSignInCoordinator: NSObject,
         else {
             completion?(.failure(NSError(domain: "AppleSignIn", code: -1, userInfo: [
                 NSLocalizedDescriptionKey: "Could not read Apple credential."
-            ])))
+            ])), nil)
             return
         }
+        let authorizationCode = appleCredential.authorizationCode
+            .flatMap { String(data: $0, encoding: .utf8) }
         completion?(.success(OAuthProvider.appleCredential(
             withIDToken: idToken,
             rawNonce: nonce,
             fullName: appleCredential.fullName
-        )))
+        )), authorizationCode)
     }
 
     func authorizationController(controller: ASAuthorizationController,
                                  didCompleteWithError error: Error) {
-        completion?(.failure(error))
+        completion?(.failure(error), nil)
     }
 
     func presentationAnchor(for controller: ASAuthorizationController) -> ASPresentationAnchor {

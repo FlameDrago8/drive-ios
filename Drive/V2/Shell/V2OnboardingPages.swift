@@ -333,6 +333,15 @@ struct V2OnboardingPermissionsPage: View {
                     .font(V2Type.footnote)
                     .foregroundStyle(V2.label2)
                     .padding(.horizontal, 4)
+
+                // v1's "Mount your phone" step, as one line. Coaching copy,
+                // so `label` (colour rule 9).
+                Text(verbatim: "Mount your phone before you move, and don't touch it while you drive.")
+                    .font(V2Type.subhead)
+                    .foregroundStyle(V2.label)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .padding(.horizontal, 4)
+                    .padding(.top, 12)
             }
         }
     }
