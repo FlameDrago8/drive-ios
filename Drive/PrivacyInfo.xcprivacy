@@ -21,6 +21,8 @@
             <array>
                 <!-- CA92.1: Read/write information the app is responsible for (user profile + preferences) -->
                 <string>CA92.1</string>
+                <!-- 1C8F.1: Read/write the App Group suite shared with the widget extension (WidgetDataStore → DriveWidgetHome) -->
+                <string>1C8F.1</string>
             </array>
         </dict>
 
@@ -72,6 +74,20 @@
         <dict>
             <key>NSPrivacyCollectedDataType</key>
             <string>NSPrivacyCollectedDataTypeName</string>
+            <key>NSPrivacyCollectedDataTypeLinked</key>
+            <true/>
+            <key>NSPrivacyCollectedDataTypeTracking</key>
+            <false/>
+            <key>NSPrivacyCollectedDataTypePurposes</key>
+            <array>
+                <string>NSPrivacyCollectedDataTypePurposeAppFunctionality</string>
+            </array>
+        </dict>
+
+        <!-- User ID — the Firebase Auth uid keys every Firestore document; the Game Center player id is mapped to it in gc_users -->
+        <dict>
+            <key>NSPrivacyCollectedDataType</key>
+            <string>NSPrivacyCollectedDataTypeUserID</string>
             <key>NSPrivacyCollectedDataTypeLinked</key>
             <true/>
             <key>NSPrivacyCollectedDataTypeTracking</key>

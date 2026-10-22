@@ -1,9 +1,14 @@
 # Drive v2 "Road Furniture": notes for the next Xcode build
 
 Branch `claude/redesign-road-furniture`. The pre-redesign app is preserved on the
-`launch-beta` branch (same commit as `main` and the `v1.0` tag, b7692ba). Your last build
-was e7eb1a0. Nothing written since then has been compiled, because the environment that
-wrote it has no Swift compiler:
+`launch-beta` branch (same commit as `main` and the `v1.0` tag, b7692ba).
+
+**This branch has never been compiled.** The environment that wrote it has no Swift
+compiler, and git has no commit that fixes errors from an Xcode build of it. Earlier
+versions of these notes said your last build was e7eb1a0 and that everything up to it
+compiled; nothing in git backs that up. Plan for all of it to compile for the first time:
+77 files and about +28k lines in `Drive`, `DriveWidget` and `DriveTests` since b7692ba,
+in Release as well as Debug. The newest work:
 
 - **Phase 3:** sign-in, verify email, splash, onboarding, the Profile finish, notifications,
   the Saved → Parked watch, the Report and Progress finish, app icons, CarPlay.
@@ -11,6 +16,63 @@ wrote it has no Swift compiler:
   capture interruptions and camera access, route identity, "Name this route?" after the HUD
   closes, Routes this week, notification and widget taps, quiet hours, the App Group, the
   new car, and the DriveTests.
+- **The new drive screen and Today header (210d28c onward):** the full-bleed Ready,
+  push-to-start, the REC plate and the camera peek.
+
+## Release 1.1 checklist
+
+From the 1.1 release audit (2026-10-22). Each step is yours, in this order.
+
+1. **Version.** The project now says **1.1 (2)** on both Drive and DriveWidgetExtension.
+   The two must match or the upload fails (ITMS-90473). If TestFlight already has a build 2
+   or higher, raise Build to one above it on both targets.
+2. **Compile.** `df -h` first (see "Before you build"). Clean build of both targets on the
+   iPhone 17 Pro Max simulator, using the table below. Search the warnings for "nearly
+   matches optional requirement" (row 12); other Swift 6 warnings are noise. Then ⌘U, and
+   one iPad simulator pass (the app is universal and nothing in Drive/V2 adapts to size
+   class): Today, the rotated HUD, Report, the Profile sheets and the share card.
+3. **Small fixes, after the first clean compile.** Lock `LocationManager.route` with
+   `locationLock` (the 1 s Timer reads it while an interrupted capture flushes it); set
+   `ready = false` wherever the footage player sets `failed = true`; optionally hold the
+   post-drive prompts until the car is parked. The Photo Library key and both privacy
+   manifests are already in. Rebuild and commit.
+4. **App Group.** Register `group.com.venkatgunupuru.Driv` for both App IDs before the phone
+   build (see "App Group setup"). A missing group fails signing; a mismatched one silently
+   leaves the widgets on "No drives yet".
+5. **Phone.** The device checks below, plus: lock the phone, take a call and spend a few
+   minutes in Maps mid-drive, then compare the saved minutes with the video; discard
+   mid-drive; Share → Save Image; Continue with Google and Sign in with Apple; delete a
+   throwaway account.
+6. **Archive** (Release) on your Mac, since the primary icon `Vector (6).png` exists only
+   there; check it in Organizer. Validate, upload, then an internal TestFlight round of real
+   drives over a few days. Watch the Organizer crash logs: Release has never run.
+7. **Footage upload: decide.** The Privacy Policy says drive video is never uploaded, but
+   `DriveSession.uploadFootage` and `retryPendingUploads` send a Wi-Fi copy to Firebase
+   Storage, and the privacy manifest declares video as collected. Either (a) keep the backup,
+   rewrite policy §1.2 and declare Photos or Videos in App Privacy, or (b) compile the upload
+   out and drop the manifest's video entry.
+8. **Website.** On www.velantisco.com/privacy cover footage (step 7), driving-school sharing,
+   the map tiles (tiles.openfreemap.org), vehicle details being synced and the post-drive
+   parked check, and update the Effective Date.
+9. **App Store Connect.**
+   - Version 1.1 with the tested build. Export compliance is pre-answered.
+   - App Privacy: Name, Email, Precise Location, User ID, Photos or Videos (if uploads
+     stay), Other User Content (route names), Other Data (scores, car details), motion
+     samples (not linked). All App Functionality, none for tracking.
+   - New screenshots, because every screen changed: 6.9" iPhone (1320×2868) and 13" iPad
+     (2064×2752), using the Demo drive for HUD shots. Re-record any App Preview, and update
+     the description, promotional text and What's New. If the widget target stays at iOS
+     26.1, What's New should say widgets need it.
+   - App Review Information: a demo account that still signs in and is verified (ideally
+     with 3+ real drives, a named route and a badge). In the notes: Profile → Try a demo
+     drive for a reviewer without a car, "Stop to peek" while moving, the school join code,
+     no in-app purchases, local notifications only.
+   - Manual release with Phased Release on. Submit.
+10. **Git.** Open the PR into `main` and merge with `--ff-only` or a merge commit, never
+    squash or rebase (these notes cite hashes). Put an annotated `v1.1` tag on the archived
+    commit and push it.
+
+## What's on the branch
 
 The checks that could run here are clean:
 
@@ -19,7 +81,7 @@ The checks that could run here are clean:
 - `scripts/v2-lint.sh` is clean (53 files).
 - No two .swift files under `Drive/` share a basename, and every type and top-level name
   is declared once per target.
-- `Info.plist` and both `.entitlements` files parse.
+- `Info.plist`, both `.entitlements` files and both `PrivacyInfo.xcprivacy` files parse.
 
 Backend parity: nothing below changed against the launch beta (b7692ba):
 
@@ -81,8 +143,9 @@ still compiled into the app, but nothing uses them. `OnboardingPermissions` stil
 
 ## Where a compile error is most likely (check these first)
 
-Everything up to your e7eb1a0 build compiled. Nothing after it has. Rows 1–11 are Phase 3
-(line numbers refreshed); rows 12–23 are the finish wave.
+None of the branch has been compiled (see the top of this file), so an error can come from
+any file; these are the likeliest. Rows 1–11 are Phase 3; rows 12–23 are the finish wave.
+Line numbers are current at 8d49cb8.
 
 | # | Where | Risk | If it fails |
 |---|---|---|---|
@@ -96,9 +159,9 @@ Everything up to your e7eb1a0 build compiled. Nothing after it has. Rows 1–11 
 | 8 | `DriveWidget/DriveWidgetLiveActivity.swift:149` (`.supplementalActivityFamilies([.small])`) and `:158` (`@Environment(\.activityFamily)`) | iOS 18 WidgetKit API. The widget target is iOS 26.1. | Should be fine. Check that every widget file imports what it uses (MEMBER_IMPORT_VISIBILITY). |
 | 9 | `Drive/V2/Screens/V2AppIcons.swift:142`: `try await UIApplication.shared.setAlternateIconName(_:)` | The async form of the completion-handler API. | Use the completion-handler form inside `withCheckedContinuation`. |
 | 10 | `Drive/V2/Screens/V2ProgressView.swift:692` and `:714` (LICENSE tab: `@ViewBuilder` labels inside `AxisValueLabel`) | Swift Charts builders. | Inline the label view. |
-| 11 | `Drive/Views/DriveView.swift:878` (the 1 s `Timer`) | The Timer block is `@Sendable` and calls View members, as in the beta and your last build. | Expect warnings only. |
+| 11 | `Drive/Views/DriveView.swift:1116` (the 1 s `Timer` in `startTicker`) | The Timer block is `@Sendable` and calls View members, as in the beta. | Expect warnings only. |
 | 12 | `Drive/Managers/NotificationManager.swift:482` (`willPresent`) and `:506` (`didReceive`) | `nonisolated` delegate methods on a `@MainActor` class. The completion handler is captured into `DispatchQueue.main.async`, so a Sendable warning is expected. The real risk is a **"nearly matches optional requirement"** warning: then iOS never calls the method, and no tap is routed. | Apply Xcode's fix-it so the signature matches the SDK exactly. If `nonisolated` is rejected, conform with `extension NotificationManager: @preconcurrency UNUserNotificationCenterDelegate`. |
-| 13 | `Drive/Views/DriveView.swift:136`, `:170`, `:183` and `:212`: `DispatchQueue.main.async { advanceAnalysis(…) }` from the background evaluation closure. `advanceAnalysis` (`:694`) is `@MainActor`. | Same rule as row 1. The beta's `currentScore = …` in the same block relies on it. | Use `Task { @MainActor in advanceAnalysis(to: …) }`. |
+| 13 | `Drive/Views/DriveView.swift:149`, `:183`, `:196` and `:225`: `DispatchQueue.main.async { advanceAnalysis(…) }` from the background evaluation closure. `advanceAnalysis` (`:894`) is `@MainActor`. | Same rule as row 1. The beta's `currentScore = …` in the same block relies on it. | Use `Task { @MainActor in advanceAnalysis(to: …) }`. |
 | 14 | `Drive/Views/CameraView.swift:64` (`static func dismantleUIView(_:coordinator:)`), `:232` (`AVErrorRecordingSuccessfullyFinishedKey`) and `:279` (`Task { @MainActor in completion(granted) }` inside `requestAccess`'s `@Sendable` handler) | A Sendable warning at `:279` is expected. | If `:279` is an error, use `DispatchQueue.main.async { completion(granted) }`. |
 | 15 | `Drive/V2/Screens/V2Root.swift:92`: the "Name this route?" `.alert` with a `TextField`, a `ForEach` of up to 3 buttons, then Save and "Not now" | Alert actions accept `ForEach` (iOS 16+), so it should compile. It needs one visual check (see Parked below). | Replace the `ForEach` with three `if let` buttons. |
 | 16 | `Drive/V2/Screens/V2ProgressView.swift:636-649` (trend chart: `.chartXSelection`, `.chartGesture` with `SpatialTapGesture` → `proxy.selectXValue(at:)`, and an adjustable accessibility action) | The modifier chain is longer now, so watch the type-check time. All of these are iOS 17 APIs. | Move the chart into a computed sub-view. |
@@ -117,16 +180,16 @@ Fixed in review before you build:
   - A discarded drive could be saved. After "Discard" mid-drive the camera kept recording with no UI, and iOS's later interruption delivered it as a finished drive. `CameraView.dismantleUIView` now stops it and deletes the movie.
   - `willPresent` never applied the "Notification Center only while driving" rule, because iOS calls it off the main thread.
   - The week routes card drew v1's blurred glow under each route.
-  - Two Drive Live Activities could share the Lock Screen when a second drive started within the first one's 15-minute Parked summary. `startDrive` now clears ended ones (`DriveView.swift:602`).
+  - Two Drive Live Activities could share the Lock Screen when a second drive started within the first one's 15-minute Parked summary. `startDrive` now clears ended ones (`DriveView.swift:801`).
   - The Report's rename alert now says "It'll be Route N." or "That's Route N.", as Drives and Parked do.
   - The Analysing car now also moves during the evaluation (the `progress` callback above).
   - Two long expressions were split to keep type-check time down: `V2RoutesWeek.swift:61` and `V2ReportSubviews.swift:592`.
 
 The only iOS 26 APIs in the app target are behind `#available`:
 
-- `V2TodayView.swift:600` (`navigationSubtitle`)
-- `V2HUDViews.swift:150` (`glassEffect`)
-- `V2BadgesView.swift:748` (`glassEffect`)
+- `V2BadgesView.swift:747-748` (`glassEffect` on the sheet close button)
+- `V2TodayView.swift:581-584` (`sharedBackgroundVisibility(.hidden)` on the avatar's toolbar item)
+- v1's `LeaderboardView.swift:146-156` (`GlassEffectContainer` and `glassEffect`)
 
 The finish wave adds no iOS 26 API. The newest it uses is `onScrollVisibilityChange` (iOS 18), at `V2ProgressView.swift:55`.
 
@@ -191,7 +254,7 @@ Swift 6 concurrency warnings are expected throughout (the app is in Swift 5 mode
   - The splash and launch screen are black in both modes.
   - Onboarding P5: the keyboard over the name field, and swiping pages with the keyboard up.
   - Permissions refresh after a trip to Settings.
-- **iOS 26 look**: the floating tab bar, the Today large title with the date subtitle, and the glass close buttons. Also check the iOS 18 fallbacks.
+- **iOS 26 look**: the floating tab bar, the Today avatar with no glass bubble, and the glass close buttons. Also check the iOS 18 fallbacks.
 - **Reduce Motion and light mode**: run through Today, the Report, Parked and onboarding with each.
 - **`drive://start` while the first-run demo is open**: make sure the HUD actually appears.
 
@@ -203,7 +266,7 @@ Swift 6 concurrency warnings are expected throughout (the app is in Swift 5 mode
   - This relies on three things only a device shows: the interrupted movie arrives with `AVErrorRecordingSuccessfullyFinishedKey` set (if not, the drive ends as an error, as in the beta); SwiftUI runs `onChange(of: phase)` and `updateUIView` in the background (if not, the parking watch starts when you come back); and the evaluation and save fit in iOS's ~30 s background window (if not, a long drive finishes when you return; nothing is lost).
 - **Discard mid-drive** (X, then Discard): the camera indicator goes off at once, and no drive appears in Drives or Firestore, even if you lock the phone straight after. An account switch mid-drive also drops the recording now.
 - **Hold to end, then lock the phone at once**: Drive now asks iOS for the short background window (the beta had none), so the movie finalises and the drive saves while locked. The save lands on Saved and the Parked reveal waits for you: the parking watch posts the Parked notification, and the reveal plays when you come back. Unlock before the save lands and it plays as normal. Check: hold, lock immediately, wait a minute, unlock: the drive is in Drives and the reveal plays.
-- **The 10 s "no video" watchdog** (`DriveView.swift:291`): if the movie takes more than 10 s to finish writing after the hold (a drive over an hour, or a hot phone), the HUD shows "Couldn't record this drive." for a moment, then Analysing and Saved/Parked. The drive saves, but the Parked state never reaches the Live Activity. Time the finish once on a long drive.
+- **The 10 s "no video" watchdog** (`DriveView.swift:302`): if the movie takes more than 10 s to finish writing after the hold (a drive over an hour, or a hot phone), the HUD shows "Couldn't record this drive." for a moment, then Analysing and Saved/Parked. The drive saves, but the Parked state never reaches the Live Activity. Time the finish once on a long drive.
 - **Camera access**:
   - Never asked: the iOS prompt probably appears when the HUD opens (the camera input is created then, as in the beta), not on Start. After Allow, Start enables. Ready re-checks when the app is active again.
   - Don't Allow (or restricted): Start is disabled, Ready says "Drive needs the camera to see the road." and offers Open Settings. Coming back from Settings with access on enables Start.
@@ -215,7 +278,7 @@ Swift 6 concurrency warnings are expected throughout (the app is in Swift 5 mode
 
 **Parked**
 - **The reveal**: the bars rise up from the lane line (not down), and the numbered markers and the P plate STAMP as the car passes. The swap to the Canvas strip at settle shouldn't jump, and F1 should line up with Analysing and Saved.
-- **The hand-off**: the HUD strip is removed with no animation (`DriveView.swift:371`, `.transaction`). If a fade or a dip shows as Parked takes over, that's the line.
+- **The hand-off**: the HUD strip is removed with no animation (`DriveView.swift:486`, `.transaction`). If a fade or a dip shows as Parked takes over, that's the line.
 - **Tap to skip**: a 150 ms crossfade to the end. **Reduce Motion**: the final state with a 200 ms fade and the `land` haptic; the car doesn't slide.
 - **"Name this route?"** (`V2Root.swift:92`), asked after the HUD closes:
   - It and its keyboard appear upright, with all of its parts visible: up to 3 one-tap "Name (Route N)" buttons (most-driven routes first, ties to the most recent), the text field, Save and "Not now".
