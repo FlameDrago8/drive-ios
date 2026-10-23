@@ -85,6 +85,7 @@ private struct V2ReportContent: View {
     @ObservedObject private var seekBus = V2ReportSeekBus.shared
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Environment(\.colorScheme) private var colorScheme
+    @Environment(\.dismiss) private var dismiss
 
     // Reveal (§4.16): captured when the Report first opens this drive.
     @State private var heroRevealed: Bool
@@ -104,6 +105,7 @@ private struct V2ReportContent: View {
     @State private var renaming = false
     @State private var draftName = ""
     @State private var showingMap = false
+    @State private var confirmingDelete = false
     @State private var deepLinkDone = false
     // Teach once (§4.3): the nudge request and the popover.
     @State private var teachToken = 0
@@ -184,6 +186,12 @@ private struct V2ReportContent: View {
         } message: {
             Text(verbatim: renameMessage)
         }
+        .confirmationDialog("Delete this drive?", isPresented: $confirmingDelete, titleVisibility: .visible) {
+            Button("Delete drive", role: .destructive) { deleteDrive() }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("Its score, route and footage on this iPhone are removed. This can't be undone.")
+        }
         .sheet(isPresented: $showingMap) {
             V2RouteMapSheet(route: m.session.route, title: m.facts.name)
                 .v2AppScheme()
@@ -234,6 +242,9 @@ private struct V2ReportContent: View {
 
             scoreSection(m.facts)
                 .padding(.top, 24)
+
+            // Only on an unusual drive (V2ReportHonesty.swift); nothing otherwise.
+            V2ReportHonestyLine(route: m.session.route, start: m.facts.start, end: m.facts.end)
         }
     }
 
@@ -565,6 +576,12 @@ private struct V2ReportContent: View {
                         Label("Open map", systemImage: "map")
                     }
                 }
+                Divider()
+                Button(role: .destructive) {
+                    confirmingDelete = true
+                } label: {
+                    Label("Delete drive", systemImage: "trash")
+                }
             } label: {
                 Image(systemName: "ellipsis")
                     .fontWeight(.semibold)
@@ -594,6 +611,18 @@ private struct V2ReportContent: View {
             UserDefaults.standard.set(sessionID.uuidString, forKey: V2UserKey.scoped("routeJustNamed"))
         }
         DriveStorage.shared.updateRouteTag(id: sessionID, tag: resolved.name)
+    }
+
+    /// Pops back to the list first and deletes once the pop has settled, so
+    /// the Report never flashes "This drive isn't available." on its way out.
+    /// DriveStorage.delete removes the drive the way "Clear all drives" does.
+    private func deleteDrive() {
+        let id = sessionID
+        footage.pause()
+        dismiss()
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.45) {
+            DriveStorage.shared.delete(id: id)
+        }
     }
 
     /// Named on Parked (or just now): STAMP the header shield once, `stamp`

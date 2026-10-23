@@ -463,6 +463,10 @@ class DriveStorage: ObservableObject {
     private var authListener: AuthStateDidChangeListenerHandle?
     /// UID whose drives are currently loaded. Guards against cross-account leakage.
     private var currentUID: String?
+    /// Drives deleted on this device this session (main queue). A Firestore
+    /// fetch already in flight when one is deleted would otherwise merge it
+    /// straight back.
+    private var deletedIDs: Set<UUID> = []
 
     private init() {
         guard let folder = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first else {
@@ -544,6 +548,36 @@ class DriveStorage: ObservableObject {
             db.collection("users").document(userID).collection("drives")
                 .getDocuments { snap, _ in
                     snap?.documents.forEach { $0.reference.delete() }
+                }
+        }
+    }
+
+    /// Deletes one drive the way `clearAll()` deletes them all: the in-memory
+    /// list, this account's local JSON, its full record, its movie file on this
+    /// device and its Firestore doc (keyed by the session UUID, see
+    /// saveToFirestore). The school mirror (write-once by rules) and any
+    /// uploaded footage in Storage are left as they are.
+    func delete(id: UUID) {
+        DispatchQueue.main.async { [weak self] in
+            guard let self else { return }
+            guard let idx = sessions.firstIndex(where: { $0.id == id }) else { return }
+            deletedIDs.insert(id)
+            let removed = sessions.remove(at: idx)
+            saveLocal()
+            WidgetDataStore.shared.update(sessions: sessions)
+            DriveRecordStore.delete(id)
+            // Only this drive's own movie in Documents (DriveView's drive_*.mov),
+            // re-anchored by filename like the account-deletion sweep.
+            if let movie = removed.resolvedVideoURL,
+               movie.lastPathComponent.hasPrefix("drive_"), movie.pathExtension == "mov" {
+                try? FileManager.default.removeItem(at: movie)
+            }
+            guard let userID = Auth.auth().currentUser?.uid else { return }
+            db.collection("users").document(userID).collection("drives")
+                .document(id.uuidString).delete { error in
+                    #if DEBUG
+                    if let error { print("Firestore drive delete error: \(error.localizedDescription)") }
+                    #endif
                 }
         }
     }
@@ -947,7 +981,8 @@ class DriveStorage: ObservableObject {
                     // If the account switched while this fetch was in flight, discard —
                     // otherwise one account's cloud data lands on another's screen.
                     guard self.currentUID == userID else { return }
-                    let remoteIDs = Set(remote.map(\.id))
+                    let kept = remote.filter { !self.deletedIDs.contains($0.id) }
+                    let remoteIDs = Set(kept.map(\.id))
                     let localOnly = self.sessions.filter { !remoteIDs.contains($0.id) }
                     // The remote copy wins for shared fields, but it has no notion of
                     // this device's on-disk original — carry that forward, or the
@@ -955,7 +990,7 @@ class DriveStorage: ObservableObject {
                     // time it synced and fall back to streaming its own drive.
                     let localByID = Dictionary(self.sessions.map { ($0.id, $0) },
                                                uniquingKeysWith: { first, _ in first })
-                    let reconciled = remote.map { r -> DriveSession in
+                    let reconciled = kept.map { r -> DriveSession in
                         var s = r
                         if let local = localByID[r.id] {
                             s.videoURL = local.videoURL

@@ -24,6 +24,8 @@ struct V2DrivesView: View {
     @State private var renameHadRoute = false
     @State private var showingRename = false
     @State private var draftName = ""
+    @State private var deletingID: UUID? = nil
+    @State private var showingDelete = false
     /// What the last route hand-off put in the field, kept so it can be told
     /// apart from the user's own search without re-deriving it from a
     /// snapshot that may have changed since (late load, account switch).
@@ -73,6 +75,12 @@ struct V2DrivesView: View {
         } message: {
             Text(verbatim: renameMessage)
         }
+        .confirmationDialog("Delete this drive?", isPresented: $showingDelete, titleVisibility: .visible) {
+            Button("Delete drive", role: .destructive) { confirmDelete() }
+            Button("Cancel", role: .cancel) { deletingID = nil }
+        } message: {
+            Text("Its score, route and footage on this iPhone are removed. This can't be undone.")
+        }
     }
 
     // MARK: Results
@@ -93,7 +101,8 @@ struct V2DrivesView: View {
                         ForEach(group.drives) { facts in
                             V2DrivesRow(facts: facts,
                                         dark: colorScheme == .dark,
-                                        onRename: { beginRename(facts.id) })
+                                        onRename: { beginRename(facts.id) },
+                                        onDelete: { beginDelete(facts.id) })
                         }
                     } header: {
                         V2DrivesSectionHeader(group: group)
@@ -191,6 +200,21 @@ struct V2DrivesView: View {
         guard !name.isEmpty else { return }
         DriveStorage.shared.updateRouteTag(id: id, tag: name)
     }
+
+    // MARK: Delete (DriveStorage.delete, same as the Report)
+
+    private func beginDelete(_ id: UUID) {
+        deletingID = id
+        showingDelete = true
+    }
+
+    /// V2Library rebuilds from DriveStorage's publish, so the row (and an
+    /// emptied week) goes on its own.
+    private func confirmDelete() {
+        guard let id = deletingID else { return }
+        deletingID = nil
+        DriveStorage.shared.delete(id: id)
+    }
 }
 
 // MARK: - Search token
@@ -264,6 +288,8 @@ fileprivate struct V2DrivesRow: View {
     let facts: V2DriveFacts
     let dark: Bool
     let onRename: () -> Void
+    /// Asks first (the Drives confirmation dialog); never deletes on its own.
+    let onDelete: () -> Void
 
     @ObservedObject private var library = V2Library.shared
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
@@ -271,10 +297,11 @@ fileprivate struct V2DrivesRow: View {
     /// 0 → 1 once: the §4.16 row reveal. Starts at 1 for revealed drives.
     @State private var reveal: Double
 
-    init(facts: V2DriveFacts, dark: Bool, onRename: @escaping () -> Void) {
+    init(facts: V2DriveFacts, dark: Bool, onRename: @escaping () -> Void, onDelete: @escaping () -> Void) {
         self.facts = facts
         self.dark = dark
         self.onRename = onRename
+        self.onDelete = onDelete
         _reveal = State(initialValue: V2RevealLedger.shared.isRevealed(facts.id) ? 1 : 0)
     }
 
@@ -294,6 +321,12 @@ fileprivate struct V2DrivesRow: View {
         .listRowSeparatorTint(V2.sep)
         .alignmentGuide(.listRowSeparatorLeading) { d in d[.leading] }
         .swipeActions(edge: .trailing, allowsFullSwipe: false) {
+            // Stock red, but not `role: .destructive`: that role animates the
+            // row out at once, before the confirmation is answered.
+            Button(action: onDelete) {
+                Label("Delete", systemImage: "trash")
+            }
+            .tint(.red)
             Button(action: onRename) {
                 Label("Rename", systemImage: "signpost.right")
             }
@@ -310,6 +343,10 @@ fileprivate struct V2DrivesRow: View {
             ShareLink(item: V2DriveShareFile(id: facts.id, dark: dark),
                       preview: SharePreview(facts.name)) {
                 Label("Share", systemImage: "square.and.arrow.up")
+            }
+            Divider()
+            Button(role: .destructive, action: onDelete) {
+                Label("Delete drive", systemImage: "trash")
             }
         }
         .accessibilityElement(children: .ignore)
