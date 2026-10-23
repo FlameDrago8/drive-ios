@@ -236,9 +236,10 @@ fileprivate enum V2LogbookStamp {
     }
 
     static func keys(in week: V2LogbookWeek) -> [String] {
-        week.drives.flatMap { drive in
-            (week.stampsByDrive[drive.id] ?? []).map { key(drive: drive.id, badge: $0) }
-                + (week.milePostsByDrive[drive.id] ?? []).map { key(drive: drive.id, milePost: $0) }
+        week.drives.flatMap { drive -> [String] in
+            let badges: [String] = (week.stampsByDrive[drive.id] ?? []).map { key(drive: drive.id, badge: $0) }
+            let posts: [String] = (week.milePostsByDrive[drive.id] ?? []).map { key(drive: drive.id, milePost: $0) }
+            return badges + posts
         }
     }
 
