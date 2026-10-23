@@ -965,10 +965,13 @@ struct V2ReportTimetableCard: View {
     }
 
     private var rows: [Row] {
-        var out: [Row] = [
-            Row(id: "departed", label: "Departed", value: .clock(table.departed)),
-            Row(id: "parked", label: "Parked", value: .clock(table.parked)),
-        ]
+        var out: [Row] = [Row(id: "departed", label: "Departed", value: .clock(table.departed))]
+        // Only when the drive crossed sunset or sunrise: "Sunset 5:04 PM", in time order.
+        for event in table.sunEvents {
+            out.append(Row(id: "sun-\(Int(event.date.timeIntervalSince1970))",
+                           label: event.isSunset ? "Sunset" : "Sunrise", value: .clock(event.date)))
+        }
+        out.append(Row(id: "parked", label: "Parked", value: .clock(table.parked)))
         if let moving = table.movingMinutes {
             out.append(Row(id: "moving", label: "Moving", value: .number("\(moving)", "min")))
         }

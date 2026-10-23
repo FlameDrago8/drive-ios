@@ -140,7 +140,11 @@ struct V2DriverCardView: View {
 
     // MARK: Hint / graduation line
 
-    private var lineVisible: Bool { currentLine != nil }
+    private var lineVisible: Bool { currentLine != nil || showsHoursLine }
+
+    /// Permit holders: the Logbook's hours line, where the graduation line
+    /// goes once they're licensed.
+    private var showsHoursLine: Bool { phase == .resting && profile.driverType == .learner }
 
     private var currentLine: (text: String, emphasised: Bool)? {
         if phase == .licensed, profile.driverType == .full, let graduationLine {
@@ -152,6 +156,12 @@ struct V2DriverCardView: View {
 
     @ViewBuilder
     private var lineSlot: some View {
+        if showsHoursLine {
+            HoursLine()
+                .padding(.horizontal, 16)
+                .padding(.top, 24)
+                .transition(.opacity)
+        }
         if let line = currentLine {
             Text(verbatim: line.text)
                 .font(line.emphasised ? V2Type.subheadSemibold : V2Type.footnote)
@@ -160,8 +170,29 @@ struct V2DriverCardView: View {
                 .fixedSize(horizontal: false, vertical: true)
                 .frame(maxWidth: .infinity)
                 .padding(.horizontal, 16)
-                .padding(.top, 24)
+                .padding(.top, showsHoursLine ? 8 : 24)
                 .transition(.opacity)
+        }
+    }
+
+    /// "38 h 10 m of 50 · night 6 h 40 m of 10": the Logbook endpaper's
+    /// line, against the target set there (it updates when the target does).
+    private struct HoursLine: View {
+        @ObservedObject private var library = V2Library.shared
+        @ObservedObject private var targets = V2HoursTargetStore.shared
+
+        init() {}
+
+        var body: some View {
+            let tally = library.hours()
+            let target = targets.target
+            Text(verbatim: V2HoursCopy.line(tally, target: target))
+                .font(V2Type.subhead.monospacedDigit())
+                .foregroundStyle(V2.label)
+                .multilineTextAlignment(.center)
+                .fixedSize(horizontal: false, vertical: true)
+                .frame(maxWidth: .infinity)
+                .accessibilityLabel(V2HoursCopy.spoken(tally, target: target))
         }
     }
 

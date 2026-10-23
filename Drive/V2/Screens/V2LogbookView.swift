@@ -722,7 +722,7 @@ fileprivate struct V2HoursTargetSheet: View {
                     }
                     .disabled(hours == nil && nightHours == nil)
                 } footer: {
-                    Text("Kept on this phone. Drive's count. Your state's log is the official record.")
+                    Text("Kept on this phone, for you only.")
                 }
                 .listRowBackground(V2.card)
             }
