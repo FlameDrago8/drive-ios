@@ -554,9 +554,10 @@ class DriveStorage: ObservableObject {
 
     /// Deletes one drive the way `clearAll()` deletes them all: the in-memory
     /// list, this account's local JSON, its full record, its movie file on this
-    /// device and its Firestore doc (keyed by the session UUID, see
-    /// saveToFirestore). The school mirror (write-once by rules) and any
-    /// uploaded footage in Storage are left as they are.
+    /// device, its uploaded clip in Storage and its Firestore doc (keyed by the
+    /// session UUID, see saveToFirestore). Public badges, a parking watch or
+    /// Parked notification for it, and a badge-unlocked app icon follow. The
+    /// school mirror (write-once by rules) is left as it is.
     func delete(id: UUID) {
         DispatchQueue.main.async { [weak self] in
             guard let self else { return }
@@ -564,6 +565,7 @@ class DriveStorage: ObservableObject {
             deletedIDs.insert(id)
             let removed = sessions.remove(at: idx)
             saveLocal()
+            Task { await GameCenterManager.shared.syncBadges() }
             WidgetDataStore.shared.update(sessions: sessions)
             DriveRecordStore.delete(id)
             // Only this drive's own movie in Documents (DriveView's drive_*.mov),
@@ -572,7 +574,27 @@ class DriveStorage: ObservableObject {
                movie.lastPathComponent.hasPrefix("drive_"), movie.pathExtension == "mov" {
                 try? FileManager.default.removeItem(at: movie)
             }
+            MainActor.assumeIsolated {
+                // A deleted drive never posts Parked, and one already posted
+                // (or held for quiet hours) goes.
+                let watch = V2ParkingWatch.shared
+                if watch.sessionID == id { watch.cancel() }
+                V2ParkedNotifier.withdraw(sessionID: id)
+                // As V2Root.recheckAppIcon: an alternate icon the remaining
+                // drives no longer unlock falls back to the default.
+                let icon = V2AppIcons.current
+                if icon != .standard,
+                   !V2AppIcons.isUnlocked(icon, badges: AchievementEngine.badges(from: self.sessions)) {
+                    Task { @MainActor in
+                        _ = await V2AppIcons.apply(.standard)
+                    }
+                }
+            }
             guard let userID = Auth.auth().currentUser?.uid else { return }
+            // Same object path the upload wrote (StorageManager.path); a clip
+            // that never uploaded fails quietly.
+            let clipPath = StorageManager.shared.path(uid: userID, sessionID: id)
+            Task { await StorageManager.shared.deleteDriveVideo(atPath: clipPath) }
             db.collection("users").document(userID).collection("drives")
                 .document(id.uuidString).delete { error in
                     #if DEBUG

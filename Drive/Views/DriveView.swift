@@ -14,6 +14,7 @@
 //
 
 import SwiftUI
+import Combine
 import CoreLocation
 import ActivityKit
 
@@ -105,8 +106,6 @@ struct DriveView: View {
     @State private var analysisProgress: Double = 0
     /// Saved's parking watch; it outlives the HUD (Done keeps it running).
     @ObservedObject private var parkingWatch = V2ParkingWatch.shared
-    /// Siri's confirmed "End my drive" (EndDriveIntent) arrives here.
-    @ObservedObject private var router = V2Router.shared
     /// Peek (§5.9): a REC plate tap at a stop opens the scrim on the camera
     /// for 5 s. `peekToken` restarts the 5 s close for each new peek. UI
     /// only: recording, scoring and the Live Activity carry on underneath.
@@ -314,6 +313,7 @@ struct DriveView: View {
         // running after Done, so the Parked notification still posts.
         .onChange(of: phase) { oldPhase, newPhase in
             phaseChanged(from: oldPhase, to: newPhase)
+            mirrorPhase(newPhase)
         }
         .onChange(of: parkingWatch.lastParked) { _, parked in
             watchFoundParked(parked)
@@ -322,16 +322,21 @@ struct DriveView: View {
             scenePhaseChanged(newPhase)
         }
         // App Intents: Siri reads whether a drive is recording, and a
-        // confirmed "End my drive" runs the hold's completion.
+        // confirmed "End my drive" runs the hold's completion. Written and
+        // read through V2Router.shared without observing it, so a router
+        // change never re-renders the recording HUD.
         .onChange(of: isRecording) { _, recording in
-            router.driveRecording = recording
+            V2Router.shared.driveRecording = recording
         }
-        .onChange(of: router.endDriveRequested) { _, requested in
+        .onReceive(V2Router.shared.$endDriveRequested) { requested in
             guard requested else { return }
-            router.endDriveRequested = false
+            // $endDriveRequested publishes before the value is stored, so
+            // the clear waits until the set has finished.
+            Task { @MainActor in V2Router.shared.endDriveRequested = false }
             endFromIntent()
         }
         .onAppear {
+            mirrorPhase(phase)
             // The first read lands unanimated: the HUD opens in its real
             // Ready state instead of fading out of the seeded `.available`
             // (guides on black, a dimming ignition). Later reads still fade.
@@ -370,7 +375,10 @@ struct DriveView: View {
             }
             V2ParkingWatch.shared.setHUDShowing(nil)
             // A HUD closed mid-recording (Discard) never turns isRecording off.
+            let router = V2Router.shared
             router.driveRecording = false
+            router.driveFinishing = false
+            router.driveHUDBusy = false
             router.endDriveRequested = false
         }
     }
@@ -862,6 +870,16 @@ struct DriveView: View {
         guard phase == .recording else { return }
         showDiscardConfirm = false
         stopDrive()
+    }
+
+    /// App Intents: Analysing (the stopped drive isn't saved yet, so Siri's
+    /// last drive would be the one before it), and anywhere but Ready (so
+    /// "Start a drive" asks for Done instead of promising Ready).
+    @MainActor
+    private func mirrorPhase(_ phase: HUDPhase) {
+        let router = V2Router.shared
+        router.driveFinishing = phase == .analysing
+        router.driveHUDBusy = phase != .ready
     }
 
     /// Start, after the camera check: a first-time camera prompt asks now

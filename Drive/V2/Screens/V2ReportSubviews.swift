@@ -962,14 +962,27 @@ struct V2ReportTimetableCard: View {
         let value: Value
         var was: String? = nil
         var wasWorse = false
+        /// A secondary line under the label.
+        var detail: String? = nil
+    }
+
+    /// "21 of 34 min after dark", only when the drive crossed sunset or sunrise.
+    private var afterDarkLine: String? {
+        guard !table.sunEvents.isEmpty, let dark = table.afterDarkMinutes, dark > 0 else { return nil }
+        let total = V2Format.minutes(table.parked.timeIntervalSince(table.departed))
+        return "\(dark) of \(total) min after dark"
     }
 
     private var rows: [Row] {
         var out: [Row] = [Row(id: "departed", label: "Departed", value: .clock(table.departed))]
         // Only when the drive crossed sunset or sunrise: "Sunset 5:04 PM", in time order.
-        for event in table.sunEvents {
-            out.append(Row(id: "sun-\(Int(event.date.timeIntervalSince1970))",
-                           label: event.isSunset ? "Sunset" : "Sunrise", value: .clock(event.date)))
+        let darkLine = afterDarkLine
+        for (index, event) in table.sunEvents.enumerated() {
+            var row = Row(id: "sun-\(Int(event.date.timeIntervalSince1970))",
+                          label: event.isSunset ? "Sunset" : "Sunrise", value: .clock(event.date))
+            // Under the last Sunset / Sunrise row.
+            if index == table.sunEvents.count - 1 { row.detail = darkLine }
+            out.append(row)
         }
         out.append(Row(id: "parked", label: "Parked", value: .clock(table.parked)))
         if let moving = table.movingMinutes {
@@ -1004,9 +1017,16 @@ struct V2ReportTimetableCard: View {
             ForEach(Array(list.enumerated()), id: \.element.id) { index, row in
                 if index > 0 { V2ReportSeparator() }
                 HStack(alignment: .firstTextBaseline, spacing: 6) {
-                    Text(verbatim: row.label)
-                        .font(V2Type.body)
-                        .foregroundStyle(V2.label)
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(verbatim: row.label)
+                            .font(V2Type.body)
+                            .foregroundStyle(V2.label)
+                        if let detail = row.detail {
+                            Text(verbatim: detail)
+                                .font(V2Type.footnote)
+                                .foregroundStyle(V2.label2)
+                        }
+                    }
                     Spacer(minLength: 12)
                     switch row.value {
                     case .clock(let date):
@@ -1021,6 +1041,7 @@ struct V2ReportTimetableCard: View {
                     }
                 }
                 .padding(.horizontal, V2.margin)
+                .padding(.vertical, row.detail == nil ? 0 : 8)
                 .frame(maxWidth: .infinity, minHeight: V2.rowMin)
                 .accessibilityElement(children: .combine)
             }

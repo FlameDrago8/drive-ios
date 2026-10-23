@@ -12,8 +12,8 @@
 //    runs the hold-to-end ring's completion in DriveView, and Analysing, then
 //    Saved or Parked, follow as they do today.
 //  - How did my last drive go: "91, A. Best School run yet (was 86)." The
-//    speed-gate line until that drive is known parked; no score at all while
-//    a drive is recording.
+//    speed-gate line until that drive is known parked (and while it is still
+//    analysing); no score at all while a drive is recording.
 //
 //  App target only: the intents read V2Router, V2Library and the parking
 //  watch. App-target intents run in the app's own process, so End and Last
@@ -38,6 +38,11 @@ struct StartDriveIntent: AppIntent {
         let router = V2Router.shared
         if router.driveRecording {
             return .result(dialog: "A drive is already recording.")
+        }
+        // The HUD is still on the last drive (Analysing, Saved, Parked, Too
+        // short...), not Ready: no start request is left waiting behind it.
+        if router.driveHUDBusy {
+            return .result(dialog: "Tap Done on your last drive first.")
         }
         // Signed out, unverified or mid-onboarding there is no V2Root to
         // route the request, so none is left waiting for one.
@@ -146,6 +151,12 @@ enum V2IntentContext {
     static func lastDriveLine(now: Date = Date()) -> String {
         if V2Router.shared.driveRecording {
             return "A drive is recording. Ask again once you're parked."
+        }
+        // Analysing: the stopped drive isn't in the library yet, so the
+        // newest drive there is the one before it.
+        if V2Router.shared.driveFinishing {
+            let gate = V2Voice.speedGate
+            return "\(gate.title). \(gate.body)"
         }
         guard UserManager.shared.user != nil else {
             return "Sign in to Drive to see your drives."

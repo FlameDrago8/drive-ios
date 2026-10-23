@@ -55,6 +55,27 @@ enum V2ParkedNotifier {
         UNUserNotificationCenter.current().add(request)
     }
 
+    /// A deleted drive's Parked notification goes, pending or delivered.
+    /// Every drive shares the id, so only when it carries this drive's.
+    static func withdraw(sessionID: UUID) {
+        let id = notificationID
+        let key = V2NotificationLink.driveKey
+        let drive = sessionID.uuidString
+        let center = UNUserNotificationCenter.current()
+        center.getPendingNotificationRequests { requests in
+            guard requests.contains(where: {
+                $0.identifier == id && $0.content.userInfo[key] as? String == drive
+            }) else { return }
+            UNUserNotificationCenter.current().removePendingNotificationRequests(withIdentifiers: [id])
+        }
+        center.getDeliveredNotifications { notifications in
+            guard notifications.contains(where: {
+                $0.request.identifier == id && $0.request.content.userInfo[key] as? String == drive
+            }) else { return }
+            UNUserNotificationCenter.current().removeDeliveredNotifications(withIdentifiers: [id])
+        }
+    }
+
     /// Title and body from the drive's facts; parts that don't apply are left out.
     static func text(score: Double, end: Date, name: String, verdict: String?, was: String?,
                      moments: [V2Moment]) -> (title: String, body: String) {
