@@ -58,14 +58,77 @@ struct V2RouteSummary: Identifiable { let id: String; let name: String; let numb
                                       let latestRoute: [RoutePoint] }
 
 struct V2LogbookWeek: Identifiable { let id: Date; let title: String; let drives: [V2DriveFacts]
-                                     let footer: String; let stampsByDrive: [UUID: [Badge]] }
+                                     let footer: String; let stampsByDrive: [UUID: [Badge]]
+                                     /// Lifetime-mile posts each drive reached (V2MilePosts).
+                                     var milePostsByDrive: [UUID: [Int]] = [:] }
 
 struct V2Logbook { let weeks: [V2LogbookWeek]; let lifetimeMiles: Double; let hoursText: String
                    let nightText: String; let longestCleanText: String?; let softestStopText: String?
                    let mostDriven: (name: String, number: Int?)?; let bestTimeText: String?; let jobsCleared: Int
                    /// Per-drive night (the Logbook's sun / moon and Volume 1's night hours).
                    let night: [UUID: V2NightSplit]
-                   let hours: V2HoursTally }
+                   let hours: V2HoursTally
+                   /// The endpaper's "Jobs cleared" rack: one entry per Focus category.
+                   var retiredJobs: [V2RetiredJob] = [] }
+
+/// One Focus category on the endpaper rack and in "Jobs you've retired".
+struct V2RetiredJob: Identifiable {
+    let category: CoachTip.Category
+    let name: String
+    /// Times a job in this category was retired.
+    let count: Int
+    /// Park time of the drive that last retired it.
+    let lastRetiredOn: Date?
+    /// That check's line ("Job retired. Two drives with 0 hard brakes (was 3).").
+    let line: String?
+
+    var id: String { name }
+    var isRetired: Bool { count > 0 }
+}
+
+/// Logbook mile posts: the drive that takes lifetime miles past 25, 100,
+/// 250, 500 and 1,000, then every 1,000. Paper only. Miles are compared in
+/// tenths, rounded the way the endpaper's odometer cells round them, so a
+/// post and the odometer never disagree.
+enum V2MilePosts {
+    static let firstPosts = [25, 100, 250, 500, 1_000]
+    /// After the last first post, one every this many miles.
+    static let every = 1_000
+    /// A GPS jump can't fill a row with posts.
+    static let maxPerDrive = 8
+
+    /// The post after `post`: 25 → 100 … 500 → 1,000 → 2,000 → 3,000.
+    static func next(after post: Int) -> Int {
+        if let p = firstPosts.first(where: { $0 > post }) { return p }
+        return (post / every + 1) * every
+    }
+
+    /// Posts passed by a drive that takes the lifetime total from `before` to
+    /// `after` miles: each post whose tenths are above `before`'s and at or
+    /// below `after`'s.
+    static func posts(from before: Double, to after: Double) -> [Int] {
+        let lo = tenths(before), hi = tenths(after)
+        guard hi > lo else { return [] }
+        var post = firstPost(aboveTenths: lo)
+        var out: [Int] = []
+        while post * 10 <= hi && out.count < maxPerDrive {
+            out.append(post)
+            post = next(after: post)
+        }
+        return out
+    }
+
+    /// The odometer's rounding (V2OdometerCells), clamped so a corrupt total can't trap.
+    static func tenths(_ miles: Double) -> Int {
+        let v = miles.isFinite ? min(max(0, miles), 1e9) : 0
+        return Int((v * 10).rounded())
+    }
+
+    private static func firstPost(aboveTenths t: Int) -> Int {
+        if let p = firstPosts.first(where: { $0 * 10 > t }) { return p }
+        return (t / (every * 10) + 1) * every
+    }
+}
 
 /// Lifetime hours for the hours line (Logbook endpaper, Permit Driver Card).
 struct V2HoursTally: Equatable {
@@ -407,6 +470,7 @@ enum V2StatsBuilder {
                         night: [UUID: V2NightSplit] = [:], now: Date = Date()) -> V2Logbook {
         let cal = Calendar.current
         let stampMap = stamps(facts: facts, badges: badges)
+        let postMap = mileStamps(facts: facts)
         var nightByDrive = night
         for f in facts where nightByDrive[f.id] == nil { nightByDrive[f.id] = V2Night.split(f.session) }
         let grouped = Dictionary(grouping: facts) { weekStart($0.end, cal: cal) }
@@ -415,11 +479,13 @@ enum V2StatsBuilder {
             let minutes = Int(drives.reduce(0.0) { $0 + $1.session.duration } / 60)
             let footer = "\(drives.count) drive\(drives.count == 1 ? "" : "s"), \(V2Format.hoursMinutes(totalMinutes: minutes))"
             var weekStamps: [UUID: [Badge]] = [:]
+            var weekPosts: [UUID: [Int]] = [:]
             for d in drives {
                 if let s = stampMap[d.id] { weekStamps[d.id] = s }
+                if let p = postMap[d.id] { weekPosts[d.id] = p }
             }
             return V2LogbookWeek(id: start, title: "Week of \(V2Format.monthDay(start))", drives: drives,
-                                 footer: footer, stampsByDrive: weekStamps)
+                                 footer: footer, stampsByDrive: weekStamps, milePostsByDrive: weekPosts)
         }
         return V2Logbook(weeks: weeks,
                          lifetimeMiles: stats.totalMiles,
@@ -431,7 +497,53 @@ enum V2StatsBuilder {
                          bestTimeText: stats.bestTimeOfDay.map { "\($0.period)s (avg \(V2Voice.scoreText($0.avg)))" },
                          jobsCleared: stats.jobsCleared,
                          night: nightByDrive,
-                         hours: hours(facts: facts, night: nightByDrive, now: now))
+                         hours: hours(facts: facts, night: nightByDrive, now: now),
+                         retiredJobs: retiredJobs(facts: facts))
+    }
+
+    /// Mile posts by drive (V2MilePosts): the running sum of `miles`, oldest
+    /// first, the same miles that feed `totalMiles` and the odometer cells.
+    static func mileStamps(facts: [V2DriveFacts]) -> [UUID: [Int]] {
+        mileStamps(facts.map { (id: $0.id, end: $0.end, miles: $0.miles) })
+    }
+
+    static func mileStamps(_ drives: [(id: UUID, end: Date, miles: Double)]) -> [UUID: [Int]] {
+        let chrono = drives.sorted { a, b in
+            a.end != b.end ? a.end < b.end : a.id.uuidString < b.id.uuidString
+        }
+        var out: [UUID: [Int]] = [:]
+        var total = 0.0
+        for drive in chrono {
+            let before = total
+            total += max(0, drive.miles)
+            let posts = V2MilePosts.posts(from: before, to: total)
+            if !posts.isEmpty { out[drive.id] = posts }
+        }
+        return out
+    }
+
+    /// The six Focus categories in rack order.
+    static let rackCategories: [CoachTip.Category] = [.braking, .acceleration, .cornering,
+                                                      .smoothness, .speed, .safety]
+
+    /// The endpaper rack: each Focus category, how often a job in it was
+    /// retired, and the last retirement's date and line. The same retired
+    /// checks `focus.jobsCleared` counts (every counted drive carries its check).
+    static func retiredJobs(facts: [V2DriveFacts]) -> [V2RetiredJob] {
+        var count: [CoachTip.Category: Int] = [:]
+        var last: [CoachTip.Category: (date: Date, line: String)] = [:]
+        for f in facts {
+            guard let check = f.focusCheck, check.outcome == .retired else { continue }
+            let category = check.job.category
+            count[category, default: 0] += 1
+            if let known = last[category], known.date >= f.end { continue }
+            last[category] = (f.end, check.line)
+        }
+        return rackCategories.map { category in
+            V2RetiredJob(category: category, name: V2Voice.categoryName(category),
+                         count: count[category] ?? 0,
+                         lastRetiredOn: last[category]?.date, line: last[category]?.line)
+        }
     }
 
     // MARK: - Today hero (§6.1)
@@ -636,6 +748,9 @@ enum V2StatsBuilder {
                 let tagged = Dictionary(grouping: chrono.filter { $0.routeTag != nil }) { $0.routeTag ?? "" }
                 route = tagged.filter { entry in entry.value.count == 4 }.keys.sorted().first
                 close = route != nil
+            case "stop_and_go", "roundabout", "by_the_book":
+                // Skills, not a count: never "one drive away" (copy never urges a drive).
+                close = false
             default:
                 close = false
             }
@@ -782,6 +897,12 @@ enum V2StatsBuilder {
                 if n == 5 { return s.id }
             }
             return nil
+        case "stop_and_go":
+            return chrono.first(where: AchievementEngine.isStopAndGo)?.id
+        case "roundabout":
+            return chrono.first(where: AchievementEngine.isCleanRoundabout)?.id
+        case "by_the_book":
+            return chrono.first(where: AchievementEngine.isByTheBook)?.id
         default:
             return nil
         }

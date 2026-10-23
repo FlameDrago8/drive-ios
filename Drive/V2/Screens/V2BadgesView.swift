@@ -25,9 +25,15 @@ enum V2BadgeCopy {
         return badge.title
     }
 
-    /// Two-word titles break onto two lines under small plates ("Road / Warrior").
+    /// Two-word titles break onto two lines under small plates ("Road / Warrior");
+    /// longer ones at the space nearest the middle ("By the / Book").
     static func stackedTitle(_ title: String) -> String {
-        guard let space = title.firstIndex(of: " ") else { return title }
+        let spaces = title.indices.filter { title[$0] == " " }
+        let middle = title.count / 2
+        guard let space = spaces.min(by: { a, b in
+            abs(title.distance(from: title.startIndex, to: a) - middle)
+                < abs(title.distance(from: title.startIndex, to: b) - middle)
+        }) else { return title }
         var out = title
         out.replaceSubrange(space...space, with: "\n")
         return out
@@ -55,6 +61,11 @@ enum V2BadgeCopy {
         case "clean_week":        return "A week of three or more drives, all 80 or above."
         case "route_ace":         return "A named route up 10 points."
         case "route_regular":     return "Five drives on the same named route."
+        case "stop_and_go":
+            return "\(AchievementEngine.stopAndGoStops) stops in one drive, every one a single smooth squeeze."
+        case "roundabout":        return "A roundabout taken cleanly."
+        case "by_the_book":
+            return "Stops, both turns and a lane change in one \(AchievementEngine.byTheBookMinutes)-minute drive, with no serious faults."
         default:                  return sentence(badge.description)
         }
     }
@@ -81,6 +92,11 @@ enum V2BadgeCopy {
         case "clean_week":      return "Unlocks with a week of three or more drives, all 80 or above."
         case "route_ace":       return "Unlocks when a named route improves by 10 points."
         case "route_regular":   return "Unlocks with five drives on the same named route."
+        case "stop_and_go":
+            return "Unlocks with a drive of \(AchievementEngine.stopAndGoStops) stops or more, every one smooth."
+        case "roundabout":      return "Unlocks with a clean roundabout."
+        case "by_the_book":
+            return "Unlocks with a \(AchievementEngine.byTheBookMinutes)-minute drive that has stops, both turns and a lane change, and no serious faults."
         default:                return sentence(badge.description)
         }
     }
@@ -160,10 +176,13 @@ enum V2BadgeCopy {
         switch id {
         case "road_warrior", "long_haul", "hot_streak", "week_streak":
             return .post
-        case "consistent_driver", "perfectionist", "weekend_warrior", "perfect_run", "score_rocket":
+        case "consistent_driver", "perfectionist", "weekend_warrior", "perfect_run", "score_rocket",
+             "stop_and_go":
             return .regulatory
         case "route_ace", "route_regular":
             return .shield
+        case "roundabout", "by_the_book":
+            return .guide
         default:
             return .guide
         }
@@ -192,6 +211,11 @@ enum V2BadgeCopy {
         case "smooth_operator":   return one ? "drive over 90" : "drives over 90"
         case "marathon_driver":   return one ? "minute" : "minutes"
         case "perfectionist":     return one ? "drive scoring 95 or more" : "drives scoring 95 or more"
+        // One-time: no count is shown today (progress is tiered only); these
+        // keep a future count from reading "1 drive".
+        case "stop_and_go":       return one ? "drive of smooth stops" : "drives of smooth stops"
+        case "roundabout":        return one ? "clean roundabout" : "clean roundabouts"
+        case "by_the_book":       return one ? "drive by the book" : "drives by the book"
         default:                  return one ? "drive" : "drives"
         }
     }

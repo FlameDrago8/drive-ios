@@ -219,9 +219,73 @@ struct AchievementEngine {
                                   color: Color(red: 0.3, green: 0.85, blue: 0.5),
                                   earned: routes.contains { $0.count >= 5 })
 
+        // Car-themed wave (2026-10): counted drives only, synced fields only.
+        let stopAndGo = unlock(id: "stop_and_go", icon: "hand",
+                               title: "Stop and Go",
+                               description: "\(stopAndGoStops) stops in one drive, all smooth",
+                               color: DS.Colors.accent,
+                               earned: sessions.contains(where: isStopAndGo))
+
+        let roundabout = unlock(id: "roundabout", icon: "arrows-counter-clockwise",
+                                title: "Roundabout", description: "A clean roundabout",
+                                color: Color(red: 0.3, green: 0.85, blue: 0.5),
+                                earned: sessions.contains(where: isCleanRoundabout))
+
+        let byTheBook = unlock(id: "by_the_book", icon: "clipboard-text",
+                               title: "By the Book",
+                               description: "Stops, both turns and a lane change in one \(byTheBookMinutes)-minute drive, no serious faults",
+                               color: Color(red: 0.2, green: 0.8, blue: 0.6),
+                               earned: sessions.contains(where: isByTheBook))
+
         return [safeStart, nightOwl, earlyBird, weekendWarrior, longHaul, perfectRun,
                 hotStreakBadge, scoreRocketBadge, weekStreakBadge, hatTrickBadge,
-                cleanWeekBadge, routeAce, routeRegular]
+                cleanWeekBadge, routeAce, routeRegular,
+                stopAndGo, roundabout, byTheBook]
+    }
+
+    // MARK: Drive rules (car-themed wave)
+    //
+    // One drive each, so V2StatsBuilder.firstEarner replays the same test.
+    // Only counted drives (V2DriveFacts.counts) and only fields that survive
+    // a Firestore round trip: maneuver type, grade and peak g, the top-level
+    // faults' severity, the metrics' event counts. Never entry / exit speed
+    // or per-maneuver faults (synced drives decode those as −1 and []).
+
+    /// The car-themed badges added after launch. V2BadgeTracker seeds them
+    /// silently for history that already qualifies.
+    static let carThemedIDs: Set<String> = ["stop_and_go", "roundabout", "by_the_book"]
+
+    /// Stop and Go: stops in one drive (tune on real drives).
+    static let stopAndGoStops = 10
+    /// Roundabout: §4.9's "Clean" (≥ 85) rules out "Roundabout speed" (−20)
+    /// and allows "Unsettled" (−10).
+    static let cleanRoundaboutGrade: Double = 85
+    /// By the Book: drive length.
+    static let byTheBookSeconds: TimeInterval = 1_200
+    static var byTheBookMinutes: Int { Int(byTheBookSeconds / 60) }
+    static let byTheBookManeuvers: Set<ManeuverType> = [.stop, .turnLeft, .turnRight, .laneChange]
+
+    /// At least `stopAndGoStops` stops, every one graded 100 (for a stop that
+    /// means ≤ 0.38 g, fewer than 3 brake applications and no late braking),
+    /// and no hard brakes anywhere in the drive.
+    static func isStopAndGo(_ s: DriveSession) -> Bool {
+        guard V2DriveFacts.counts(s), let metrics = s.metrics, metrics.hardBrakeCount == 0 else { return false }
+        let stops = (s.maneuvers ?? []).filter { $0.type == .stop }
+        return stops.count >= stopAndGoStops && stops.allSatisfy { $0.grade >= 100 }
+    }
+
+    /// A roundabout (≥ 200° of integrated yaw) graded `cleanRoundaboutGrade` or better.
+    static func isCleanRoundabout(_ s: DriveSession) -> Bool {
+        guard V2DriveFacts.counts(s) else { return false }
+        return (s.maneuvers ?? []).contains { $0.type == .roundabout && $0.grade >= cleanRoundaboutGrade }
+    }
+
+    /// `byTheBookSeconds` or longer, with a stop, a left turn, a right turn
+    /// and a lane change, and nothing worse than a minor fault.
+    static func isByTheBook(_ s: DriveSession) -> Bool {
+        guard V2DriveFacts.counts(s), s.duration >= byTheBookSeconds, let maneuvers = s.maneuvers else { return false }
+        guard byTheBookManeuvers.isSubset(of: Set(maneuvers.map(\.type))) else { return false }
+        return (s.faults ?? []).allSatisfy { $0.severity == .minor }
     }
 
     // MARK: Route stats

@@ -37,6 +37,8 @@ enum V2Legend: Equatable {
     case chevrons(Int)                   // 2 or 3
     case info                            // "i" (Not Scored)
     case car                             // car M silhouette (Safe Start)
+    case roundabout(clockwise: Bool)     // three arrows round an island (Roundabout); clockwise for left-hand traffic
+    case ruledSheet                      // a blank ruled sheet (By the Book)
     case text(String)                    // one line, Compressed Heavy (route number, "80+", "95+")
     case stacked(String, String)         // two lines ("25"/"DRIVES", "7"/"DAYS", "SAT"/"SUN")
     case odometer(String, caption: String) // digits in odometer cells over a caption ("1000","MIN")
@@ -159,6 +161,12 @@ struct V2Plate: View {
                            ink: V2.tierColor(tier))
         }
         return V2Plate(stamp: art.shape, legend: art.legend, size: size, dots: 0, ink: V2.guideGreen)
+    }
+
+    /// Logbook mile post: the badge-stamp treatment on a POST, guide green,
+    /// "100" over "MI". Paper only: no badge, sheet or notification.
+    static func mileStamp(_ miles: Int, size: CGFloat) -> V2Plate {
+        V2Plate(stamp: .post, legend: .stacked("\(miles)", "MI"), size: size, dots: 0, ink: V2.guideGreen)
     }
 
     // MARK: Layout
@@ -755,6 +763,13 @@ fileprivate struct V2PBadgeArt {
             shape = .shield; legend = .star
         case "route_regular":
             shape = .shield; legend = .laurel
+        case "stop_and_go":
+            shape = .regulatory; legend = .stacked("\(AchievementEngine.stopAndGoStops)", "STOPS")
+        case "roundabout":
+            // Counter-clockwise, as traffic circulates; mirrored where it drives on the left.
+            shape = .guide; legend = .roundabout(clockwise: V2ManeuverDiagram.isLeftHandTraffic)
+        case "by_the_book":
+            shape = .guide; legend = .ruledSheet
         default:
             shape = .guide; legend = .check
         }
@@ -1206,6 +1221,45 @@ fileprivate enum V2PLegendArt {
             let carW: CGFloat = 21.6
             let art = V2CarSize.m.artPaths(in: CGRect(x: (24 - carW) / 2, y: 6, width: carW, height: 12))
             pen.fill(art.ink, &ctx)
+
+        case .roundabout(let clockwise):
+            // An r2.75 island and three arrows on an r8 ring, 120° apart:
+            // a 62° shaft, then a head 4.5 long and 8 wide along the ring.
+            // Built counter-clockwise on screen (angles decrease, y down) and
+            // mirrored about x 12 for clockwise. Sampled, like the maneuver
+            // diagram, so the direction never rests on addArc's convention.
+            let mirror: CGAffineTransform = clockwise
+                ? CGAffineTransform(a: -1, b: 0, c: 0, d: 1, tx: 24, ty: 0) : .identity
+            func ring(_ degrees: CGFloat, _ r: CGFloat) -> CGPoint {
+                let a = degrees * .pi / 180
+                return CGPoint(x: 12 + r * cos(a), y: 12 + r * sin(a))
+            }
+            let radius: CGFloat = 8
+            let headDegrees: CGFloat = 4.5 / radius * 180 / .pi
+            var shafts = Path()
+            var heads = Path()
+            for i in 0..<3 {
+                let tail = 100 - CGFloat(i) * 120
+                let end = tail - 62
+                shafts.move(to: ring(tail, radius))
+                for step in 1...12 {
+                    shafts.addLine(to: ring(tail - 62 * CGFloat(step) / 12, radius))
+                }
+                heads.addLines([ring(end + 1, radius - 4), ring(end + 1, radius + 4),
+                                ring(end - headDegrees, radius)])
+                heads.closeSubpath()
+            }
+            pen.fill(circle(12, 12, 2.75).applying(mirror), &ctx)
+            pen.stroke(shafts.applying(mirror), &ctx)
+            pen.fill(heads.applying(mirror), &ctx)
+
+        case .ruledSheet:
+            // The examiner sheet with nothing written on it: a sheet with
+            // three short ruled lines knocked out.
+            pen.fill(Path(roundedRect: CGRect(x: 5, y: 1.5, width: 14, height: 21), cornerRadius: 2.5, style: .circular), &ctx)
+            for y in [CGFloat(6.3), 10.8, 15.3] {
+                pen.knock(Path(roundedRect: CGRect(x: 8, y: y, width: 8, height: 2.4), cornerRadius: 1.2, style: .circular), &ctx)
+            }
         }
     }
 

@@ -200,6 +200,9 @@ final class NotificationManager: NSObject {
 
     func notifyBadgeUnlocked(_ badge: Badge) {
         guard Self.preference(Self.badgesKeyName) else { return }
+        // Already shown, or seeded silently as history (a badge added in an
+        // update that old drives already earn): never a notification.
+        guard !V2BadgeTracker.shared.isSeen(badge) else { return }
         let content = UNMutableNotificationContent()
         var name = badge.title
         if !badge.isOneTime, let tier = badge.currentTier {
