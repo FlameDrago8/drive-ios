@@ -583,15 +583,24 @@ fileprivate struct V2LogbookEndpaper: View {
     private var jobsRow: some View {
         VStack(spacing: 0) {
             NavigationLink(value: V2Destination.retiredJobs) {
-                HStack(spacing: 12) {
-                    Text("Jobs cleared")
-                        .font(V2Type.subhead)
-                        .foregroundStyle(V2.label)
-                    Spacer(minLength: 8)
-                    V2RetiredJobRack(jobs: book.retiredJobs)
-                    Image(systemName: "chevron.right")
-                        .font(V2Type.footnoteSemibold)
-                        .foregroundStyle(V2.label3)
+                // One line when it fits; at large text sizes (or several "×2"
+                // marks) the rack drops under the label instead of clipping.
+                ViewThatFits(in: .horizontal) {
+                    HStack(spacing: 12) {
+                        jobsLabel
+                        Spacer(minLength: 8)
+                        V2RetiredJobRack(jobs: book.retiredJobs)
+                        jobsChevron
+                    }
+                    VStack(alignment: .leading, spacing: 8) {
+                        HStack(spacing: 12) {
+                            jobsLabel
+                            Spacer(minLength: 8)
+                            jobsChevron
+                        }
+                        V2RetiredJobRack(jobs: book.retiredJobs)
+                    }
+                    .padding(.vertical, 10)
                 }
                 .padding(.horizontal, 16)
                 .frame(minHeight: 44)
@@ -602,6 +611,18 @@ fileprivate struct V2LogbookEndpaper: View {
             .accessibilityHint("Shows the jobs you've retired")
             V2LogbookRule()
         }
+    }
+
+    private var jobsLabel: some View {
+        Text("Jobs cleared")
+            .font(V2Type.subhead)
+            .foregroundStyle(V2.label)
+    }
+
+    private var jobsChevron: some View {
+        Image(systemName: "chevron.right")
+            .font(V2Type.footnoteSemibold)
+            .foregroundStyle(V2.label3)
     }
 
     private var mostDrivenRow: some View {

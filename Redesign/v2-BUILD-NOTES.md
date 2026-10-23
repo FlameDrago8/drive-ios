@@ -341,6 +341,32 @@ Swift 6 concurrency warnings are expected throughout (the app is in Swift 5 mode
 - The alternate app icon is re-checked after a switch. iOS shows its own "icon changed" alert. The check waits until the new account's drives and badges have been still for 4 s, so slow Firestore loading could reset an icon the new account did unlock.
 - A search you typed yourself in Drives survives a switch that keeps the Drives view alive (unchanged from earlier v2).
 
+### Logo, Flighty-style features and car-themed badges (2026-10-23)
+
+- **Logo:** the splash is the launch beta's again (grey top-down car). Sign-in, verify email, onboarding, the driver card and the share card use the traced car (`V2DriveLogo`). Gold Road, Clean Week and Night Owl icons were redrawn with the car; on Night Owl the crescent moved up and right. Check each one on the Home Screen.
+- **Delete a drive:** use swipe or long-press on a Drives row, or the Report's ⋯ menu. Check the confirmation, that the Report pops back, that the drive doesn't come back after a pull-to-refresh, and that widgets, badges and the Logbook update.
+- **Report honesty line:** shown only after a GPS gap while moving (try a tunnel): "GPS dropped 3:41–3:44 PM. Distance is approximate." Tap it for how scoring works.
+- **Widgets:** check four things.
+  - **Smart Stack:** the last-drive widget rises for about an hour after a drive.
+  - **Lock Screen:** a new one-line widget shows "Parked 3:52 PM · 91 A" after a drive, otherwise today's job.
+  - **StandBy:** the Parked Live Activity goes full screen with a big score and the strip; at night it turns to outlines.
+  - **CarPlay:** the Score widget is filed under "Other". iOS can't fully block it.
+- **Siri (most important: invoke Siri mid-drive and confirm the camera keeps recording):**
+  - "Start a drive in Drive" opens Ready only, or says to tap Done if a summary is still up.
+  - "End my drive in Drive" asks to confirm, then ends the drive like the hold ring.
+  - "How did my last drive go in Drive" gives the Parked line, or "Saved…" before you park. It never gives a score while recording.
+- **Practice hours:** night time is now counted from the real sunset, so lifetime night hours will shift once, as intended.
+  - The Logbook endpaper and the Driver Card (Permit) show "38 h 10 m of 50 · night …".
+  - Set a target from the endpaper. It's stored on this phone only.
+  - The Report shows a "Sunset 5:04 PM" row and "21 of 34 min after dark" on drives that cross sunset.
+- **New badges:** Stop and Go, Roundabout and By the Book, 21 in total.
+  - Install over the current build on a phone whose drives already qualify. There should be **no** Badge Earned sheet and no notification; they show as earned.
+  - On a new account the sheet should appear on the first qualifying drive.
+  - Roundabout runs clockwise in left-hand-traffic regions.
+  - Tune the thresholds in `AchievementEngine.swift` (`stopAndGoStops`, `cleanRoundaboutGrade`, `byTheBookSeconds`).
+- **Logbook:** mile-post stamps land at 25, 100, 250, 500 and 1,000 lifetime miles. The "Jobs cleared" row is now a rack of the six coaching categories, and tapping it opens "Jobs you've retired". At large text sizes the rack drops under its label.
+- **Tests:** press ⌘U to run the new V2Sun, badge and mile-post tests.
+
 ### New drive screen and Today header (2026-10-20)
 
 Spec and board: the full-bleed Ready, the push-to-start ignition, the REC plate and the camera peek.

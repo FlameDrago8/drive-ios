@@ -683,7 +683,14 @@ class DriveStorage: ObservableObject {
 
     /// Records the Storage path for an uploaded clip, locally and in Firestore.
     private func attachVideoPath(_ path: String, to id: UUID) {
-        guard let idx = sessions.firstIndex(where: { $0.id == id }) else { return }
+        guard let idx = sessions.firstIndex(where: { $0.id == id }) else {
+            // Deleted while its upload was still running: the delete found no
+            // clip yet, so remove the one that just landed.
+            if deletedIDs.contains(id) {
+                Task { await StorageManager.shared.deleteDriveVideo(atPath: path) }
+            }
+            return
+        }
         sessions[idx].videoPath = path
         saveLocal()
         guard let userID = Auth.auth().currentUser?.uid else { return }
