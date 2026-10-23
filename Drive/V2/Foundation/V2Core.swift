@@ -367,6 +367,12 @@ final class V2Router: ObservableObject {
     /// is recording." and never speak a score mid-drive. Not published:
     /// nothing on screen depends on it.
     var driveRecording = false
+    /// DriveView is on Analysing (the stopped drive isn't saved yet), so
+    /// "How did my last drive go?" never reads out the drive before it.
+    var driveFinishing = false
+    /// DriveView is up and not on Ready (recording, Analysing, Saved, Parked,
+    /// Too short...), so "Start a drive" doesn't promise Ready is open.
+    var driveHUDBusy = false
 
     private init() {}
 
@@ -411,6 +417,8 @@ final class V2Router: ObservableObject {
         startDriveRequested = false
         endDriveRequested = false
         driveRecording = false
+        driveFinishing = false
+        driveHUDBusy = false
     }
 }
 

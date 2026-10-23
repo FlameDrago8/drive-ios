@@ -5,7 +5,7 @@
 //  The plate family (§4.1): one glyph grammar for categories, events,
 //  routes, badges and the Focus Sign. Geometry is the KIT.md SVG, written in
 //  a 100-unit box (the 24-unit legend grid is scaled into it) and drawn with
-//  Canvas so a grid of 18 badges stays cheap.
+//  Canvas so a grid of 21 badges stays cheap.
 //
 //  Plates are decorative to VoiceOver: the meaning always sits in adjacent
 //  text or in the containing element's label.

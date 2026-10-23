@@ -27,7 +27,7 @@ struct SplashView: View {
             Color(red: 0.04, green: 0.04, blue: 0.06)
                 .ignoresSafeArea()
 
-            Image("SplashLogo")
+            Image(decorative: "SplashLogo")
                 .resizable()
                 .scaledToFit()
                 .frame(width: 180, height: 180)

@@ -537,7 +537,7 @@ enum V2StatsBuilder {
             let category = check.job.category
             count[category, default: 0] += 1
             if let known = last[category], known.date >= f.end { continue }
-            last[category] = (f.end, check.line)
+            last[category] = (date: f.end, line: check.line)
         }
         return rackCategories.map { category in
             V2RetiredJob(category: category, name: V2Voice.categoryName(category),

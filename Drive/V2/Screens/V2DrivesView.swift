@@ -79,7 +79,7 @@ struct V2DrivesView: View {
             Button("Delete drive", role: .destructive) { confirmDelete() }
             Button("Cancel", role: .cancel) { deletingID = nil }
         } message: {
-            Text("Its score, route and footage on this iPhone are removed. This can't be undone.")
+            Text("This drive is deleted from your account. A linked school keeps its copy. This can't be undone.")
         }
     }
 

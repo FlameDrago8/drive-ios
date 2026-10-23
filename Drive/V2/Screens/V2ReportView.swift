@@ -190,7 +190,7 @@ private struct V2ReportContent: View {
             Button("Delete drive", role: .destructive) { deleteDrive() }
             Button("Cancel", role: .cancel) {}
         } message: {
-            Text("Its score, route and footage on this iPhone are removed. This can't be undone.")
+            Text("This drive is deleted from your account. A linked school keeps its copy. This can't be undone.")
         }
         .sheet(isPresented: $showingMap) {
             V2RouteMapSheet(route: m.session.route, title: m.facts.name)
