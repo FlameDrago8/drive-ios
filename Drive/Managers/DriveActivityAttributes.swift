@@ -97,10 +97,11 @@ extension DriveActivityAttributes {
             state.score = finalScore ?? state.score
             state.isRecording = false
             state.endDate = state.endDate ?? Date()
-            let policy: ActivityUIDismissalPolicy = seconds > 0
-                ? .after(Date().addingTimeInterval(seconds))
-                : .immediate
-            await activity.end(ActivityContent(state: state, staleDate: nil),
+            let dismissAt = Date().addingTimeInterval(seconds)
+            let policy: ActivityUIDismissalPolicy = seconds > 0 ? .after(dismissAt) : .immediate
+            // Stale at the dismissal time: if iOS keeps the summary up past it,
+            // the widget greys it out (context.isStale) instead of looking live.
+            await activity.end(ActivityContent(state: state, staleDate: seconds > 0 ? dismissAt : nil),
                                dismissalPolicy: policy)
         }
     }
