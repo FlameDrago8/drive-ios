@@ -262,3 +262,70 @@ struct V2RouteIdentityTests {
         #expect(gapped.number(forKey: "b") == 4)
     }
 }
+
+// MARK: - Sunset (V2Sun, V2Night)
+
+struct V2SunTests {
+
+    /// NOAA reference times (timeanddate.com), within ±3 min.
+    @Test func knownSunsets() throws {
+        // London, 2024-12-21 (noon UTC): sunrise 08:04, sunset 15:53 GMT.
+        let londonNoon = Date(timeIntervalSince1970: 1_734_782_400)
+        let londonSet = try #require(V2Sun.sunset(on: londonNoon, lat: 51.5074, lng: -0.1278))
+        #expect(abs(londonSet.timeIntervalSince1970 - 1_734_796_380) <= 180)
+        let londonRise = try #require(V2Sun.sunrise(on: londonNoon, lat: 51.5074, lng: -0.1278))
+        #expect(abs(londonRise.timeIntervalSince1970 - 1_734_768_240) <= 180)
+
+        // New York, 2024-06-20 (noon EDT): sunset 8:31 PM EDT, 00:31 UTC on the 21st.
+        let nycNoon = Date(timeIntervalSince1970: 1_718_899_200)
+        let nycSet = try #require(V2Sun.sunset(on: nycNoon, lat: 40.7128, lng: -74.0060))
+        #expect(abs(nycSet.timeIntervalSince1970 - 1_718_929_860) <= 180)
+    }
+
+    /// Polar night and midnight sun (Tromsø): no sunrise or sunset; all dark, or none.
+    @Test func polarDays() {
+        let lat = 69.6492, lng = 18.9553
+        let december = Date(timeIntervalSince1970: 1_734_778_800)    // 2024-12-21 11:00 UTC
+        #expect(V2Sun.sunset(on: december, lat: lat, lng: lng) == nil)
+        #expect(V2Sun.sunrise(on: december, lat: lat, lng: lng) == nil)
+        let winterHour = V2Sun.walk(from: december, to: december.addingTimeInterval(3_600), lat: lat, lng: lng)
+        #expect(winterHour.dark == 3_600)
+        #expect(winterHour.startsDark)
+
+        let june = Date(timeIntervalSince1970: 1_718_964_000)        // 2024-06-21 10:00 UTC
+        #expect(V2Sun.sunset(on: june, lat: lat, lng: lng) == nil)
+        let summerHour = V2Sun.walk(from: june, to: june.addingTimeInterval(3_600), lat: lat, lng: lng)
+        #expect(summerHour.dark == 0)
+        #expect(!summerHour.startsDark)
+    }
+
+    /// A drive across sunset gets one Sunset and only its dark minutes; a
+    /// drive without GPS falls back to the start-time rule, marked approximate.
+    @Test func nightSplit() throws {
+        // London 2024-12-21, 15:40–16:10 UTC, a fix a minute; sunset 15:53.
+        let departed = Date(timeIntervalSince1970: 1_734_795_600)
+        let route = (0...30).map { i in
+            RoutePoint(lat: 51.5074, lng: -0.1278, speed: 10, course: 90,
+                       timestamp: departed.addingTimeInterval(Double(i) * 60), accuracy: 5)
+        }
+        // Saved 40 s after the last fix, as DriveView does once analysis ends.
+        let drive = DriveSession(date: departed.addingTimeInterval(1_840), duration: 1_800, score: 80, route: route)
+        let split = V2Night.split(drive)
+        #expect(!split.approximate)
+        #expect(!split.startsAfterDark)
+        #expect(split.events.count == 1)
+        let sunset = try #require(split.events.first)
+        #expect(sunset.isSunset)
+        #expect(abs(sunset.date.timeIntervalSince1970 - 1_734_796_380) <= 180)
+        #expect(abs(split.seconds - 985) <= 180)                      // about 16 min after dark
+
+        // No GPS: a 9 PM start counts the whole drive as night.
+        var parts = Calendar.current.dateComponents([.year, .month, .day], from: departed)
+        parts.hour = 21
+        let evening = try #require(Calendar.current.date(from: parts))
+        let blind = V2Night.split(DriveSession(date: evening.addingTimeInterval(1_200), duration: 1_200, score: 80))
+        #expect(blind.approximate)
+        #expect(blind.seconds == 1_200)
+        #expect(blind.events.isEmpty)
+    }
+}

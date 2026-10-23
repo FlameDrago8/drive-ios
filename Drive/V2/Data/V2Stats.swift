@@ -77,8 +77,6 @@ struct V2HoursTally: Equatable {
     let recentSeconds: TimeInterval
     /// Some night minutes came from the start-time rule (drives without GPS).
     let approximateNight: Bool
-
-    static let empty = V2HoursTally(minutes: 0, nightMinutes: 0, recentSeconds: 0, approximateNight: false)
 }
 
 /// The learner's own hours target, in whole hours: optional, empty by

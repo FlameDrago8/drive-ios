@@ -51,7 +51,8 @@ enum V2Sun {
         var events: [V2SunEvent] = []
         var startsDark = false
         for n in first...last {
-            let dayStart = Double(n) * 86_400 - lng * 240, dayEnd = dayStart + 86_400
+            let dayStart = Double(n) * 86_400 - lng * 240
+            let dayEnd = dayStart + 86_400
             let lo = max(a, dayStart), hi = min(b, dayEnd)
             let today = day(n, lat: lat, lng: lng)
             switch today {
@@ -129,8 +130,6 @@ struct V2NightSplit: Equatable {
     let startsAfterDark: Bool
     /// Sunsets and sunrises during the drive, in time order.
     let events: [V2SunEvent]
-
-    static let none = V2NightSplit(seconds: 0, approximate: false, startsAfterDark: false, events: [])
 }
 
 enum V2Night {
@@ -171,14 +170,14 @@ enum V2Night {
     /// falls outside the window, so those drives use the session span.
     private static func routeSpan(_ route: [RoutePoint], start: Date, end: Date) -> (start: Date, end: Date)? {
         let lo = start.addingTimeInterval(-600), hi = end.addingTimeInterval(600)
-        var first: Date? = nil, last: Date? = nil
+        var earliest: Date? = nil, latest: Date? = nil
         var count = 0
         for p in route where p.timestamp >= lo && p.timestamp <= hi {
             count += 1
-            if first.map({ p.timestamp < $0 }) ?? true { first = p.timestamp }
-            if last.map({ p.timestamp > $0 }) ?? true { last = p.timestamp }
+            if earliest.map({ p.timestamp < $0 }) ?? true { earliest = p.timestamp }
+            if latest.map({ p.timestamp > $0 }) ?? true { latest = p.timestamp }
         }
-        guard count >= 2, let first, let last, last.timeIntervalSince(first) >= 60 else { return nil }
-        return (first, last)
+        guard count >= 2, let from = earliest, let to = latest, to.timeIntervalSince(from) >= 60 else { return nil }
+        return (from, to)
     }
 }

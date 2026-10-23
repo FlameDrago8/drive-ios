@@ -609,7 +609,9 @@ final class V2Library: ObservableObject {
                     a.isRouteBest = s.score > best
                 }
                 a.isFirst = priorDates.isEmpty
-                // First-ever conditions: night = starting 20:00–05:59 (V2Stats' definition).
+                // First-ever conditions: night = starting 20:00–05:59. Kept on the
+                // start-time rule: verdicts are recomputed here, so the sunset rule
+                // (V2Night, hours displays) would rewrite old verdicts.
                 let hour = cal.component(.hour, from: s.date.addingTimeInterval(-s.duration))
                 if hour >= 20 || hour < 6 {
                     if !hadNightDrive { a.firstCondition = "night drive" }
