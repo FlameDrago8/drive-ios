@@ -329,3 +329,183 @@ struct V2SunTests {
         #expect(blind.events.isEmpty)
     }
 }
+
+// MARK: - Car-themed badges (Stop and Go, Roundabout, By the Book)
+
+struct V2CarThemedBadgeTests {
+
+    private static func sampleMetrics(hardBrakes: Int = 0) -> DriveMetrics {
+        DriveMetrics(braking: 95, acceleration: 95, cornering: 95, smoothness: 95,
+                     hardBrakeCount: hardBrakes, hardAccelCount: 0, hardCornerCount: 0,
+                     avgSpeedMS: 10, topSpeedMS: 15, sampleCount: 12_000, gpsPointCount: 300,
+                     events: [])
+    }
+
+    /// Synced shape: entry / exit speed −1 and no per-maneuver faults, as a
+    /// drive decodes after a Firestore round trip.
+    private static func maneuver(_ type: ManeuverType, grade: Double = 100, at t: Double = 0) -> Maneuver {
+        Maneuver(type: type, tStart: t, tEnd: t + 8, grade: grade, faults: [],
+                 peakDecelG: 0.2, peakLatG: 0.1, entrySpeedMS: -1, exitSpeedMS: -1)
+    }
+
+    private static func fault(_ severity: FaultSeverity) -> DriveFault {
+        DriveFault(criterion: "Firm stop", severity: severity, t: 30, detail: "", category: .braking)
+    }
+
+    private static func drive(duration: TimeInterval = 900, metrics: DriveMetrics? = sampleMetrics(),
+                              maneuvers: [Maneuver]? = nil, faults: [DriveFault]? = nil) -> DriveSession {
+        DriveSession(date: Date(timeIntervalSince1970: 1_760_000_000), duration: duration, score: 88,
+                     metrics: metrics, maneuvers: maneuvers, faults: faults)
+    }
+
+    private static var tenStops: [Maneuver] {
+        (0..<AchievementEngine.stopAndGoStops).map { maneuver(.stop, at: Double($0) * 40) }
+    }
+
+    @Test func stopAndGo() {
+        let stops = Self.tenStops
+        #expect(AchievementEngine.isStopAndGo(Self.drive(maneuvers: stops)))
+        // Turns between the stops don't matter, however they went.
+        #expect(AchievementEngine.isStopAndGo(Self.drive(maneuvers: stops + [Self.maneuver(.turnLeft, grade: 70)])))
+
+        // One stop short, one stop that cost points, or a hard brake anywhere: no.
+        #expect(!AchievementEngine.isStopAndGo(Self.drive(maneuvers: Array(stops.dropLast()))))
+        var firm = stops
+        firm[3] = Self.maneuver(.stop, grade: 90)
+        #expect(!AchievementEngine.isStopAndGo(Self.drive(maneuvers: firm)))
+        #expect(!AchievementEngine.isStopAndGo(Self.drive(metrics: Self.sampleMetrics(hardBrakes: 1), maneuvers: stops)))
+
+        // Counted drives only: under 2 minutes, or unscored, never earns it.
+        #expect(!AchievementEngine.isStopAndGo(Self.drive(duration: 110, maneuvers: stops)))
+        #expect(!AchievementEngine.isStopAndGo(Self.drive(metrics: nil, maneuvers: stops)))
+        #expect(!AchievementEngine.isStopAndGo(Self.drive(maneuvers: nil)))
+    }
+
+    @Test func cleanRoundabout() {
+        // 85 and up is "Clean": "Unsettled" (−10) passes, "Roundabout speed" (−20) doesn't.
+        #expect(AchievementEngine.isCleanRoundabout(Self.drive(maneuvers: [Self.maneuver(.roundabout, grade: 90)])))
+        #expect(AchievementEngine.isCleanRoundabout(Self.drive(maneuvers: [Self.maneuver(.roundabout, grade: 85)])))
+        #expect(!AchievementEngine.isCleanRoundabout(Self.drive(maneuvers: [Self.maneuver(.roundabout, grade: 80)])))
+        // One clean roundabout is enough.
+        #expect(AchievementEngine.isCleanRoundabout(Self.drive(maneuvers: [Self.maneuver(.roundabout, grade: 60),
+                                                                           Self.maneuver(.roundabout, at: 90)])))
+        #expect(!AchievementEngine.isCleanRoundabout(Self.drive(maneuvers: [Self.maneuver(.turnLeft)])))
+        #expect(!AchievementEngine.isCleanRoundabout(Self.drive(maneuvers: nil)))
+        #expect(!AchievementEngine.isCleanRoundabout(Self.drive(duration: 90, maneuvers: [Self.maneuver(.roundabout)])))
+    }
+
+    @Test func byTheBook() {
+        let syllabus = [ManeuverType.stop, .turnLeft, .turnRight, .laneChange].map { Self.maneuver($0, grade: 75) }
+        let length = AchievementEngine.byTheBookSeconds
+        #expect(AchievementEngine.isByTheBook(Self.drive(duration: length, maneuvers: syllabus,
+                                                         faults: [Self.fault(.minor), Self.fault(.minor)])))
+        #expect(AchievementEngine.isByTheBook(Self.drive(duration: length, maneuvers: syllabus)))
+
+        #expect(!AchievementEngine.isByTheBook(Self.drive(duration: length - 1, maneuvers: syllabus)))
+        #expect(!AchievementEngine.isByTheBook(Self.drive(duration: length, maneuvers: syllabus,
+                                                          faults: [Self.fault(.minor), Self.fault(.serious)])))
+        #expect(!AchievementEngine.isByTheBook(Self.drive(duration: length, maneuvers: syllabus,
+                                                          faults: [Self.fault(.dangerous)])))
+        for missing in syllabus.indices {
+            var short = syllabus
+            short.remove(at: missing)
+            #expect(!AchievementEngine.isByTheBook(Self.drive(duration: length, maneuvers: short)))
+        }
+        #expect(!AchievementEngine.isByTheBook(Self.drive(duration: length, metrics: nil, maneuvers: syllabus)))
+    }
+
+    /// 21 badges; a friend's list from a newer build only lights the ids this build knows.
+    @Test func engineAndFriends() {
+        let all = AchievementEngine.badges(from: [])
+        #expect(all.count == 21)
+        #expect(AchievementEngine.carThemedIDs.isSubset(of: Set(all.map(\.id))))
+        #expect(all.filter { AchievementEngine.carThemedIDs.contains($0.id) }.allSatisfy(\.isOneTime))
+
+        let earned = Set(AchievementEngine.earnedBadgeIDs(from: [Self.drive(maneuvers: Self.tenStops)]))
+        #expect(earned.contains("stop_and_go"))
+        #expect(!earned.contains("roundabout"))
+        #expect(!earned.contains("by_the_book"))
+
+        let friend = AchievementEngine.badges(fromEarnedIDs: ["stop_and_go", "a_badge_from_the_future"])
+        #expect(friend.count == 21)
+        #expect(friend.filter(\.isEarned).map(\.id) == ["stop_and_go"])
+    }
+
+    /// Copy rule 3 and IDEAS #4: never a test, a pass or "ready"; no "!".
+    @Test func copyNeverSaysTest() {
+        let badges = AchievementEngine.badges(from: []).filter { AchievementEngine.carThemedIDs.contains($0.id) }
+        #expect(badges.count == 3)
+        for badge in badges {
+            let earned = Badge(id: badge.id, icon: badge.icon, title: badge.title, description: badge.description,
+                               baseColor: badge.baseColor, progress: 1, currentTier: nil, nextTier: nil,
+                               isOneTime: true, count: 0, nextThreshold: nil)
+            let lines = [V2BadgeCopy.whyLine(earned), V2BadgeCopy.howToLine(badge), badge.description, badge.title]
+            for line in lines {
+                let lower = line.lowercased()
+                for word in ["test", "pass", "ready", "exam"] {
+                    #expect(!lower.contains(word), "\(line)")
+                }
+                #expect(!line.contains("!"), "\(line)")
+            }
+            #expect(V2BadgeCopy.whyLine(earned) != V2BadgeCopy.howToLine(badge))
+            let shape: V2PlateShape = badge.id == "stop_and_go" ? .regulatory : .guide
+            #expect(V2BadgeCopy.plateShape(badge.id) == shape)
+        }
+    }
+}
+
+// MARK: - Logbook mile posts
+
+struct V2MilePostTests {
+
+    @Test func sequence() {
+        var posts: [Int] = []
+        var post = 0
+        for _ in 0..<8 {
+            post = V2MilePosts.next(after: post)
+            posts.append(post)
+        }
+        #expect(posts == [25, 100, 250, 500, 1_000, 2_000, 3_000, 4_000])
+        #expect(V2MilePosts.next(after: 1_500) == 2_000)
+    }
+
+    @Test func crossings() {
+        #expect(V2MilePosts.posts(from: 0, to: 24.9) == [])
+        #expect(V2MilePosts.posts(from: 0, to: 25) == [25])
+        #expect(V2MilePosts.posts(from: 24.9, to: 25.2) == [25])
+        #expect(V2MilePosts.posts(from: 25, to: 99.9) == [])
+        // The odometer cells round to tenths: 24.96 shows as 25.0, so that drive takes the post.
+        #expect(V2MilePosts.posts(from: 20, to: 24.96) == [25])
+        #expect(V2MilePosts.posts(from: 24.96, to: 30) == [])
+        // One long drive can pass several.
+        #expect(V2MilePosts.posts(from: 20, to: 260) == [25, 100, 250])
+        #expect(V2MilePosts.posts(from: 990, to: 2_100) == [1_000, 2_000])
+        #expect(V2MilePosts.posts(from: 1_000, to: 1_999.9) == [])
+        #expect(V2MilePosts.posts(from: 1_999.9, to: 2_000) == [2_000])
+        // Nothing backwards, nothing from a corrupt total, and a GPS jump is capped.
+        #expect(V2MilePosts.posts(from: 50, to: 40) == [])
+        #expect(V2MilePosts.posts(from: 0, to: .infinity) == [])
+        #expect(V2MilePosts.posts(from: 0, to: 100_000_000).count == V2MilePosts.maxPerDrive)
+    }
+
+    /// Oldest first, whatever order the drives come in; a drive without GPS adds 0 miles.
+    @Test func stampsLandOnTheDriveThatReachedThem() {
+        let base = Date(timeIntervalSince1970: 1_760_000_000)
+        let a = UUID(), b = UUID(), c = UUID(), d = UUID(), e = UUID()
+        let drives: [(id: UUID, end: Date, miles: Double)] = [
+            (e, base.addingTimeInterval(5 * 86_400), 200),   // 307 → 250
+            (d, base.addingTimeInterval(4 * 86_400), 80),    // 107 → 100
+            (c, base.addingTimeInterval(3 * 86_400), 0),     //  27
+            (b, base.addingTimeInterval(2 * 86_400), 15),    //  27 → 25
+            (a, base.addingTimeInterval(1 * 86_400), 12),    //  12
+        ]
+        let stamps = V2StatsBuilder.mileStamps(drives)
+        #expect(stamps[a] == nil)
+        #expect(stamps[b] == [25])
+        #expect(stamps[c] == nil)
+        #expect(stamps[d] == [100])
+        #expect(stamps[e] == [250])
+        #expect(stamps.count == 3)
+        #expect(V2StatsBuilder.mileStamps(Array(drives.reversed())) == stamps)
+    }
+}

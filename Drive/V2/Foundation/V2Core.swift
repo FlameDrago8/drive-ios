@@ -325,6 +325,8 @@ enum V2Destination: Hashable {
     case driverCard
     /// All-time friends list ("See all time" under the week leaderboard).
     case leaderboard
+    /// "Jobs you've retired" (the Logbook endpaper's Jobs cleared row).
+    case retiredJobs
 }
 
 /// Connects the three tabs, the full-screen HUD and the Profile sheet, so the

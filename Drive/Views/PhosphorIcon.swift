@@ -112,6 +112,10 @@ private let phosphorUnicode: [String: UInt32] = [
     "camera":                   0xe10e,
     "pencil":                   0xe3ae,
     "hand-pointing":            0xe29a,
+    // Car-themed badges (codepoints checked against the bundled Phosphor 2.1 fonts)
+    "hand":                     0xe298,
+    "arrows-counter-clockwise": 0xe096,
+    "clipboard-text":           0xe198,
     "game-controller":          0xe26e,
 ]
 

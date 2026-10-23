@@ -467,6 +467,8 @@ struct V2DestinationView: View {
             V2DriverCardView()
         case .leaderboard:
             V2LeaderboardView()
+        case .retiredJobs:
+            V2RetiredJobsView()
         }
     }
 }

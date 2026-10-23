@@ -213,7 +213,8 @@ fileprivate enum V2LogbookPages {
         let m = minutes(drives)
         let footer = "\(drives.count) drive\(drives.count == 1 ? "" : "s"), \(V2Format.hoursMinutes(totalMinutes: m))"
         return V2LogbookWeek(id: week.id, title: week.title, drives: drives,
-                             footer: footer, stampsByDrive: week.stampsByDrive)
+                             footer: footer, stampsByDrive: week.stampsByDrive,
+                             milePostsByDrive: week.milePostsByDrive)
     }
 
     private static func minutes(_ drives: [V2DriveFacts]) -> Int {
@@ -229,9 +230,15 @@ fileprivate enum V2LogbookStamp {
         "\(drive.uuidString):\(badge.id):\(badge.currentTier?.rawValue ?? 0)"
     }
 
+    /// A mile post on the drive that reached it ("<drive>:mile:100").
+    static func key(drive: UUID, milePost: Int) -> String {
+        "\(drive.uuidString):mile:\(milePost)"
+    }
+
     static func keys(in week: V2LogbookWeek) -> [String] {
         week.drives.flatMap { drive in
             (week.stampsByDrive[drive.id] ?? []).map { key(drive: drive.id, badge: $0) }
+                + (week.milePostsByDrive[drive.id] ?? []).map { key(drive: drive.id, milePost: $0) }
         }
     }
 
@@ -281,6 +288,7 @@ fileprivate struct V2LogbookWeekPage: View {
                     ForEach(week.drives) { drive in
                         NavigationLink(value: V2Destination.report(drive.id)) {
                             V2LogbookRow(drive: drive, stamps: week.stampsByDrive[drive.id] ?? [],
+                                         milePosts: week.milePostsByDrive[drive.id] ?? [],
                                          isNight: V2LogbookPages.isNight(drive, night),
                                          atRest: atRest, reduceMotion: reduceMotion)
                         }
@@ -314,6 +322,8 @@ fileprivate struct V2LogbookWeekPage: View {
 fileprivate struct V2LogbookRow: View {
     let drive: V2DriveFacts
     let stamps: [Badge]
+    /// Lifetime-mile posts this drive reached (V2MilePosts), stamped after the badges.
+    let milePosts: [Int]
     /// Started after sunset (V2LogbookPages.isNight).
     let isNight: Bool
     let atRest: Set<String>
@@ -385,6 +395,12 @@ fileprivate struct V2LogbookRow: View {
                     .rotationEffect(.degrees(V2LogbookStamp.angle(key)))
                     .v2Stamp(shown)
             }
+            ForEach(milePosts, id: \.self) { post in
+                let key = V2LogbookStamp.key(drive: drive.id, milePost: post)
+                V2Plate.mileStamp(post, size: 44)
+                    .rotationEffect(.degrees(V2LogbookStamp.angle(key)))
+                    .v2Stamp(atRest.contains(key))
+            }
         }
         .padding(.trailing, -4)
         .allowsHitTesting(false)
@@ -401,8 +417,10 @@ fileprivate struct V2LogbookRow: View {
         } else {
             s += " Not scored."
         }
-        if !stamps.isEmpty {
-            s += " Stamped: " + stamps.map { V2BadgeCopy.titleLine($0) }.joined(separator: ", ") + "."
+        let stamped = stamps.map { V2BadgeCopy.titleLine($0) }
+            + milePosts.map { "mile post \(V2BadgeCopy.number($0))" }
+        if !stamped.isEmpty {
+            s += " Stamped: " + stamped.joined(separator: ", ") + "."
         }
         return s
     }
@@ -460,7 +478,7 @@ fileprivate struct V2LogbookEndpaper: View {
                 statRow("Softest stop", book.softestStopText ?? "\u{2013}")
                 mostDrivenRow
                 statRow("You drive best", book.bestTimeText ?? "\u{2013}")
-                statRow("Jobs cleared", "\(book.jobsCleared)")
+                jobsRow
                 if book.weeks.isEmpty {
                     Text("Each week you drive gets its own page.")
                         .font(V2Type.subhead)
@@ -558,6 +576,33 @@ fileprivate struct V2LogbookEndpaper: View {
         }
     }
 
+    /// "Jobs cleared" and a rack of the six Focus categories: a GUIDE square
+    /// with the category's legend for each one retired ("×2" when it was
+    /// retired twice), a LOCKED square for the rest. Pushes "Jobs you've retired".
+    private var jobsRow: some View {
+        VStack(spacing: 0) {
+            NavigationLink(value: V2Destination.retiredJobs) {
+                HStack(spacing: 12) {
+                    Text("Jobs cleared")
+                        .font(V2Type.subhead)
+                        .foregroundStyle(V2.label)
+                    Spacer(minLength: 8)
+                    V2RetiredJobRack(jobs: book.retiredJobs)
+                    Image(systemName: "chevron.right")
+                        .font(V2Type.footnoteSemibold)
+                        .foregroundStyle(V2.label3)
+                }
+                .padding(.horizontal, 16)
+                .frame(minHeight: 44)
+                .accessibilityElement(children: .ignore)
+                .accessibilityLabel(V2RetiredJobCopy.rackSpoken(book.retiredJobs, total: book.jobsCleared))
+            }
+            .buttonStyle(V2RowButtonStyle())
+            .accessibilityHint("Shows the jobs you've retired")
+            V2LogbookRule()
+        }
+    }
+
     private var mostDrivenRow: some View {
         VStack(spacing: 0) {
             HStack(spacing: 12) {
@@ -636,6 +681,156 @@ fileprivate struct V2LogbookVolumePage: View {
             .frame(maxWidth: .infinity, alignment: .leading)
             .padding(.bottom, 32)
         }
+    }
+}
+
+// MARK: - Jobs you've retired
+
+/// Retired-job words, shared by the endpaper rack and the pushed list.
+fileprivate enum V2RetiredJobCopy {
+    /// "Retired Oct 14"; "Retired twice, last on Oct 14"; "Not yet".
+    static func status(_ job: V2RetiredJob) -> String {
+        guard job.isRetired, let date = job.lastRetiredOn else { return "Not yet" }
+        let day = V2Format.monthDay(date)
+        switch job.count {
+        case 1:  return "Retired \(day)"
+        case 2:  return "Retired twice, last on \(day)"
+        default: return "Retired \(job.count) times, last on \(day)"
+        }
+    }
+
+    /// "×2" beside a plate retired more than once.
+    static func times(_ job: V2RetiredJob) -> String? {
+        job.count >= 2 ? "\u{00D7}\(job.count)" : nil
+    }
+
+    /// "Jobs cleared, 3. Braking, retired twice. Cornering, retired."
+    static func rackSpoken(_ jobs: [V2RetiredJob], total: Int) -> String {
+        var s = "Jobs cleared, \(total)."
+        for job in jobs where job.isRetired {
+            let times: String
+            switch job.count {
+            case 1:  times = ""
+            case 2:  times = " twice"
+            default: times = " \(job.count) times"
+            }
+            s += " \(job.name), retired\(times)."
+        }
+        return s
+    }
+}
+
+/// One Focus category's plate: a GUIDE square carrying the category's Focus
+/// legend in white once retired (the cleared Focus Sign with its legend in
+/// place of the check), a LOCKED paint-outline square until then. Never yellow.
+fileprivate struct V2RetiredJobPlate: View {
+    let job: V2RetiredJob
+    let size: CGFloat
+
+    var body: some View {
+        let legend = V2FocusSign.legend(for: job.category)
+        HStack(spacing: 1) {
+            if job.isRetired {
+                V2Plate(.square, style: .guide, legend: legend, size: size)
+            } else {
+                V2Plate(.square, style: .locked, legend: legend, size: size)
+            }
+            if let times = V2RetiredJobCopy.times(job) {
+                Text(verbatim: times)
+                    .font(V2Type.footnoteNumbers)
+                    .foregroundStyle(V2.label2)
+                    .lineLimit(1)
+                    .fixedSize()
+            }
+        }
+        .accessibilityHidden(true)
+    }
+}
+
+/// The endpaper rack: six 20 pt plates in category order.
+fileprivate struct V2RetiredJobRack: View {
+    let jobs: [V2RetiredJob]
+
+    var body: some View {
+        HStack(spacing: 4) {
+            ForEach(jobs) { job in
+                V2RetiredJobPlate(job: job, size: 20)
+            }
+        }
+        .fixedSize()
+    }
+}
+
+/// "Jobs you've retired" (pushed from the endpaper's Jobs cleared row): one
+/// ruled row per Focus category with its plate, the date it was last retired
+/// and the line stored then. Never the current job.
+struct V2RetiredJobsView: View {
+    @ObservedObject private var library = V2Library.shared
+
+    init() {}
+
+    var body: some View {
+        let jobs = V2StatsBuilder.retiredJobs(facts: library.snapshot.facts)
+        ScrollView {
+            VStack(alignment: .leading, spacing: 0) {
+                V2LogbookRule()
+                    .padding(.top, 12)
+                ForEach(jobs) { job in
+                    V2RetiredJobRow(job: job)
+                    V2LogbookRule()
+                }
+                Text("A job retires after it's cleared twice in a row.")
+                    .font(V2Type.footnote)
+                    .foregroundStyle(V2.label2)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .padding(.horizontal, 16)
+                    .padding(.top, 14)
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(.bottom, 32)
+        }
+        .background(V2.page.ignoresSafeArea())
+        .navigationTitle("Jobs you've retired")
+        .navigationBarTitleDisplayMode(.inline)
+    }
+}
+
+/// Plate 32 · "Braking" 17 semibold over "Retired Oct 14" 15 `label2` and the stored line.
+fileprivate struct V2RetiredJobRow: View {
+    let job: V2RetiredJob
+
+    var body: some View {
+        HStack(alignment: .top, spacing: 12) {
+            V2RetiredJobPlate(job: job, size: 32)
+                .frame(minWidth: 32, alignment: .leading)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(verbatim: job.name)
+                    .font(V2Type.headline)
+                    .foregroundStyle(V2.label)
+                Text(verbatim: V2RetiredJobCopy.status(job))
+                    .font(V2Type.subhead)
+                    .foregroundStyle(V2.label2)
+                if let line = job.line {
+                    Text(verbatim: line)
+                        .font(V2Type.subhead)
+                        .foregroundStyle(V2.label)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .padding(.top, 2)
+                }
+            }
+            Spacer(minLength: 0)
+        }
+        .padding(.horizontal, 16)
+        .padding(.vertical, 12)
+        .frame(minHeight: 64)
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(spoken)
+    }
+
+    private var spoken: String {
+        var s = "\(job.name). \(V2RetiredJobCopy.status(job))."
+        if let line = job.line { s += " " + line }
+        return s
     }
 }
 
