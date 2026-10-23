@@ -7,6 +7,8 @@
 //  stamps land once per user, the first time their page is shown. Rows open
 //  the drive's Report. After graduation the Permit weeks close as
 //  "Volume 1: Permit" and the License weeks open "Volume 2: License".
+//  Night is counted by the real sunset (V2Night); the endpaper's hours line
+//  is measured against the learner's own optional target (V2HoursTarget).
 //
 
 import SwiftUI
@@ -36,7 +38,7 @@ struct V2LogbookView: View {
                 let atRest = storedStamps.union(landed)
                 TabView(selection: $page) {
                     ForEach(Array(pages.enumerated()), id: \.element.id) { i, item in
-                        pageView(item, atRest: atRest)
+                        pageView(item, atRest: atRest, night: book.night)
                             .tag(i)
                     }
                     V2LogbookEndpaper(book: book, bestStreak: library.snapshot.stats.bestStreak)
@@ -59,9 +61,10 @@ struct V2LogbookView: View {
     }
 
     @ViewBuilder
-    private func pageView(_ item: V2LogbookPage, atRest: Set<String>) -> some View {
+    private func pageView(_ item: V2LogbookPage, atRest: Set<String>,
+                          night: [UUID: V2NightSplit]) -> some View {
         if let week = item.week {
-            V2LogbookWeekPage(week: week, volumeLabel: item.volumeLabel,
+            V2LogbookWeekPage(week: week, volumeLabel: item.volumeLabel, night: night,
                               atRest: atRest, reduceMotion: reduceMotion)
         } else if let volume = item.volume {
             V2LogbookVolumePage(volume: volume, hasLaterPages: item.hasLaterPages)
@@ -178,7 +181,7 @@ fileprivate enum V2LogbookPages {
                                      closedOn: closed,
                                      drives: permitDrives.count,
                                      minutes: minutes(permitDrives),
-                                     nightMinutes: minutes(permitDrives.filter { isNight($0.start) }))
+                                     nightMinutes: nightMinutes(permitDrives, book.night))
         let closing = V2LogbookPage(id: "volume-1-permit", week: nil, volumeLabel: nil,
                                     volume: volume, hasLaterPages: !after.isEmpty)
         let licensed = after.enumerated().map { i, week in
@@ -189,11 +192,15 @@ fileprivate enum V2LogbookPages {
         return before + [closing] + licensed
     }
 
-    /// Night = a start between 20:00 and 05:59 (the same approximation of
-    /// civil dusk as V2Stats.nightMinutes).
-    static func isNight(_ start: Date) -> Bool {
-        let hour = Calendar.current.component(.hour, from: start)
-        return hour >= 20 || hour < 6
+    /// Night = the drive started after sunset (V2Night: the sun at its first
+    /// good GPS fix; a start between 20:00 and 05:59 without GPS).
+    static func isNight(_ drive: V2DriveFacts, _ night: [UUID: V2NightSplit]) -> Bool {
+        (night[drive.id] ?? V2Night.split(drive.session)).startsAfterDark
+    }
+
+    /// Minutes between sunset and sunrise, as V2Stats.nightMinutes counts them.
+    private static func nightMinutes(_ drives: [V2DriveFacts], _ night: [UUID: V2NightSplit]) -> Int {
+        Int(drives.reduce(0.0) { $0 + (night[$1.id] ?? V2Night.split($1.session)).seconds } / 60)
     }
 
     private static func weekKey(_ week: V2LogbookWeek) -> String {
@@ -246,6 +253,7 @@ fileprivate enum V2LogbookStamp {
 fileprivate struct V2LogbookWeekPage: View {
     let week: V2LogbookWeek
     let volumeLabel: String?
+    let night: [UUID: V2NightSplit]
     let atRest: Set<String>
     let reduceMotion: Bool
 
@@ -273,6 +281,7 @@ fileprivate struct V2LogbookWeekPage: View {
                     ForEach(week.drives) { drive in
                         NavigationLink(value: V2Destination.report(drive.id)) {
                             V2LogbookRow(drive: drive, stamps: week.stampsByDrive[drive.id] ?? [],
+                                         isNight: V2LogbookPages.isNight(drive, night),
                                          atRest: atRest, reduceMotion: reduceMotion)
                         }
                         .buttonStyle(V2RowButtonStyle())
@@ -305,6 +314,8 @@ fileprivate struct V2LogbookWeekPage: View {
 fileprivate struct V2LogbookRow: View {
     let drive: V2DriveFacts
     let stamps: [Badge]
+    /// Started after sunset (V2LogbookPages.isNight).
+    let isNight: Bool
     let atRest: Set<String>
     let reduceMotion: Bool
 
@@ -380,10 +391,6 @@ fileprivate struct V2LogbookRow: View {
         .accessibilityHidden(true)
     }
 
-    private var isNight: Bool {
-        V2LogbookPages.isNight(drive.start)
-    }
-
     private var spoken: String {
         var s = "\(V2Format.weekday(drive.start)) \(V2Format.clock(drive.start)). \(drive.name), "
         s += "\(drive.minutes) minute\(drive.minutes == 1 ? "" : "s"), \(isNight ? "night" : "day")."
@@ -412,11 +419,18 @@ fileprivate struct V2LogbookRule: View {
 
 // MARK: - Endpaper
 
-/// Lifetime miles in odometer cells, the named stats, and the footnote.
+/// Lifetime miles in odometer cells, the hours line, the named stats, and the footnote.
 fileprivate struct V2LogbookEndpaper: View {
     let book: V2Logbook
     /// Longest run of consecutive driving days (V2Stats.bestStreak).
     let bestStreak: Int
+    @ObservedObject private var targets = V2HoursTargetStore.shared
+    @State private var editingTarget = false
+
+    init(book: V2Logbook, bestStreak: Int) {
+        self.book = book
+        self.bestStreak = bestStreak
+    }
 
     var body: some View {
         ScrollView {
@@ -440,8 +454,7 @@ fileprivate struct V2LogbookEndpaper: View {
                 .accessibilityElement(children: .ignore)
                 .accessibilityLabel("\(V2Format.oneDecimal(book.lifetimeMiles)) miles in all")
                 V2LogbookRule()
-                statRow("Hours behind the wheel", book.hoursText)
-                statRow("Night hours", book.nightText)
+                hoursBlock
                 statRow("Longest streak", streakText)
                 statRow("Longest clean stretch", book.longestCleanText ?? "\u{2013}")
                 statRow("Softest stop", book.softestStopText ?? "\u{2013}")
@@ -455,15 +468,67 @@ fileprivate struct V2LogbookEndpaper: View {
                         .padding(.horizontal, 16)
                         .padding(.top, 14)
                 }
-                Text("Not an official state log. Keep your state's form too.")
+                Text("Drive's count. Your state's log is the official record.")
                     .font(V2Type.footnote)
                     .foregroundStyle(V2.label2)
                     .fixedSize(horizontal: false, vertical: true)
                     .padding(.horizontal, 16)
                     .padding(.top, 14)
+                if book.hours.approximateNight {
+                    Text("Night for drives without GPS is counted from the start time.")
+                        .font(V2Type.footnote)
+                        .foregroundStyle(V2.label2)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .padding(.horizontal, 16)
+                        .padding(.top, 6)
+                }
             }
             .frame(maxWidth: .infinity, alignment: .leading)
             .padding(.bottom, 32)
+        }
+        .sheet(isPresented: $editingTarget) {
+            V2HoursTargetSheet(target: targets.target)
+        }
+    }
+
+    /// One ruled line: "38 h 10 m of 50 · night 6 h 40 m of 10" (no target:
+    /// "38 h 10 m · night 6 h 40 m"), the 4-week pace when a target is set,
+    /// and the target row. No ring and no bar (§8).
+    private var hoursBlock: some View {
+        let target = targets.target
+        let tally = book.hours
+        let pace = V2HoursCopy.pace(tally, target: target, now: Date())
+        let isSet = target.hours != nil || target.nightHours != nil
+        return VStack(alignment: .leading, spacing: 0) {
+            Text(verbatim: V2HoursCopy.line(tally, target: target))
+                .font(V2Type.headline.monospacedDigit())
+                .foregroundStyle(V2.label)
+                .fixedSize(horizontal: false, vertical: true)
+                .padding(.horizontal, 16)
+                .padding(.vertical, 11)
+                .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
+                .accessibilityLabel(V2HoursCopy.spoken(tally, target: target))
+            if let pace {
+                Text(verbatim: pace)
+                    .font(V2Type.subhead)
+                    .foregroundStyle(V2.label2)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .padding(.horizontal, 16)
+                    .padding(.bottom, 10)
+            }
+            V2LogbookRule()
+            Button {
+                editingTarget = true
+            } label: {
+                Text(verbatim: isSet ? "Change target" : "Set a target")
+                    .font(V2Type.subhead)
+                    .foregroundStyle(V2.tint)
+                    .padding(.horizontal, 16)
+                    .frame(minHeight: 44)
+            }
+            .buttonStyle(V2RowButtonStyle())
+            .accessibilityHint("Your own hours target, kept on this phone")
+            V2LogbookRule()
         }
     }
 
@@ -597,5 +662,133 @@ fileprivate struct V2LogbookStatRow: View {
             .accessibilityElement(children: .combine)
             V2LogbookRule()
         }
+    }
+}
+
+// MARK: - Hours target
+
+/// Tells open screens the hours target changed: the Logbook endpaper sets it
+/// and the Permit Driver Card shows it. The target is read fresh from
+/// UserDefaults each time (the key is per user, so an account switch never
+/// shows the last one's).
+@MainActor
+final class V2HoursTargetStore: ObservableObject {
+    static let shared = V2HoursTargetStore()
+    private init() {}
+
+    var target: V2HoursTarget { V2HoursTarget.load() }
+
+    func save(_ target: V2HoursTarget) {
+        objectWillChange.send()
+        target.save()
+    }
+}
+
+/// "Hours target": hours and night hours, each a stepper with example
+/// presets the learner can step from; Clear empties both. Empty by default.
+fileprivate struct V2HoursTargetSheet: View {
+    @Environment(\.dismiss) private var dismiss
+    @State private var hours: Int?
+    @State private var nightHours: Int?
+
+    init(target: V2HoursTarget) {
+        _hours = State(initialValue: target.hours)
+        _nightHours = State(initialValue: target.nightHours)
+    }
+
+    var body: some View {
+        NavigationStack {
+            Form {
+                Section {
+                    stepper("Hours", value: $hours, limit: 300)
+                    presets(V2HoursTarget.presets, value: $hours)
+                } footer: {
+                    Text("The presets are examples. Use the hours your state asks for.")
+                }
+                .listRowBackground(V2.card)
+
+                Section {
+                    stepper("Night hours", value: $nightHours, limit: 100)
+                    presets(V2HoursTarget.nightPresets, value: $nightHours)
+                }
+                .listRowBackground(V2.card)
+
+                Section {
+                    Button(role: .destructive) {
+                        hours = nil
+                        nightHours = nil
+                    } label: {
+                        Text("Clear")
+                    }
+                    .disabled(hours == nil && nightHours == nil)
+                } footer: {
+                    Text("Kept on this phone. Drive's count. Your state's log is the official record.")
+                }
+                .listRowBackground(V2.card)
+            }
+            .font(V2Type.body)
+            .scrollContentBackground(.hidden)
+            .background(V2.bg)
+            .navigationTitle("Hours target")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Cancel") { dismiss() }
+                }
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("Save", action: save)
+                }
+            }
+        }
+        .tint(V2.tint)
+        .presentationDetents([.medium, .large])
+        .presentationDragIndicator(.visible)
+        .v2AppScheme()
+    }
+
+    /// "Hours    50 h  [− +]"; "Not set" until a preset or + is tapped.
+    /// Stepping below 1 clears the field.
+    private func stepper(_ title: String, value: Binding<Int?>, limit: Int) -> some View {
+        Stepper(label: {
+            HStack(spacing: 8) {
+                Text(verbatim: title)
+                    .foregroundStyle(V2.label)
+                Spacer(minLength: 8)
+                Text(verbatim: value.wrappedValue.map { "\($0) h" } ?? "Not set")
+                    .font(V2Type.bodyNumbers)
+                    .foregroundStyle(value.wrappedValue == nil ? V2.label2 : V2.label)
+            }
+        }, onIncrement: {
+            value.wrappedValue = min(limit, (value.wrappedValue ?? 0) + 1)
+        }, onDecrement: {
+            guard let current = value.wrappedValue else { return }
+            value.wrappedValue = current > 1 ? current - 1 : nil
+        })
+        .accessibilityValue(value.wrappedValue.map { "\($0) hours" } ?? "Not set")
+    }
+
+    /// Example values in `tint` text; tapping one fills the stepper above.
+    private func presets(_ values: [Int], value: Binding<Int?>) -> some View {
+        HStack(spacing: 24) {
+            ForEach(values, id: \.self) { preset in
+                Button {
+                    value.wrappedValue = preset
+                } label: {
+                    Text(verbatim: "\(preset) h")
+                        .font(V2Type.bodyNumbers)
+                        .foregroundStyle(V2.tint)
+                        .frame(minWidth: 44, minHeight: 44)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.borderless)
+                .accessibilityLabel("\(preset) hours")
+            }
+            Spacer(minLength: 0)
+        }
+    }
+
+    private func save() {
+        V2HoursTargetStore.shared.save(V2HoursTarget(hours: hours, nightHours: nightHours))
+        dismiss()
     }
 }

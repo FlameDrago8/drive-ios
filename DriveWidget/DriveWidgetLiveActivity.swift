@@ -7,7 +7,9 @@
 //  band colour is a verdict and arrives once parked. No ticking seconds:
 //  minutes come from the state (bucket commits), never a running timer.
 //  The `.small` family (CarPlay Dashboard, Smart Stack) is the car and the
-//  minutes only: never a score.
+//  minutes only: never a score. StandBy (`isActivityFullscreen`) gets its own
+//  quiet layout, outlines replace band fills in low light, and a stale
+//  Parked summary (`context.isStale`) greys out.
 //
 
 import ActivityKit
@@ -228,7 +230,7 @@ struct V2WActivityLockScreen: View {
     @ViewBuilder private func header(_ m: V2WActivityModel) -> some View {
         HStack(spacing: 0) {
             HStack(spacing: 8) {
-                V2WCar(size: .m, color: V2W.label)
+                V2WCar(size: .m, color: scoreInk(m))
                 if m.isLive {
                     Text(verbatim: "Recording")
                         .font(V2WType.text(15, .semibold))
@@ -326,15 +328,103 @@ struct V2WActivityLockScreen: View {
 
     /// W338 H24: neutral with the car at the head while recording; the
     /// completed strip with P and the car parked once ended (band colour
-    /// only with the verdict).
+    /// only with a fresh verdict, outlined at night, grey once stale).
     @ViewBuilder private func strip(_ m: V2WActivityModel) -> some View {
         if m.isLive {
             V2WLaneStrip(bars: m.bars, zone: 24, liveCapacity: v2wLiveSlots, ink: V2W.label2,
                          car: .m, carColor: V2W.label)
         } else {
-            V2WLaneStrip(bars: m.bars, zone: 24, ink: m.isParked ? nil : V2W.label2,
-                         car: .m, carColor: V2W.label)
+            V2WLaneStrip(bars: m.bars, zone: 24,
+                         ink: m.showsBand ? nil : (m.isStale ? V2W.label3 : V2W.label2),
+                         outlined: isNight,
+                         plateColor: m.isStale ? V2W.label2 : V2W.label,
+                         car: .m, carColor: scoreInk(m))
         }
+    }
+
+    // MARK: StandBy (full screen)
+
+    /// StandBy scales this presentation up to fill the display. Parked: the
+    /// big score, the route shield and the full-width strip, nothing else.
+    /// Recording: the car and "Recording · 12 min" only, never a live score.
+    private var standBy: some View {
+        let m = model()
+        let spoken = m.isParked && m.hasScore
+            ? m.spoken
+            : (m.isLive ? "Recording, \(m.spokenMinutes)" : "Parked \(m.parkedClock)")
+        return Group {
+            if m.isParked && m.hasScore {
+                standByParked(m)
+            } else {
+                standByStatus(m)
+            }
+        }
+        .padding(16)
+        .activityBackgroundTint(V2W.activityBackground(scheme))
+        .activitySystemActionForegroundColor(V2W.label)
+        .widgetURL(m.tapURL)
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(Text(verbatim: spoken))
+    }
+
+    /// "91" 64 + "A" 28 | route shield 28; then the completed strip.
+    private func standByParked(_ m: V2WActivityModel) -> some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack(alignment: .center, spacing: 8) {
+                HStack(alignment: .firstTextBaseline, spacing: 4) {
+                    Text(verbatim: "\(m.score)")
+                        .font(V2WType.text(64, .bold))
+                        .tracking(-1.5)
+                        .foregroundStyle(scoreInk(m))
+                        .contentTransition(reduceMotion ? .identity : .numericText(value: Double(m.score)))
+                    Text(verbatim: m.grade)
+                        .font(V2WType.text(28, .bold))
+                        .foregroundStyle(gradeInk(m))
+                }
+                .lineLimit(1)
+                .fixedSize()
+                Spacer(minLength: 8)
+                if let number = m.routeNumber {
+                    V2WRouteShield(number: number, size: 28)
+                }
+            }
+            strip(m)
+        }
+    }
+
+    /// Car L + "Recording · 12 min", or + "Parked 3:52 PM" for a drive that
+    /// ended without a Parked summary.
+    private func standByStatus(_ m: V2WActivityModel) -> some View {
+        HStack(spacing: 12) {
+            V2WCar(size: .l, color: scoreInk(m))
+            HStack(alignment: .firstTextBaseline, spacing: 0) {
+                if m.isLive {
+                    Text(verbatim: "Recording")
+                        .font(V2WType.text(28, .semibold))
+                        .foregroundStyle(V2W.label)
+                    Text(verbatim: " \u{00B7} ")
+                        .font(V2WType.text(28))
+                        .foregroundStyle(V2W.label2)
+                    Text(verbatim: "\(m.minutes)")
+                        .font(V2WType.measured(28))
+                        .foregroundStyle(V2W.label)
+                    Text(verbatim: " min")
+                        .font(V2WType.text(28))
+                        .foregroundStyle(V2W.label2)
+                } else {
+                    Text(verbatim: "Parked ")
+                        .font(V2WType.text(28, .semibold))
+                        .foregroundStyle(scoreInk(m))
+                    Text(verbatim: m.parkedClock)
+                        .font(V2WType.measured(28))
+                        .foregroundStyle(V2W.label2)
+                }
+            }
+            .lineLimit(1)
+            .minimumScaleFactor(0.7)
+            Spacer(minLength: 0)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
     }
 }
 
@@ -400,10 +490,11 @@ struct V2WActivitySmall: View {
 /// Expanded leading: "89" 34 bold + letter 17.
 struct V2WIslandScore: View {
     let state: DriveActivityAttributes.ContentState
+    var isStale: Bool = false
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
-        let m = V2WActivityModel(state: state, now: Date())
+        let m = V2WActivityModel(state: state, now: Date(), isStale: isStale)
         HStack(alignment: .firstTextBaseline, spacing: 3) {
             if m.hasScore {
                 Text(verbatim: "\(m.score)")
@@ -413,7 +504,7 @@ struct V2WIslandScore: View {
                     .contentTransition(reduceMotion ? .identity : .numericText(value: Double(m.score)))
                 Text(verbatim: m.grade)
                     .font(V2WType.text(17, .bold))
-                    .foregroundStyle(m.isParked ? V2WBand(score: Double(m.score)).color : V2W.Island.label2)
+                    .foregroundStyle(m.showsBand ? V2WBand(score: Double(m.score)).color : V2W.Island.label2)
             } else {
                 Text(verbatim: "Not scored")
                     .font(V2WType.text(17, .bold))
@@ -479,12 +570,13 @@ struct V2WIslandCenter: View {
 /// Expanded bottom: strip H20 with car S (neutral live; banded once parked).
 struct V2WIslandStrip: View {
     let state: DriveActivityAttributes.ContentState
+    var isStale: Bool = false
 
     var body: some View {
-        let m = V2WActivityModel(state: state, now: Date())
+        let m = V2WActivityModel(state: state, now: Date(), isStale: isStale)
         V2WLaneStrip(bars: m.bars, zone: 20,
                      liveCapacity: m.isLive ? v2wLiveSlots : nil,
-                     ink: m.isParked ? nil : V2W.Island.label2,
+                     ink: m.showsBand ? nil : V2W.Island.label2,
                      lineColor: V2W.Island.paint,
                      pinColor: V2W.Island.label,
                      plateColor: V2W.Island.label,
