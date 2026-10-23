@@ -28,7 +28,8 @@ struct V2Stats {
     let weekChangePct: Int?
     let thisWeekAvg: Double?; let lastWeekAvg: Double?
     let bestScore: Double?
-    /// Drives starting 20:00–05:59 (an approximation of civil dusk).
+    /// Minutes between sunset and the next sunrise (V2Night: the sun at each
+    /// drive's first good GPS fix; the 20:00–05:59 start rule without GPS).
     let nightMinutes: Int
     /// Min peakDecelG over stop maneuvers.
     let softestStopG: Double?
@@ -61,7 +62,111 @@ struct V2LogbookWeek: Identifiable { let id: Date; let title: String; let drives
 
 struct V2Logbook { let weeks: [V2LogbookWeek]; let lifetimeMiles: Double; let hoursText: String
                    let nightText: String; let longestCleanText: String?; let softestStopText: String?
-                   let mostDriven: (name: String, number: Int?)?; let bestTimeText: String?; let jobsCleared: Int }
+                   let mostDriven: (name: String, number: Int?)?; let bestTimeText: String?; let jobsCleared: Int
+                   /// Per-drive night (the Logbook's sun / moon and Volume 1's night hours).
+                   let night: [UUID: V2NightSplit]
+                   let hours: V2HoursTally }
+
+/// Lifetime hours for the hours line (Logbook endpaper, Permit Driver Card).
+struct V2HoursTally: Equatable {
+    /// Every drive, like `V2Stats.totalMinutes`.
+    let minutes: Int
+    /// Sunset to sunrise, like `V2Stats.nightMinutes`.
+    let nightMinutes: Int
+    /// Driving seconds in the last 28 days (the pace; 0 = no drives in 4 weeks).
+    let recentSeconds: TimeInterval
+    /// Some night minutes came from the start-time rule (drives without GPS).
+    let approximateNight: Bool
+
+    static let empty = V2HoursTally(minutes: 0, nightMinutes: 0, recentSeconds: 0, approximateNight: false)
+}
+
+/// The learner's own hours target, in whole hours: optional, empty by
+/// default, kept on this phone per user (no Firestore field).
+struct V2HoursTarget: Equatable {
+    var hours: Int?
+    var nightHours: Int?
+
+    /// Examples only; the sheet's fields stay editable.
+    static let presets = [40, 50, 60]
+    static let nightPresets = [10, 15]
+
+    static func load(_ defaults: UserDefaults = .standard) -> V2HoursTarget {
+        func read(_ name: String) -> Int? {
+            guard let value = defaults.object(forKey: V2UserKey.scoped(name)) as? Int,
+                  value > 0, value <= 1_000 else { return nil }
+            return value
+        }
+        return V2HoursTarget(hours: read("hoursTarget"), nightHours: read("nightHoursTarget"))
+    }
+
+    func save(_ defaults: UserDefaults = .standard) {
+        for (name, value) in [("hoursTarget", hours), ("nightHoursTarget", nightHours)] {
+            let key = V2UserKey.scoped(name)
+            if let value, value > 0, value <= 1_000 {
+                defaults.set(value, forKey: key)
+            } else {
+                defaults.removeObject(forKey: key)
+            }
+        }
+    }
+}
+
+/// The hours line and its pace sentence. No ring, no "behind": a ruled line.
+enum V2HoursCopy {
+    /// "38 h 10 m of 50 · night 6 h 40 m of 10"; no target: "38 h 10 m · night 6 h 40 m".
+    static func line(_ tally: V2HoursTally, target: V2HoursTarget) -> String {
+        var total = V2Format.hoursMinutes(totalMinutes: tally.minutes)
+        if let hours = target.hours { total += " of \(hours)" }
+        var night = "night " + V2Format.hoursMinutes(totalMinutes: tally.nightMinutes)
+        if let hours = target.nightHours { night += " of \(hours)" }
+        return "\(total) \u{00B7} \(night)"
+    }
+
+    /// "38 hours 10 minutes of 50 hours. Night, 6 hours 40 minutes of 10 hours."
+    static func spoken(_ tally: V2HoursTally, target: V2HoursTarget) -> String {
+        func amount(_ minutes: Int, of goal: Int?) -> String {
+            let h = minutes / 60, m = minutes % 60
+            var parts: [String] = []
+            if h > 0 { parts.append(h == 1 ? "1 hour" : "\(h) hours") }
+            if m > 0 || h == 0 { parts.append(m == 1 ? "1 minute" : "\(m) minutes") }
+            var text = parts.joined(separator: " ")
+            if let goal { text += " of \(goal) \(goal == 1 ? "hour" : "hours")" }
+            return text
+        }
+        return "\(amount(tally.minutes, of: target.hours)). Night, \(amount(tally.nightMinutes, of: target.nightHours))."
+    }
+
+    /// "At your 4-week pace, 50 hours around Mar 14." Only with an hours
+    /// target not yet reached and drives in the last 4 weeks; hidden when the
+    /// date would be more than two years out.
+    static func pace(_ tally: V2HoursTally, target: V2HoursTarget, now: Date) -> String? {
+        guard let goal = target.hours, goal > 0, tally.recentSeconds > 0 else { return nil }
+        let remaining = Double(goal * 3_600 - tally.minutes * 60)
+        guard remaining > 0 else { return nil }
+        let days = remaining / (tally.recentSeconds / 28)
+        guard days.isFinite, days <= 730 else { return nil }
+        let when = now.addingTimeInterval(days * 86_400)
+        let cal = Calendar.current
+        let day = cal.component(.year, from: when) == cal.component(.year, from: now)
+            ? paceDay.string(from: when) : paceDayYear.string(from: when)
+        return "At your 4-week pace, \(goal) \(goal == 1 ? "hour" : "hours") around \(day)."
+    }
+
+    private static let paceDay: DateFormatter = {
+        let f = DateFormatter()
+        f.locale = .autoupdatingCurrent
+        f.setLocalizedDateFormatFromTemplate("MMMd")
+        return f
+    }()
+
+    private static let paceDayYear: DateFormatter = {
+        let f = DateFormatter()
+        f.locale = .autoupdatingCurrent
+        f.setLocalizedDateFormatFromTemplate("yMMMd")
+        return f
+    }()
+}
 
 enum V2TodayHero {
     case justParked(V2DriveFacts)          // A: a counted drive ended < 60 min ago
@@ -75,7 +180,10 @@ enum V2StatsBuilder {
 
     // MARK: - Stats
 
-    static func stats(facts: [V2DriveFacts], focus: V2FocusState, now: Date) -> V2Stats {
+    /// `night`: per-drive splits from the library rebuild; a drive missing
+    /// from it is split here.
+    static func stats(facts: [V2DriveFacts], focus: V2FocusState, now: Date,
+                      night: [UUID: V2NightSplit] = [:]) -> V2Stats {
         let cal = Calendar.current
         let counted = facts.filter { $0.isCounted }
         let today = cal.startOfDay(for: now)
@@ -107,9 +215,7 @@ enum V2StatsBuilder {
 
         // Lifetime
         let totalSeconds = facts.reduce(0.0) { $0 + $1.session.duration }
-        let nightSeconds = facts
-            .filter { let h = cal.component(.hour, from: $0.start); return h >= 20 || h < 6 }
-            .reduce(0.0) { $0 + $1.session.duration }
+        let tally = hours(facts: facts, night: night, now: now)
         let softest = facts
             .flatMap { $0.session.maneuvers ?? [] }
             .filter { $0.type == .stop && $0.peakDecelG > 0 }
@@ -133,7 +239,7 @@ enum V2StatsBuilder {
                        thisWeekAvg: thisAvg,
                        lastWeekAvg: lastAvg,
                        bestScore: counted.map(\.score).max(),
-                       nightMinutes: Int(nightSeconds / 60),
+                       nightMinutes: tally.nightMinutes,
                        softestStopG: softest,
                        longestCleanMinutes: longestClean,
                        bestTimeOfDay: bestTimeOfDay(counted, cal: cal),
@@ -276,13 +382,35 @@ enum V2StatsBuilder {
         return summaries.sorted { ($0.number, $0.name) < ($1.number, $1.name) }
     }
 
+    // MARK: - Hours
+
+    /// Lifetime and night minutes (sunset rule; the start-time rule for drives
+    /// without GPS) and the last 4 weeks' driving, for the hours line.
+    static func hours(facts: [V2DriveFacts], night: [UUID: V2NightSplit], now: Date) -> V2HoursTally {
+        let recentCut = now.addingTimeInterval(-28 * 86_400)
+        var total = 0.0, dark = 0.0, recent = 0.0
+        var approximate = false
+        for f in facts {
+            total += f.session.duration
+            if f.end > recentCut && f.end <= now { recent += max(0, f.session.duration) }
+            let split = night[f.id] ?? V2Night.split(f.session)
+            dark += split.seconds
+            if split.approximate && split.seconds > 0 { approximate = true }
+        }
+        return V2HoursTally(minutes: Int(total / 60), nightMinutes: Int(dark / 60),
+                            recentSeconds: recent, approximateNight: approximate)
+    }
+
     // MARK: - Logbook
 
     /// One page per calendar week, oldest first (a book reads forward; the
     /// screen opens on the last page). Rows are chronological.
-    static func logbook(facts: [V2DriveFacts], stats: V2Stats, badges: [Badge]) -> V2Logbook {
+    static func logbook(facts: [V2DriveFacts], stats: V2Stats, badges: [Badge],
+                        night: [UUID: V2NightSplit] = [:], now: Date = Date()) -> V2Logbook {
         let cal = Calendar.current
         let stampMap = stamps(facts: facts, badges: badges)
+        var nightByDrive = night
+        for f in facts where nightByDrive[f.id] == nil { nightByDrive[f.id] = V2Night.split(f.session) }
         let grouped = Dictionary(grouping: facts) { weekStart($0.end, cal: cal) }
         let weeks: [V2LogbookWeek] = grouped.keys.sorted().map { start in
             let drives = (grouped[start] ?? []).sorted { $0.end < $1.end }
@@ -303,7 +431,9 @@ enum V2StatsBuilder {
                          softestStopText: stats.softestStopG.map { V2Format.g($0) },
                          mostDriven: stats.mostDriven,
                          bestTimeText: stats.bestTimeOfDay.map { "\($0.period)s (avg \(V2Voice.scoreText($0.avg)))" },
-                         jobsCleared: stats.jobsCleared)
+                         jobsCleared: stats.jobsCleared,
+                         night: nightByDrive,
+                         hours: hours(facts: facts, night: nightByDrive, now: now))
     }
 
     // MARK: - Today hero (§6.1)

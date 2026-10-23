@@ -21,7 +21,12 @@ import FirebaseAuth
 struct V2TraceStrip: Equatable { let strip: V2Strip; let moments: [V2Moment] }
 
 struct V2Timetable { let departed: Date; let parked: Date; let movingMinutes: Int?; let stoppedMinutes: Int?
-                     let routeAvgStoppedMinutes: Int?; let miles: Double; let avgMph: Int?; let topMph: Int? }
+                     let routeAvgStoppedMinutes: Int?; let miles: Double; let avgMph: Int?; let topMph: Int?
+                     /// Sunsets and sunrises between Departed and Parked, in time order.
+                     var sunEvents: [V2SunEvent] = []
+                     /// Minutes after dark, set only when the drive crosses sunset or
+                     /// sunrise (a trip line's "21 of 34 min after dark").
+                     var afterDarkMinutes: Int? = nil }
 
 /// A loaded trace and its digest, built together off the main thread.
 private struct V2LoadedTrace {
@@ -59,6 +64,10 @@ final class V2Library: ObservableObject {
     /// (earliest used) for routes in use, and the user's number registry.
     private var routeDisplay: [String: String] = [:]
     private var routeRegistry = V2RouteRegistry()
+
+    /// Night per drive, by the sun at its first good GPS fix (V2Night), rebuilt
+    /// with the snapshot. Hours displays only: verdicts keep the start-time rule.
+    private(set) var nightSplits: [UUID: V2NightSplit] = [:]
 
     /// Stats for a later calendar day than the snapshot's (Today after midnight).
     private var statsCache: (day: Date, stats: V2Stats)?
@@ -258,14 +267,21 @@ final class V2Library: ObservableObject {
             topMph = V2Format.mph(fromMS: top)
         }
 
-        return V2Timetable(departed: s.date.addingTimeInterval(-s.duration),
+        // Sunset / sunrise rows sit between Departed and Parked, in time order.
+        let departed = s.date.addingTimeInterval(-s.duration)
+        let night = nightSplits[id] ?? V2Night.split(s)
+        let sunEvents = night.events.filter { $0.date > departed && $0.date < s.date }
+
+        return V2Timetable(departed: departed,
                            parked: s.date,
                            movingMinutes: split?.moving,
                            stoppedMinutes: split?.stopped,
                            routeAvgStoppedMinutes: routeAvg,
                            miles: f?.miles ?? V2Format.miles(km: s.distanceKilometers),
                            avgMph: avgMph,
-                           topMph: topMph)
+                           topMph: topMph,
+                           sunEvents: sunEvents,
+                           afterDarkMinutes: sunEvents.isEmpty ? nil : V2Format.minutes(night.seconds))
     }
 
     // MARK: - Route naming
@@ -436,7 +452,14 @@ final class V2Library: ObservableObject {
     }
 
     func logbook() -> V2Logbook {
-        V2StatsBuilder.logbook(facts: snapshot.facts, stats: stats(on: Date()), badges: snapshot.badges)
+        let now = Date()
+        return V2StatsBuilder.logbook(facts: snapshot.facts, stats: stats(on: now), badges: snapshot.badges,
+                                      night: nightSplits, now: now)
+    }
+
+    /// Lifetime and night hours for the hours line (Logbook endpaper, Permit Driver Card).
+    func hours(now: Date = Date()) -> V2HoursTally {
+        V2StatsBuilder.hours(facts: snapshot.facts, night: nightSplits, now: now)
     }
 
     func todayHero(now: Date) -> V2TodayHero {
@@ -449,7 +472,7 @@ final class V2Library: ObservableObject {
         if cal.isDate(now, inSameDayAs: builtAt) { return snapshot.stats }
         let day = cal.startOfDay(for: now)
         if let cached = statsCache, cached.day == day { return cached.stats }
-        let fresh = V2StatsBuilder.stats(facts: snapshot.facts, focus: snapshot.focus, now: now)
+        let fresh = V2StatsBuilder.stats(facts: snapshot.facts, focus: snapshot.focus, now: now, night: nightSplits)
         statsCache = (day, fresh)
         return fresh
     }
@@ -673,7 +696,14 @@ final class V2Library: ObservableObject {
                                       setJob: focus.setBy[s.id]))
         }
 
-        let stats = V2StatsBuilder.stats(facts: facts, focus: focus, now: now)
+        // Night by the sun at each drive's first good GPS fix, recomputed on
+        // every rebuild so old drives correct themselves. Hours displays only:
+        // the first-night verdict above keeps its start-time rule.
+        var night: [UUID: V2NightSplit] = [:]
+        night.reserveCapacity(sessions.count)
+        for s in sessions { night[s.id] = V2Night.split(s, calendar: cal) }
+
+        let stats = V2StatsBuilder.stats(facts: facts, focus: focus, now: now, night: night)
         // Same input the launch beta uses everywhere (all drives, not just counted).
         let badges = AchievementEngine.badges(from: sessions)
         V2BadgeTracker.shared.seedFromHistory(sessions: sessions, badges: badges, now: now)
@@ -683,6 +713,7 @@ final class V2Library: ObservableObject {
         sessionIndex = newSessionIndex
         routeDisplay = display
         routeRegistry = registry
+        nightSplits = night
         statsCache = nil
         builtAt = now
         snapshot = V2Snapshot(facts: facts, routeNumbers: routeNumbers, focus: focus,

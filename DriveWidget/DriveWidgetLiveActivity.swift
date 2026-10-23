@@ -30,9 +30,14 @@ private let v2wLiveSlots = 72
 struct V2WActivityModel {
     let state: DriveActivityAttributes.ContentState
     let now: Date
+    /// `context.isStale`: the content's staleDate has passed. A stale Parked
+    /// summary greys out (no band colour) until the system removes it.
+    var isStale: Bool = false
 
     var isLive: Bool { state.isRecording }
     var isParked: Bool { !state.isRecording && state.parked == true }
+    /// Band colour is a verdict: only on a fresh Parked state.
+    var showsBand: Bool { isParked && !isStale }
     /// Drives that end unscored (too short, error) end with score 0.
     var hasScore: Bool { state.isRecording || state.score > 0 }
     var score: Int { max(0, min(100, state.score)) }
@@ -73,6 +78,9 @@ struct V2WActivityModel {
     var focusCategory: String? {
         V2WFormat.isJob(state.focusCategory) ? state.focusCategory : nil
     }
+
+    /// Parked state: the route shield number (named routes only).
+    var routeNumber: Int? { isParked ? state.routeNumber : nil }
 
     /// Parked with a saved drive: that drive's Report. Recording, or an
     /// older payload without an id: just open the app.
@@ -120,11 +128,11 @@ struct V2WActivityModel {
 struct DriveWidgetLiveActivity: Widget {
     var body: some WidgetConfiguration {
         ActivityConfiguration(for: DriveActivityAttributes.self) { context in
-            V2WActivityLockScreen(state: context.state)
+            V2WActivityLockScreen(state: context.state, isStale: context.isStale)
         } dynamicIsland: { context in
             DynamicIsland {
                 DynamicIslandExpandedRegion(.leading) {
-                    V2WIslandScore(state: context.state)
+                    V2WIslandScore(state: context.state, isStale: context.isStale)
                 }
                 DynamicIslandExpandedRegion(.trailing) {
                     V2WIslandTrip(state: context.state)
@@ -133,7 +141,7 @@ struct DriveWidgetLiveActivity: Widget {
                     V2WIslandCenter(state: context.state)
                 }
                 DynamicIslandExpandedRegion(.bottom) {
-                    V2WIslandStrip(state: context.state)
+                    V2WIslandStrip(state: context.state, isStale: context.isStale)
                 }
             } compactLeading: {
                 V2WIslandCompactScore(state: context.state)
@@ -154,22 +162,51 @@ struct DriveWidgetLiveActivity: Widget {
 
 struct V2WActivityLockScreen: View {
     let state: DriveActivityAttributes.ContentState
+    var isStale: Bool = false
 
     @Environment(\.activityFamily) private var family
     @Environment(\.colorScheme) private var scheme
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    /// StandBy: the Lock Screen presentation scaled up to fill the display.
+    @Environment(\.isActivityFullscreen) private var isFullscreen
+    /// Always On (and StandBy, if the system dims it); see `isNight`.
+    @Environment(\.isLuminanceReduced) private var isLuminanceReduced
+    @Environment(\.widgetRenderingMode) private var renderingMode
 
     var body: some View {
         switch family {
         case .small:
             V2WActivitySmall(state: state)
         default:
-            lockScreen
+            if isFullscreen {
+                standBy
+            } else {
+                lockScreen
+            }
         }
     }
 
+    /// Low light: band fills become outlines and the grade goes neutral so
+    /// nothing glares in a dark car. StandBy's Night Mode itself is a system
+    /// red tint with no documented flag for Live Activities, so this keys
+    /// off reduced luminance, plus the vibrant mode widgets get in StandBy
+    /// at night.
+    private var isNight: Bool { isLuminanceReduced || renderingMode == .vibrant }
+
+    private func model() -> V2WActivityModel {
+        V2WActivityModel(state: state, now: Date(), isStale: isStale)
+    }
+
+    /// The score's ink: greyed once stale.
+    private func scoreInk(_ m: V2WActivityModel) -> Color { m.isStale ? V2W.label2 : V2W.label }
+
+    /// The grade: band colour on a fresh Parked state by day, else neutral.
+    private func gradeInk(_ m: V2WActivityModel) -> Color {
+        m.showsBand && !isNight ? V2WBand(score: Double(m.score)).color : V2W.label2
+    }
+
     private var lockScreen: some View {
-        let m = V2WActivityModel(state: state, now: Date())
+        let m = model()
         return VStack(alignment: .leading, spacing: 0) {
             header(m)
                 .frame(height: 20)
@@ -200,7 +237,7 @@ struct V2WActivityLockScreen: View {
                     HStack(alignment: .firstTextBaseline, spacing: 4) {
                         Text(verbatim: "Parked")
                             .font(V2WType.text(15, .semibold))
-                            .foregroundStyle(V2W.label)
+                            .foregroundStyle(scoreInk(m))
                         Text(verbatim: m.parkedClock)
                             .font(V2WType.measured(15))
                             .foregroundStyle(V2W.label2)
@@ -231,11 +268,11 @@ struct V2WActivityLockScreen: View {
                     Text(verbatim: "\(m.score)")
                         .font(V2WType.text(48, .bold))
                         .tracking(-1)
-                        .foregroundStyle(V2W.label)
+                        .foregroundStyle(scoreInk(m))
                         .contentTransition(reduceMotion ? .identity : .numericText(value: Double(m.score)))
                     Text(verbatim: m.grade)
                         .font(V2WType.text(22, .bold))
-                        .foregroundStyle(m.isParked ? V2WBand(score: Double(m.score)).color : V2W.label2)
+                        .foregroundStyle(gradeInk(m))
                 }
                 .lineLimit(1)
                 .fixedSize()

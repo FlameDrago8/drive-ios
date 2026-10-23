@@ -3,8 +3,8 @@
 //  DriveWidget
 //
 //  v2 "Road Furniture" Home Screen and Lock Screen widgets (spec §6.9):
-//  Score (small), Last drive (medium), Lock Screen rectangular + circular
-//  under the existing "DriveWidgetHome" kind, and the Streak widget
+//  Score (small), Last drive (medium), Lock Screen rectangular + circular +
+//  inline under the existing "DriveWidgetHome" kind, and the Streak widget
 //  ("DriveWidgetStreak"). Data comes from the App Group summary written by
 //  WidgetDataStore (base fields) + writeV2 (v2 fields, optional).
 //
@@ -21,6 +21,11 @@ struct DriveWidgetProvider: TimelineProvider {
     /// can get to that day.
     private static let seenDataKey = "drive.widget.v2.seenData"
     private static let seenAtKey = "drive.widget.v2.seenAt"
+
+    /// Smart Stack boost for the hour after a drive (V2WRelevance). Only the
+    /// "DriveWidgetHome" kind sets it; the Streak widget never asks to rise
+    /// (no streak-at-risk nudges).
+    var boostsAfterDrive = false
 
     func placeholder(in context: Context) -> DriveWidgetEntry {
         DriveWidgetEntry(date: Date(), summary: V2WSample.summary)
@@ -40,13 +45,23 @@ struct DriveWidgetProvider: TimelineProvider {
     func getTimeline(in context: Context, completion: @escaping (Timeline<DriveWidgetEntry>) -> Void) {
         let now = Date()
         let loaded = load(now: now)
-        var entries = [DriveWidgetEntry(date: now, summary: loaded.summary, writtenAt: loaded.writtenAt)]
-        // Painted days and the streak roll over at midnight without an app
-        // write; everything else reloads when a drive saves.
+        var dates = [now]
+        // Painted days, the streak and the inline line roll over at midnight
+        // without an app write; everything else reloads when a drive saves.
         let cal = Calendar.current
         if let midnight = cal.date(byAdding: .day, value: 1, to: cal.startOfDay(for: now)) {
-            entries.append(DriveWidgetEntry(date: midnight.addingTimeInterval(1),
-                                            summary: loaded.summary, writtenAt: loaded.writtenAt))
+            dates.append(midnight.addingTimeInterval(1))
+        }
+        // The hour after a drive: the boost steps down each quarter hour and
+        // the last entry, at the end of the hour, sinks it back to 0.
+        if boostsAfterDrive {
+            dates += V2WRelevance.stepDates(lastDrive: loaded.summary.lastDate, now: now)
+        }
+        let entries = dates.sorted().map { date in
+            DriveWidgetEntry(date: date, summary: loaded.summary, writtenAt: loaded.writtenAt,
+                             relevance: boostsAfterDrive
+                                ? V2WRelevance.at(date, lastDrive: loaded.summary.lastDate)
+                                : nil)
         }
         completion(Timeline(entries: entries, policy: .atEnd))
     }
@@ -72,6 +87,49 @@ struct DriveWidgetEntry: TimelineEntry {
     let summary: DriveWidgetSummary
     /// When the provider first saw this payload (≈ when the app wrote it).
     var writtenAt: Date? = nil
+    /// Smart Stack rotation hint (TimelineEntry.relevance); nil = no opinion.
+    var relevance: TimelineEntryRelevance? = nil
+}
+
+/// Smart Stack timing (IDEAS #5): the Home kind rises for an hour after a
+/// drive, then sinks back. `lastDate` is the drive's save time, i.e. its end
+/// (DriveView saves with `date: Date()`); the app reloads every timeline on
+/// that save. Scores run 100 → 75 → 50 → 25 by quarter hour, then 0 ("not
+/// relevant"), and nothing else ever raises it: no usual-hour or
+/// streak-at-risk boost.
+enum V2WRelevance {
+    static let window: TimeInterval = 60 * 60
+    static let step: TimeInterval = 15 * 60
+    static let peak: Float = 100
+    /// A drive "ending" further ahead than this is a clock problem, not a boost.
+    private static let skew: TimeInterval = 5 * 60
+
+    /// Entry dates after `now` where the score steps down, ending with the
+    /// 0 entry at the end of the hour. Empty unless a drive ended within the hour.
+    static func stepDates(lastDrive: Date?, now: Date) -> [Date] {
+        guard let end = lastDrive, isBoosted(end, at: now) else { return [] }
+        return stride(from: step, through: window, by: step)
+            .map { end.addingTimeInterval($0) }
+            .filter { $0 > now }
+    }
+
+    static func at(_ date: Date, lastDrive: Date?) -> TimelineEntryRelevance {
+        guard let end = lastDrive, isBoosted(end, at: date) else {
+            return TimelineEntryRelevance(score: 0)
+        }
+        let elapsed = max(0, date.timeIntervalSince(end))
+        // Quarters gone (0–3); the 1 s slack keeps an entry dated exactly on a
+        // step from rounding back into the previous quarter.
+        let gone = min(3, Int((elapsed + 1) / step))
+        let quarters = Int(window / step)                        // 4
+        return TimelineEntryRelevance(score: peak * Float(quarters - gone) / Float(quarters),
+                                      duration: window - elapsed)
+    }
+
+    /// The same 1 s slack, so the entry dated at the end of the hour is 0.
+    private static func isBoosted(_ end: Date, at date: Date) -> Bool {
+        end <= date.addingTimeInterval(skew) && date.timeIntervalSince(end) + 1 < window
+    }
 }
 
 // MARK: - Widgets
@@ -80,12 +138,18 @@ struct DriveWidgetHome: Widget {
     let kind = "DriveWidgetHome"
 
     var body: some WidgetConfiguration {
-        StaticConfiguration(kind: kind, provider: DriveWidgetProvider()) { entry in
+        StaticConfiguration(kind: kind, provider: DriveWidgetProvider(boostsAfterDrive: true)) { entry in
             DriveWidgetView(entry: entry)
         }
         .configurationDisplayName("Drive")
         .description("Your 30-day score, your last drive, and your one job.")
-        .supportedFamilies([.systemSmall, .systemMedium, .accessoryRectangular, .accessoryCircular])
+        .supportedFamilies([.systemSmall, .systemMedium, .accessoryRectangular, .accessoryCircular,
+                            .accessoryInline])
+        // No score in CarPlay (spec §6.10). iOS 26 CarPlay offers small system
+        // widgets; WidgetKit can't refuse a location, so this is the strongest
+        // opt-out: the Score widget isn't suggested there and sits under
+        // "Other" in CarPlay's widget settings.
+        .disfavoredLocations([.carPlay], for: [.systemSmall])
     }
 }
 
@@ -138,11 +202,15 @@ struct DriveWidgetView: View {
     }
 
     /// The last-drive layouts open that drive's Report; the score and the
-    /// Focus sign just open the app.
+    /// Focus sign just open the app. Inline follows what it shows.
     private var tapURL: URL {
         switch family {
         case .systemMedium, .systemLarge, .systemExtraLarge, .accessoryRectangular:
             return V2WLinks.report(entry.summary.lastDriveID)
+        case .accessoryInline:
+            return V2WInlineLine.resolve(entry.summary, now: entry.date).isParked
+                ? V2WLinks.report(entry.summary.lastDriveID)
+                : V2WLinks.openApp
         default:
             return V2WLinks.openApp
         }
@@ -161,7 +229,7 @@ struct DriveWidgetView: View {
         case .accessoryCircular:
             V2WFocusCircular(summary: entry.summary)
         case .accessoryInline:
-            V2WInline(summary: entry.summary)                // not offered
+            V2WInline(summary: entry.summary, now: entry.date)
         @unknown default:
             V2WScoreSmall(summary: entry.summary)
         }
@@ -259,9 +327,15 @@ struct V2WValueUnit: View {
 
 // MARK: - Small: Score
 
+/// StandBy (and CarPlay, which WidgetKit renders the same way) shows this
+/// small layout scaled up with the card removed: already just the big score,
+/// its plate and two quiet lines. In low light StandBy switches to the
+/// vibrant rendering mode with a red tint, and the solid band plate becomes
+/// a neutral outline so it doesn't glare.
 struct V2WScoreSmall: View {
     let summary: DriveWidgetSummary
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.widgetRenderingMode) private var renderingMode
 
     var body: some View {
         if let score = V2WData.heroScore(summary) {
@@ -280,7 +354,7 @@ struct V2WScoreSmall: View {
                         .lineLimit(1)
                         .minimumScaleFactor(0.6)
                         .contentTransition(reduceMotion ? .identity : .numericText(value: Double(value)))
-                    V2WGradePlate(score: score, height: 28)
+                    V2WGradePlate(score: score, height: 28, outlined: renderingMode == .vibrant)
                         .alignmentGuide(.lastTextBaseline) { d in d[.bottom] }
                         .widgetAccentable()
                 }
@@ -475,16 +549,88 @@ struct V2WFocusCircular: View {
     }
 }
 
-/// Inline accessory (not offered; kept so every family renders sensibly).
+/// What the one-line Lock Screen widget says (IDEAS #5), as of an entry date.
+enum V2WInlineLine: Equatable {
+    /// A drive saved today: "Parked 3:52 PM · 91 A" (until midnight).
+    case parked(end: Date, score: Double)
+    /// No drive today: today's job, the same `focus.current.shortTitle` the
+    /// Ready plate shows (written by WidgetDataStore.writeV2).
+    case job(title: String, category: String?)
+    /// No drive today and no job: the 30-day score.
+    case thirtyDay(score: Double)
+    case empty
+
+    static func resolve(_ s: DriveWidgetSummary, now: Date) -> V2WInlineLine {
+        if let end = s.lastDate, let score = s.lastScore,
+           Calendar.current.isDate(end, inSameDayAs: now) {
+            return .parked(end: end, score: score)
+        }
+        if let title = s.focusShortTitle?.trimmingCharacters(in: .whitespacesAndNewlines), !title.isEmpty {
+            return .job(title: title, category: s.focusCategory)
+        }
+        if let score = V2WData.heroScore(s) { return .thirtyDay(score: score) }
+        return .empty
+    }
+
+    var isParked: Bool {
+        switch self {
+        case .parked: return true
+        case .job, .thirtyDay, .empty: return false
+        }
+    }
+
+    /// Longest first; ViewThatFits takes the first that fits the slot.
+    var variants: (long: String, mid: String, short: String) {
+        switch self {
+        case let .parked(end, score):
+            let value = "\(V2WScore.int(score)) \(V2WScore.grade(score))"
+            let clock = V2WFormat.clock(end)
+            return ("Parked \(clock) \u{00B7} \(value)", "\(value) \u{00B7} \(clock)", value)
+        case let .job(title, category):
+            let word = V2WFormat.categoryName(category)?.capitalized ?? title
+            return (title, title, word)
+        case let .thirtyDay(score):
+            let value = "\(V2WScore.int(score)) \(V2WScore.grade(score))"
+            return ("\(value), 30-day score", "\(value) 30-day", value)
+        case .empty:
+            return ("No drives yet", "No drives yet", "No drives")
+        }
+    }
+
+    var spoken: String {
+        switch self {
+        case let .parked(end, score):
+            let grade = V2WScore.grade(score)
+            return "Parked \(V2WFormat.clock(end)). \(V2WScore.int(score)), \(V2WScore.spoken(grade))."
+        case let .job(title, _):
+            return "Today's job: \(title)."
+        case let .thirtyDay(score):
+            let grade = V2WScore.grade(score)
+            return "30-day score \(V2WScore.int(score)), \(V2WScore.spoken(grade))."
+        case .empty:
+            return "No drives yet."
+        }
+    }
+}
+
+/// The one-line Lock Screen widget above the clock (system font and colour;
+/// inline ignores custom fonts). It can't hide itself while recording: the
+/// App Group summary carries no recording flag, and nothing reloads widget
+/// timelines when a recording starts.
 struct V2WInline: View {
     let summary: DriveWidgetSummary
+    let now: Date
 
     var body: some View {
-        if let score = V2WData.heroScore(summary) {
-            Text(verbatim: "\(V2WScore.int(score)) \(V2WScore.grade(score)), 30-day score")
-        } else {
-            Text(verbatim: "No drives yet")
+        let line = V2WInlineLine.resolve(summary, now: now)
+        let v = line.variants
+        ViewThatFits(in: .horizontal) {
+            Text(verbatim: v.long)
+            Text(verbatim: v.mid)
+            Text(verbatim: v.short)
         }
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(Text(verbatim: line.spoken))
     }
 }
 
@@ -493,6 +639,8 @@ struct V2WInline: View {
 struct V2WStreakSmall: View {
     let streak: V2WStreak
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    /// Vibrant = StandBy in low light (red tint): the green mile post outlines.
+    @Environment(\.widgetRenderingMode) private var renderingMode
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -508,7 +656,7 @@ struct V2WStreakSmall: View {
                 .lineLimit(1)
                 .minimumScaleFactor(0.7)
                 if let milestone = streak.milestone {
-                    V2WMilePost(days: milestone)
+                    V2WMilePost(days: milestone, outlined: renderingMode == .vibrant)
                         .widgetAccentable()
                 } else {
                     V2WStreakDashes(days: streak.days)
@@ -554,6 +702,14 @@ struct V2WStreakSmall: View {
     DriveWidgetHome()
 } timeline: {
     DriveWidgetEntry(date: .now, summary: V2WSample.summary)
+}
+
+#Preview(as: .accessoryInline) {
+    DriveWidgetHome()
+} timeline: {
+    DriveWidgetEntry(date: .now, summary: V2WSample.summary)
+    DriveWidgetEntry(date: .now.addingTimeInterval(86_400), summary: V2WSample.summary)
+    DriveWidgetEntry(date: .now, summary: .empty)
 }
 
 #Preview(as: .systemSmall) {

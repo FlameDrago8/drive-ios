@@ -105,6 +105,8 @@ struct DriveView: View {
     @State private var analysisProgress: Double = 0
     /// Saved's parking watch; it outlives the HUD (Done keeps it running).
     @ObservedObject private var parkingWatch = V2ParkingWatch.shared
+    /// Siri's confirmed "End my drive" (EndDriveIntent) arrives here.
+    @ObservedObject private var router = V2Router.shared
     /// Peek (§5.9): a REC plate tap at a stop opens the scrim on the camera
     /// for 5 s. `peekToken` restarts the 5 s close for each new peek. UI
     /// only: recording, scoring and the Live Activity carry on underneath.
@@ -319,6 +321,16 @@ struct DriveView: View {
         .onChange(of: scenePhase) { _, newPhase in
             scenePhaseChanged(newPhase)
         }
+        // App Intents: Siri reads whether a drive is recording, and a
+        // confirmed "End my drive" runs the hold's completion.
+        .onChange(of: isRecording) { _, recording in
+            router.driveRecording = recording
+        }
+        .onChange(of: router.endDriveRequested) { _, requested in
+            guard requested else { return }
+            router.endDriveRequested = false
+            endFromIntent()
+        }
         .onAppear {
             // The first read lands unanimated: the HUD opens in its real
             // Ready state instead of fading out of the seeded `.available`
@@ -357,6 +369,9 @@ struct DriveView: View {
                 Task { await DriveActivityAttributes.endAll() }
             }
             V2ParkingWatch.shared.setHUDShowing(nil)
+            // A HUD closed mid-recording (Discard) never turns isRecording off.
+            router.driveRecording = false
+            router.endDriveRequested = false
         }
     }
 
@@ -836,6 +851,17 @@ struct DriveView: View {
         isOnRoad = true
         UIApplication.shared.isIdleTimerDisabled = false
         pauseLiveActivity()
+    }
+
+    /// EndDriveIntent, confirmed in Siri: exactly the hold's completion
+    /// (V2HoldToEnd → onEnd → stopDrive()), so Analysing, then Saved or
+    /// Parked, follow as they do today. Siri's yes replaces an open "Discard
+    /// this drive?" (left up, it would reappear on the next drive).
+    @MainActor
+    private func endFromIntent() {
+        guard phase == .recording else { return }
+        showDiscardConfirm = false
+        stopDrive()
     }
 
     /// Start, after the camera check: a first-time camera prompt asks now

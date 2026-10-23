@@ -354,6 +354,18 @@ final class V2Router: ObservableObject {
     /// Ask for an App Store review once the HUD cover has closed.
     @Published var pendingReviewPrompt = false
 
+    // App Intents (V2DriveIntents.swift): Siri, Shortcuts, Spotlight.
+    /// StartDriveIntent: V2Root opens Ready the way `drive://start` does,
+    /// then clears it.
+    @Published var startDriveRequested = false
+    /// EndDriveIntent, confirmed: DriveView runs the hold-to-end ring's
+    /// completion, then clears it.
+    @Published var endDriveRequested = false
+    /// DriveView's recording flag, mirrored, so the intents can say "No drive
+    /// is recording." and never speak a score mid-drive. Not published:
+    /// nothing on screen depends on it.
+    var driveRecording = false
+
     private init() {}
 
     func startDrive() {
@@ -394,6 +406,9 @@ final class V2Router: ObservableObject {
         drivesSearch = ""
         pendingRouteNaming = nil
         pendingReviewPrompt = false
+        startDriveRequested = false
+        endDriveRequested = false
+        driveRecording = false
     }
 }
 

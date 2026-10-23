@@ -577,8 +577,7 @@ fileprivate struct V2DriverCardFace: View {
     private func header(width: CGFloat) -> some View {
         HStack(spacing: 8) {
             HStack(spacing: 6) {
-                V2BrandMark(size: 20, color: V2.bg)
-                    .offset(y: 1)
+                V2DriveLogo(height: 22, color: V2.bg)
                 Text("Drive")
                     .font(V2CardFont.brand)
             }

@@ -2,7 +2,7 @@
 //  V2SignInView.swift
 //  Drive
 //
-//  v2 Sign-in (spec §6.10): brand mark 64, one sentence, stock-looking
+//  v2 Sign-in (spec §6.10): Drive logo 72, one sentence, stock-looking
 //  Apple / Google / Email buttons and the consent line. No plates.
 //
 //  Every behaviour of the launch beta's AuthView is kept: sign-in / sign-up
@@ -85,7 +85,7 @@ struct V2SignInView: View {
 
     private var header: some View {
         VStack(alignment: .leading, spacing: 24) {
-            V2BrandMark(size: 64)
+            V2DriveLogo(height: 72)
             Text("Coaching for every drive, one job at a time.")
                 .font(V2Type.scaled(28, .title1, weight: .bold))
                 .foregroundStyle(V2.label)

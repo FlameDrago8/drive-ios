@@ -86,7 +86,7 @@ struct V2VerifyEmailView: View {
 
     private var header: some View {
         VStack(alignment: .leading, spacing: 24) {
-            V2BrandMark(size: 64)
+            V2DriveLogo(height: 72)
             VStack(alignment: .leading, spacing: 12) {
                 Text("One tap left.")
                     .font(V2Type.scaled(28, .title1, weight: .bold))

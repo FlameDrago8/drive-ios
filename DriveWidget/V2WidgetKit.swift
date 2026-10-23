@@ -552,6 +552,9 @@ struct V2WLaneStrip: View {
     var liveCapacity: Int? = nil
     /// nil = band colours (a verdict); otherwise every bar in this ink.
     var ink: Color? = nil
+    /// Night (StandBy low light, Always On): bars, dots and the P plate as
+    /// 1 pt outlines instead of fills, so nothing glares in a dark car.
+    var outlined: Bool = false
     var lineColor: Color = V2W.paint
     var pinColor: Color = V2W.label
     var plateColor: Color = V2W.label
@@ -580,10 +583,10 @@ struct V2WLaneStrip: View {
 
             ZStack(alignment: .topLeading) {
                 if let ink {
-                    V2WPath(shape: barsPath(pitch: pitch, barW: barW, band: nil)).fill(ink)
+                    barLayer(barsPath(pitch: pitch, barW: barW, band: nil), ink)
                 } else {
-                    V2WPath(shape: barsPath(pitch: pitch, barW: barW, band: .okay)).fill(V2W.okay)
-                    V2WPath(shape: barsPath(pitch: pitch, barW: barW, band: .poor)).fill(V2W.poor)
+                    barLayer(barsPath(pitch: pitch, barW: barW, band: .okay), V2W.okay)
+                    barLayer(barsPath(pitch: pitch, barW: barW, band: .poor), V2W.poor)
                 }
                 if lineEnd > 0 {
                     V2WPath(shape: V2WGeo.line(0, center, lineEnd, center))
@@ -601,14 +604,20 @@ struct V2WLaneStrip: View {
                     ForEach(V2WStrip.incidents(bars), id: \.self) { i in
                         let q = bars[i]
                         let h = V2WStrip.barHeight(q: q, zone: zone) ?? 0
-                        Circle()
-                            .fill(ink ?? (V2WBand(q: q) ?? .okay).color)
-                            .frame(width: 5, height: 5)
-                            .offset(x: (CGFloat(i) + 0.5) * pitch - 2.5, y: topSpace + zone - h - 8)
+                        let dotColor = ink ?? (V2WBand(q: q) ?? .okay).color
+                        Group {
+                            if outlined {
+                                Circle().strokeBorder(dotColor, lineWidth: 1)
+                            } else {
+                                Circle().fill(dotColor)
+                            }
+                        }
+                        .frame(width: 5, height: 5)
+                        .offset(x: (CGFloat(i) + 0.5) * pitch - 2.5, y: topSpace + zone - h - 8)
                     }
                 }
                 if !isLive {
-                    V2WPPlate(size: c.plate, fill: plateColor, ink: plateInk)
+                    V2WPPlate(size: c.plate, fill: plateColor, ink: plateInk, outlined: outlined)
                         .offset(x: span + c.plateGap, y: center - c.plate / 2)
                 }
                 if let car {
@@ -623,6 +632,15 @@ struct V2WLaneStrip: View {
         }
         .frame(height: V2WStrip.height(zone: zone, topSpace: topSpace, car: car))
         .accessibilityHidden(true)
+    }
+
+    /// One colour's bars: filled, or a 1 pt outline at night.
+    @ViewBuilder private func barLayer(_ path: Path, _ color: Color) -> some View {
+        if outlined {
+            V2WPath(shape: path).stroke(color, lineWidth: 1)
+        } else {
+            V2WPath(shape: path).fill(color)
+        }
     }
 
     /// Rounded-top bars sitting on the lane line; `band` filters by band.
@@ -680,17 +698,25 @@ struct V2WMicroStrip: View {
 // MARK: - Plates (§4.1, §4.6, §4.11, §4.12)
 
 /// INK square, r = 3/14 · size, "P" in Compressed Heavy at 0.72 · size.
+/// Outlined (night): a 1 pt rim and the "P" in `fill`, no solid square.
 struct V2WPPlate: View {
     var size: CGFloat = 14
     var fill: Color = V2W.label
     var ink: Color = V2W.bg
+    var outlined: Bool = false
 
     var body: some View {
         Text(verbatim: "P")
             .font(V2WType.plate(0.72 * size, .heavy))
-            .foregroundStyle(ink)
+            .foregroundStyle(outlined ? fill : ink)
             .frame(width: size, height: size)
-            .background(RoundedRectangle(cornerRadius: 3 / 14 * size, style: .circular).fill(fill))
+            .background {
+                if outlined {
+                    RoundedRectangle(cornerRadius: 3 / 14 * size, style: .circular).strokeBorder(fill, lineWidth: 1)
+                } else {
+                    RoundedRectangle(cornerRadius: 3 / 14 * size, style: .circular).fill(fill)
+                }
+            }
             .accessibilityHidden(true)
     }
 }
@@ -773,9 +799,11 @@ struct V2WRecordTab: View {
 
 /// Solid grade plate (peaks only): band fill, letter 0.6h bold in markerInk,
 /// "+"/"−" at 0.75× raised 0.1 em, min width h, pad 0.22h, r 0.28h.
+/// Outlined (StandBy night): neutral 1.5 pt rim, letter in `label`, no band fill.
 struct V2WGradePlate: View {
     let score: Double
     let height: CGFloat
+    var outlined: Bool = false
 
     var body: some View {
         let g = V2WScore.grade(score)
@@ -790,14 +818,21 @@ struct V2WGradePlate: View {
                     .baselineOffset(0.1 * size)
             }
         }
-        .foregroundStyle(V2W.markerInk)
+        .foregroundStyle(outlined ? V2W.label : V2W.markerInk)
         .lineLimit(1)
         .fixedSize()
         .padding(.horizontal, 0.22 * height)
         .frame(minWidth: height)
         .frame(height: height)
-        .background(RoundedRectangle(cornerRadius: 0.28 * height, style: .circular)
-            .fill(V2WBand(score: score).color))
+        .background {
+            if outlined {
+                RoundedRectangle(cornerRadius: 0.28 * height, style: .circular)
+                    .strokeBorder(V2W.label2, lineWidth: 1.5)
+            } else {
+                RoundedRectangle(cornerRadius: 0.28 * height, style: .circular)
+                    .fill(V2WBand(score: score).color)
+            }
+        }
         .accessibilityHidden(true)
     }
 }
@@ -922,28 +957,38 @@ fileprivate enum V2WLegend {
 }
 
 /// GUIDE mile post (streak milestones 7 / 30 / 100): "DAYS" over the number.
+/// Outlined (StandBy night): the post as a neutral rim, legend in `label`,
+/// no green panel.
 struct V2WMilePost: View {
     let days: Int
     var width: CGFloat = 28
     var height: CGFloat = 44
+    var outlined: Bool = false
 
     var body: some View {
         let bodyH = 0.8 * height
         let inset = 0.0714 * width
         let lw = max(1, 0.054 * width)
         let scale = height / 44
+        let panel: Color = outlined ? V2W.label2 : V2W.guideGreen
         ZStack(alignment: .topLeading) {
             Rectangle()
-                .fill(V2W.guideGreen)
+                .fill(panel)
                 .frame(width: 0.18 * width, height: height - bodyH + 1)
                 .offset(x: 0.41 * width, y: bodyH - 1)
-            RoundedRectangle(cornerRadius: 0.2 * width, style: .circular)
-                .fill(V2W.guideGreen)
-                .frame(width: width, height: bodyH)
-            RoundedRectangle(cornerRadius: 0.143 * width, style: .circular)
-                .stroke(V2W.white, lineWidth: lw)
-                .frame(width: width - 2 * inset, height: bodyH - 2 * inset)
-                .offset(x: inset, y: inset)
+            if outlined {
+                RoundedRectangle(cornerRadius: 0.2 * width, style: .circular)
+                    .strokeBorder(panel, lineWidth: 1.5)
+                    .frame(width: width, height: bodyH)
+            } else {
+                RoundedRectangle(cornerRadius: 0.2 * width, style: .circular)
+                    .fill(panel)
+                    .frame(width: width, height: bodyH)
+                RoundedRectangle(cornerRadius: 0.143 * width, style: .circular)
+                    .stroke(V2W.white, lineWidth: lw)
+                    .frame(width: width - 2 * inset, height: bodyH - 2 * inset)
+                    .offset(x: inset, y: inset)
+            }
             ZStack {
                 Text(verbatim: "DAYS")
                     .font(V2WType.plate(8 * scale, .bold))
@@ -955,7 +1000,7 @@ struct V2WMilePost: View {
                     .frame(width: max(1, width - 2 * (inset + lw) - 1))
                     .position(x: width / 2, y: 0.66 * bodyH)
             }
-            .foregroundStyle(V2W.white)
+            .foregroundStyle(outlined ? V2W.label : V2W.white)
             .frame(width: width, height: bodyH)
         }
         .frame(width: width, height: height, alignment: .topLeading)

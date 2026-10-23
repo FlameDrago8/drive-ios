@@ -54,6 +54,17 @@ enum V2AppIconOption: String, CaseIterable, Identifiable {
         self == .goldRoad ? V2.fixed(0x111111) : V2.fixed(0xFFFFFF)
     }
 
+    /// The car's windows: the background half as bright (black on the
+    /// primary), so each car reads like the primary icon's. Same as the PNGs.
+    var glassColor: Color {
+        switch self {
+        case .standard:  return V2.fixed(0x000000)
+        case .nightOwl:  return V2.fixed(0x060A18)
+        case .goldRoad:  return V2.fixed(0x785C1D)
+        case .cleanWeek: return V2.fixed(0x083D2D)
+        }
+    }
+
     static func from(assetName: String?) -> V2AppIconOption {
         allCases.first { $0.assetName == assetName } ?? .standard
     }
@@ -275,23 +286,21 @@ fileprivate struct V2AppIconRow: View {
 
 // MARK: - Preview tile
 
-/// A drawn app icon (same colours and geometry as the PNGs): the brand mark
-/// at 60% of the width, centred; Night Owl adds its crescent.
+/// A drawn app icon (same colours and geometry as the PNGs): the Drive car,
+/// 724.3 of the 1024 grid tall (the primary icon's car), centred, windows in
+/// `glassColor`; Night Owl adds its crescent.
 struct V2AppIconTile: View {
     let icon: V2AppIconOption
     var size: CGFloat = 60
 
     var body: some View {
         let shape = RoundedRectangle(cornerRadius: 0.2237 * size, style: .continuous)
-        let mark = 0.6 * size * 24 / 22
         ZStack {
             shape.fill(icon.background)
             if icon == .nightOwl {
                 V2AppIconCrescent().fill(icon.markColor)
             }
-            // The 24-unit grid sits 0.5 unit high of the mark's own centre.
-            V2BrandMark(size: mark, color: icon.markColor)
-                .offset(y: 0.5 * mark / 24)
+            V2DriveLogo(height: 724.3 / 1024 * size, color: icon.markColor, glass: icon.glassColor)
         }
         .frame(width: size, height: size)
         .overlay {
@@ -301,13 +310,13 @@ struct V2AppIconTile: View {
     }
 }
 
-/// Night Owl's crescent, on the PNG's 1024 grid.
+/// Night Owl's crescent, on the PNG's 1024 grid: top right, clear of the car.
 fileprivate struct V2AppIconCrescent: Shape {
     func path(in rect: CGRect) -> Path {
         let k = min(rect.width, rect.height) / 1024
-        let outer = Path(ellipseIn: CGRect(x: rect.minX + (744 - 72) * k, y: rect.minY + (268 - 72) * k,
+        let outer = Path(ellipseIn: CGRect(x: rect.minX + (810 - 72) * k, y: rect.minY + (228 - 72) * k,
                                            width: 144 * k, height: 144 * k))
-        let cut = Path(ellipseIn: CGRect(x: rect.minX + (778 - 62) * k, y: rect.minY + (244 - 62) * k,
+        let cut = Path(ellipseIn: CGRect(x: rect.minX + (844 - 62) * k, y: rect.minY + (204 - 62) * k,
                                          width: 124 * k, height: 124 * k))
         return outer.subtracting(cut)
     }

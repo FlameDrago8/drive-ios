@@ -106,11 +106,11 @@ struct V2ShareCard: View {
 
     // MARK: Rows
 
-    /// Brand mark 48 + "Drive" 40 Bold (left); "Fri, Oct 16" 36 Regular label2 (right).
+    /// Drive logo 60 tall + "Drive" 40 Bold (left); "Fri, Oct 16" 36 Regular label2 (right).
     private var header: some View {
         HStack(spacing: 0) {
             HStack(spacing: 4) {
-                V2BrandMark(size: 16)
+                V2DriveLogo(height: 20)
                 Text(verbatim: "Drive")
                     .font(V2Type.fixedSize(13.33, weight: .bold))
                     .foregroundStyle(V2.label)

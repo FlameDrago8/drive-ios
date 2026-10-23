@@ -170,6 +170,10 @@ struct V2Root: View {
             scheduleStreakReminder()
         }
         .onOpenURL(perform: handle)
+        // Siri's "Start a drive" (StartDriveIntent): the drive://start route.
+        .onChange(of: router.startDriveRequested) { _, requested in
+            if requested { startFromIntent() }
+        }
     }
 
     // MARK: - Lifecycle
@@ -177,6 +181,9 @@ struct V2Root: View {
     private func rootAppeared() {
         guard !appeared else { return }
         appeared = true
+        // StartDriveIntent can land before the first appear (a cold launch),
+        // like an early URL: keep it through the reset below.
+        let intentStart = router.startDriveRequested
         // A fresh root means a (possibly different) signed-in user: drop any
         // navigation left on the shared router. Only on the first appear: a
         // full-screen cover's dismissal can re-fire onAppear, and resetting
@@ -188,6 +195,10 @@ struct V2Root: View {
         // Signing out removes this root, so a different account arrives as
         // a fresh root rather than through userChanged().
         noteSignedInAccount()
+        if intentStart {
+            router.startDriveRequested = false
+            startFromURL()
+        }
     }
 
     private func userChanged() {
@@ -404,6 +415,14 @@ struct V2Root: View {
         default:
             break   // "open" and anything unknown: just bring the app forward
         }
+    }
+
+    /// StartDriveIntent while the root is up: the same route as drive://start
+    /// (Ready opens; only the ignition starts recording).
+    private func startFromIntent() {
+        guard router.startDriveRequested else { return }
+        router.startDriveRequested = false
+        startFromURL()
     }
 
     private func startFromURL() {

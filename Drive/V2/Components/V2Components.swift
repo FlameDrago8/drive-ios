@@ -699,40 +699,161 @@ struct V2OdometerCells: View {
     }
 }
 
-// MARK: - Brand mark (§4.15)
+// MARK: - Drive logo (§4.15)
 
-/// Three lane dashes with a bar rising from the middle one (24-unit grid).
-struct V2BrandMark: View {
-    private let size: CGFloat
+/// The Drive logo: the top-down car of `SplashLogo` and the primary app icon,
+/// as a vector that fills in any colour. `height` is the car's length; the
+/// width follows its aspect (about 0.46 : 1). The windshield, rear window
+/// and side glass are knocked out to show what's behind, or filled with
+/// `glass` (the app-icon previews). Under 40 pt the side-glass slivers are
+/// left out: that small they only read as hairlines.
+struct V2DriveLogo: View {
+    private let height: CGFloat
     private let color: Color
+    private let glass: Color?
 
-    init(size: CGFloat = 24, color: Color = V2.label) {
-        self.size = size
+    init(height: CGFloat = 24, color: Color = V2.label, glass: Color? = nil) {
+        self.height = height
         self.color = color
+        self.glass = glass
     }
 
     var body: some View {
-        V2CBrandMarkShape()
-            .fill(color)
-            .frame(width: size, height: size)
-            .accessibilityHidden(true)
+        let sideGlass = height >= 40
+        ZStack {
+            if let glass {
+                // Grown by a hairline under the body so no seam shows at the
+                // window edges.
+                let windows = V2CDriveLogoShape(part: .glass, sideGlass: sideGlass)
+                windows.fill(glass)
+                windows.stroke(glass, lineWidth: 0.5)
+            }
+            V2CDriveLogoShape(part: .car, sideGlass: sideGlass)
+                .fill(color, style: FillStyle(eoFill: true))
+        }
+        .frame(width: height * V2CDriveLogoShape.aspect, height: height)
+        .accessibilityHidden(true)
     }
 }
 
-private struct V2CBrandMarkShape: Shape {
+/// Traced from SplashLogo@3x.png: a 330 x 724.3 grid (@3x pixels), x measured
+/// from the centre line, y down from the nose. The car is symmetric, so the
+/// body and both windows are stored as left halves and mirrored, and one
+/// side-glass sliver is mirrored to the other side. Each array is a start
+/// point, then one cubic per row: control 1, control 2, end point.
+private struct V2CDriveLogoShape: Shape {
+    enum Part { case car, glass }
+
+    let part: Part
+    let sideGlass: Bool
+
+    static let gridWidth: CGFloat = 330
+    static let gridHeight: CGFloat = 724.3
+    static let aspect: CGFloat = gridWidth / gridHeight
+
     func path(in rect: CGRect) -> Path {
-        let s = min(rect.width, rect.height) / 24
+        let k = min(rect.width / Self.gridWidth, rect.height / Self.gridHeight)
+        let ox = rect.midX
+        let oy = rect.midY - Self.gridHeight * k / 2
+        let point = { (x: CGFloat, y: CGFloat) -> CGPoint in CGPoint(x: ox + x * k, y: oy + y * k) }
+
         var path = Path()
-        for x in [1, 9, 17] as [CGFloat] {
-            path.addRoundedRect(in: CGRect(x: x, y: 14.5, width: 6, height: 2.5),
-                                cornerSize: CGSize(width: 1.25, height: 1.25))
+        if part == .car {
+            Self.addMirrored(Self.bodyHalf, to: &path, point)
         }
-        path.addRoundedRect(in: CGRect(x: 10.5, y: 6, width: 3, height: 11),
-                            cornerSize: CGSize(width: 1.5, height: 1.5))
+        Self.addMirrored(Self.windshieldHalf, to: &path, point)
+        Self.addMirrored(Self.rearWindowHalf, to: &path, point)
+        if sideGlass {
+            Self.addLoop(Self.sideGlassLoop, flip: 1, to: &path, point)
+            Self.addLoop(Self.sideGlassLoop, flip: -1, to: &path, point)
+        }
         return path
-            .applying(CGAffineTransform(scaleX: s, y: s))
-            .offsetBy(dx: rect.minX + (rect.width - 24 * s) / 2, dy: rect.minY + (rect.height - 24 * s) / 2)
     }
+
+    /// A left half, then its mirror image back to the start: one closed contour.
+    private static func addMirrored(_ d: [CGFloat], to path: inout Path,
+                                    _ point: (CGFloat, CGFloat) -> CGPoint) {
+        let count = (d.count - 2) / 6
+        path.move(to: point(d[0], d[1]))
+        for i in 0..<count {
+            let j = 2 + 6 * i
+            path.addCurve(to: point(d[j + 4], d[j + 5]),
+                          control1: point(d[j], d[j + 1]),
+                          control2: point(d[j + 2], d[j + 3]))
+        }
+        for i in stride(from: count - 1, through: 0, by: -1) {
+            let j = 2 + 6 * i
+            // j - 2 is where this cubic starts (the previous end point).
+            path.addCurve(to: point(-d[j - 2], d[j - 1]),
+                          control1: point(-d[j + 2], d[j + 3]),
+                          control2: point(-d[j], d[j + 1]))
+        }
+        path.closeSubpath()
+    }
+
+    private static func addLoop(_ d: [CGFloat], flip: CGFloat, to path: inout Path,
+                                _ point: (CGFloat, CGFloat) -> CGPoint) {
+        let count = (d.count - 2) / 6
+        path.move(to: point(flip * d[0], d[1]))
+        for i in 0..<count {
+            let j = 2 + 6 * i
+            path.addCurve(to: point(flip * d[j + 4], d[j + 5]),
+                          control1: point(flip * d[j], d[j + 1]),
+                          control2: point(flip * d[j + 2], d[j + 3]))
+        }
+        path.closeSubpath()
+    }
+
+    /// Body and mirrors, left half: nose centre round to tail centre.
+    private static let bodyHalf: [CGFloat] = [
+        0, 0,
+        -20.8, 0, -43.5, 0.3, -63.5, 6.3,
+        -102, 17.9, -136, 54.7, -147.6, 93.2,
+        -153.1, 111.2, -155, 165.9, -152.9, 185.7,
+        -150.4, 208.5, -138.8, 246.1, -138.3, 264.2,
+        -150.1, 276.6, -164.2, 276.3, -164.9, 297.2,
+        -165, 301.6, -165, 305.9, -162.9, 309.8,
+        -155.2, 313.7, -142.6, 297.9, -135.9, 294.7,
+        -133.8, 305.3, -135.8, 346.2, -135.8, 360,
+        -135.8, 405.9, -134.8, 452.7, -140.1, 498.4,
+        -144.3, 534.4, -154.4, 572.6, -146.5, 608.6,
+        -138.3, 646.1, -134.2, 655.8, -111.6, 687,
+        -105.3, 695.6, -98.3, 707.9, -88.3, 712.7,
+        -70.5, 721.2, -20.8, 724.3, 0, 724.3,
+    ]
+    /// Windshield, left half, top centre to bottom centre.
+    private static let windshieldHalf: [CGFloat] = [
+        0, 196.3,
+        -30, 196.3, -67.3, 198, -94.8, 210.7,
+        -106, 215.9, -118.9, 223.7, -122.8, 236.2,
+        -126.5, 247.8, -119.5, 272.1, -117.1, 284.5,
+        -115.3, 294.2, -110, 322.2, -102.9, 328.2,
+        -92.5, 328.5, -77.5, 324.9, -66.8, 323.3,
+        -44.9, 319.9, -22.2, 318.9, 0, 318.9,
+    ]
+    /// Rear window, left half, top centre to bottom centre.
+    private static let rearWindowHalf: [CGFloat] = [
+        0, 577.9,
+        -21.7, 577.9, -43.9, 578.2, -65.5, 576.5,
+        -71.3, 576, -88.5, 574, -92.4, 577.5,
+        -94.2, 584.2, -91.1, 597.6, -90.1, 604.8,
+        -88.9, 613.3, -87, 638.3, -82.4, 644.5,
+        -79.7, 648.1, -67.9, 650.5, -63.5, 651.8,
+        -43.1, 657.5, -21.1, 658.9, 0, 658.9,
+    ]
+    /// Left side-glass sliver, closed.
+    private static let sideGlassLoop: [CGFloat] = [
+        -110.3, 564.6,
+        -106.5, 554.7, -108.1, 508.8, -108.1, 495.4,
+        -108.1, 448.9, -107.6, 372.8, -115, 328.6,
+        -117.6, 312.6, -119.5, 296.6, -122.2, 280.6,
+        -123.2, 274.7, -123.3, 265.3, -126.7, 260.6,
+        -128.9, 266.2, -127.2, 275.4, -126.9, 281.7,
+        -126.3, 297.6, -126.1, 313.7, -125.2, 329.6,
+        -122, 384, -121.6, 438.7, -116.9, 492.9,
+        -115.5, 509.7, -114.6, 526.6, -113.4, 543.3,
+        -113, 549.2, -113.6, 559.9, -110.3, 564.6,
+    ]
 }
 
 // MARK: - Avatar (§4.15)
