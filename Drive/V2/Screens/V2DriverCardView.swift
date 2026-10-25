@@ -33,11 +33,14 @@ struct V2DriverCardView: View {
     @State private var phase: V2Graduation = .resting
     @State private var stampLanded = false
     @State private var graduationLine: String? = nil
+    /// Your plate (Profile › Car), local only. Read through `V2CardPlate.display`.
+    @AppStorage private var storedPlate: String
 
     init() {
         // The hint shows on the first 3 opens (per user).
         let opens = UserDefaults.standard.integer(forKey: V2UserKey.scoped("driverCardOpens"))
         _showHint = State(initialValue: opens < 3)
+        _storedPlate = AppStorage(wrappedValue: "", V2CardPlate.key)
     }
 
     var body: some View {
@@ -147,11 +150,15 @@ struct V2DriverCardView: View {
     private var showsHoursLine: Bool { phase == .resting && profile.driverType == .learner }
 
     private var currentLine: (text: String, emphasised: Bool)? {
-        if phase == .licensed, profile.driverType == .full, let graduationLine {
+        if showsGraduationLine, let graduationLine {
             return (graduationLine, true)
         }
         if showHint { return ("Hold the card to see your route ink.", false) }
         return nil
+    }
+
+    private var showsGraduationLine: Bool {
+        phase == .licensed && profile.driverType == .full && graduationLine != nil
     }
 
     @ViewBuilder
@@ -288,7 +295,8 @@ struct V2DriverCardView: View {
                            tier: tier,
                            photo: photo,
                            photoBytes: profile.avatarImageData?.count ?? 0,
-                           route: inkRoute(snapshot))
+                           route: inkRoute(snapshot),
+                           plate: V2CardPlate.display(storedPlate))
     }
 
     /// displayName, else the email prefix capitalised, else "Driver".
@@ -318,6 +326,7 @@ struct V2DriverCardView: View {
     private func spokenCard(_ m: V2CardModel, portrait: Bool) -> String {
         var parts = ["Driver Card, \(portrait ? "learner" : "driver")",
                      "\(m.name), card \(m.number)"]
+        if let plate = m.plate { parts.append("Plate \(V2CardPlate.spoken(plate))") }
         if let avg = m.average {
             let letter = grade(for: avg)
                 .replacingOccurrences(of: "\u{2212}", with: " minus")
@@ -342,7 +351,8 @@ struct V2DriverCardView: View {
          m.tier.map { "\($0.rawValue)" } ?? "0",
          portrait ? "p" : "l",
          colorScheme == .dark ? "dark" : "light",
-         "\(m.photoBytes)"].joined(separator: "|")
+         "\(m.photoBytes)",
+         m.plate ?? "-"].joined(separator: "|")
     }
 
     /// The card at rest (no ink) on the screen background, 3×, in the
@@ -436,6 +446,8 @@ fileprivate struct V2CardModel {
     let photoBytes: Int
     /// Projected route (x east, y south), any scale; the face aspect-fits it.
     let route: [CGPoint]
+    /// Your plate, nil until set (and for a blocked one).
+    let plate: String?
 }
 
 // MARK: - Geometry (board v2-DriverCard, px = pt)
@@ -449,6 +461,9 @@ fileprivate struct V2CardLayout {
     let leftWidth: CGFloat, rightWidth: CGFloat
     let carY: CGFloat
     let dotsY: CGFloat
+    /// Your plate (64×18): on the field column at x 108, its bottom on the
+    /// car's wheel line (carY + 32), between the car and the dots.
+    let plate: CGPoint
     /// Route ink box in card coordinates.
     let routeBox: CGRect
 
@@ -461,6 +476,7 @@ fileprivate struct V2CardLayout {
         best: CGPoint(x: 20, y: 226), since: CGPoint(x: 108, y: 226),
         leftWidth: 88, rightWidth: 112,
         carY: 327, dotsY: 352,
+        plate: CGPoint(x: 108, y: 341),
         routeBox: CGRect(x: 20, y: 64, width: 200, height: 292))
 
     static let landscape = V2CardLayout(
@@ -472,13 +488,14 @@ fileprivate struct V2CardLayout {
         best: CGPoint(x: 108, y: 145), since: CGPoint(x: 224, y: 145),
         leftWidth: 116, rightWidth: 114,
         carY: 173, dotsY: 198,
+        plate: CGPoint(x: 108, y: 187),
         routeBox: CGRect(x: 112, y: 58, width: 226, height: 156))
 }
 
 // MARK: - Card face
 
-/// The flat card: `card` face, INK header band, photo, fields, car XL,
-/// tier Botts' dots and a 2 pt tier-colour rim inset 6. Fixed size: it is a
+/// The flat card: `card` face, INK header band, photo, fields, car XL, your
+/// plate (once set), tier Botts' dots and a 2 pt tier-colour rim inset 6. Fixed size: it is a
 /// drawn object, so its type doesn't reflow with Dynamic Type.
 fileprivate struct V2DriverCardFace: View {
     let model: V2CardModel
@@ -517,6 +534,11 @@ fileprivate struct V2DriverCardFace: View {
 
             V2Car(.xl, color: V2.label, knockout: V2.card)
                 .offset(x: 20, y: l.carY)
+
+            if let plate = model.plate {
+                V2CardPlateTag(text: plate)
+                    .offset(x: l.plate.x, y: l.plate.y)
+            }
 
             dots
                 .offset(x: w - 20 - dotsWidth, y: l.dotsY)
@@ -797,6 +819,31 @@ fileprivate struct V2LicensedStamp: View {
     }
 }
 
+/// Your plate (CAR_THEMED #10): 64×18, `card2` fill, 1 pt `label` rim, r3,
+/// `label` Compressed Heavy 13. One look for everyone: no colours, no L/P
+/// plates (tier ink is already on the rim).
+fileprivate struct V2CardPlateTag: View {
+    let text: String
+
+    var body: some View {
+        let shape = RoundedRectangle(cornerRadius: 3, style: .continuous)
+        return Text(verbatim: text)
+            .font(V2Type.plate(13, weight: .heavy))
+            .foregroundStyle(V2.label)
+            .lineLimit(1)
+            .minimumScaleFactor(0.8)
+            .padding(.horizontal, 4)
+            .frame(width: 64, height: 18)
+            .background {
+                shape.fill(V2.card2)
+            }
+            .overlay {
+                shape.strokeBorder(V2.label, lineWidth: 1)
+            }
+            .accessibilityHidden(true)
+    }
+}
+
 /// Inset-group separator (0.5 pt `sep`, inset 16).
 fileprivate struct V2CardRowSeparator: View {
     var body: some View {
@@ -863,4 +910,98 @@ fileprivate enum V2CardCopy {
             CGPoint(x: pts[i].lng * k, y: -pts[i].lat)
         }
     }
+}
+
+// MARK: - Your plate (CAR_THEMED #10)
+
+/// The made-up plate on the Driver Card, set in Profile › Car and hidden until
+/// set. Local only (owner decision): per user in UserDefaults under
+/// `V2UserKey.scoped("cardPlate")`, never synced, and removed with the
+/// account's other v2 keys. Up to 7 characters: A–Z, 0–9 and one space.
+enum V2CardPlate {
+    static let keyName = "cardPlate"
+    static let maxLength = 7
+
+    static var key: String { V2UserKey.scoped(keyName) }
+
+    /// The saved plate as stored (filtered), "" when unset.
+    static var stored: String {
+        filtered(UserDefaults.standard.string(forKey: key) ?? "")
+    }
+
+    /// What the card draws: trimmed; nil when empty or blocked.
+    static func display(_ raw: String) -> String? {
+        let plate = filtered(raw).trimmingCharacters(in: .whitespaces)
+        guard !plate.isEmpty, !isBlocked(plate) else { return nil }
+        return plate
+    }
+
+    /// Saves the plate; an empty one clears it. A blocked plate writes
+    /// nothing and returns false.
+    @discardableResult
+    static func save(_ input: String) -> Bool {
+        let plate = filtered(input).trimmingCharacters(in: .whitespaces)
+        if plate.isEmpty {
+            UserDefaults.standard.removeObject(forKey: key)
+            return true
+        }
+        guard !isBlocked(plate) else { return false }
+        UserDefaults.standard.set(plate, forKey: key)
+        return true
+    }
+
+    /// The input filter: uppercased; A–Z and 0–9 kept, one space (never
+    /// leading), everything else dropped; at most 7 characters.
+    static func filtered(_ input: String) -> String {
+        var out = ""
+        var spaced = false
+        for ch in input.uppercased() {
+            guard out.count < maxLength else { break }
+            if ch == " " {
+                guard !spaced, !out.isEmpty else { continue }
+                spaced = true
+                out.append(ch)
+            } else if ch.isASCII && (ch.isLetter || ch.isNumber) {
+                out.append(ch)
+            }
+        }
+        return out
+    }
+
+    /// VoiceOver spells it out: "A B C 1 2 3".
+    static func spoken(_ plate: String) -> String {
+        plate.filter { $0 != " " }.map { String($0) }.joined(separator: " ")
+    }
+
+    /// True when the plate spells something that can't go on a share image:
+    /// each word and the whole plate, as typed and with digits read as letters.
+    static func isBlocked(_ plate: String) -> Bool {
+        let parts = plate.split(separator: " ").map { String($0) }
+        var words = Set(parts)
+        words.insert(parts.joined())
+        let readings: [String] = words.flatMap { [$0, asLetters($0)] }
+        return readings.contains { word in
+            blockedWords.contains(word) || blockedRoots.contains { word.contains($0) }
+        }
+    }
+
+    /// Digits standing in for letters ("SH1T").
+    private static func asLetters(_ word: String) -> String {
+        String(word.map { standIns[$0] ?? $0 })
+    }
+
+    private static let standIns: [Character: Character] = [
+        "0": "O", "1": "I", "3": "E", "4": "A", "5": "S", "7": "T", "8": "B",
+    ]
+
+    // Short on purpose. Roots are refused anywhere in the plate; words only
+    // on their own, so GRAPE, CLASS and DIESEL still work.
+    private static let blockedRoots: [String] = [
+        "FUCK", "FUK", "SHIT", "CUNT", "BITCH", "PUSSY", "WHORE", "SLUT",
+        "NIGG", "FAGG", "NAZI", "HITLER", "KKK", "PORN", "TWAT", "WANK", "JIZZ",
+    ]
+    private static let blockedWords: Set<String> = [
+        "ASS", "ARSE", "SEX", "CUM", "DICK", "COCK", "FAG", "RAPE", "TITS",
+        "PISS", "PENIS", "ANUS", "ANAL", "BONER", "BOOBS", "HOE",
+    ]
 }

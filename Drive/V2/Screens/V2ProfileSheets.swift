@@ -144,14 +144,25 @@ struct V2NameEditSheet: View {
 
 /// Year menu `[""] + (1980...this year).reversed()`, then make and model,
 /// prefilled on appear. ProfileManager trims and caps them (50 / 50 / 4).
+/// Then the made-up plate on the Driver Card (`V2CardPlate`, local only).
+/// Everything is written on Save; Cancel keeps what was there.
 struct V2CarEditSheet: View {
     @Environment(\.dismiss) private var dismiss
     @State private var make = ""
     @State private var model = ""
     @State private var year = ""
+    @State private var plate = ""
     @State private var loaded = false
 
     init() {}
+
+    /// A plate on the blocklist can't be saved; empty clears it.
+    private var plateBlocked: Bool {
+        let trimmed = plate.trimmingCharacters(in: .whitespaces)
+        return !trimmed.isEmpty && V2CardPlate.isBlocked(trimmed)
+    }
+
+    private var canSave: Bool { !plateBlocked }
 
     private var yearOptions: [String] {
         let thisYear = Calendar.current.component(.year, from: Date())
@@ -200,6 +211,8 @@ struct V2CarEditSheet: View {
                     Text("Shown on your Profile. Leave it blank to clear it.")
                 }
                 .listRowBackground(V2.card)
+
+                plateSection
             }
             .font(V2Type.body)
             .scrollContentBackground(.hidden)
@@ -212,14 +225,44 @@ struct V2CarEditSheet: View {
                 }
                 ToolbarItem(placement: .confirmationAction) {
                     Button("Save", action: save)
+                        .disabled(!canSave)
                 }
             }
         }
         .tint(V2.tint)
-        .presentationDetents([.medium, .large])
+        .presentationDetents([.large])
         .presentationDragIndicator(.visible)
         .onAppear(perform: prefill)
         .v2AppScheme()
+    }
+
+    /// CAR_THEMED #10: up to 7 characters, A–Z, 0–9 and one space, filtered
+    /// as typed. Blank leaves the card without a plate.
+    private var plateSection: some View {
+        Section {
+            TextField("Plate", text: $plate, prompt: Text(verbatim: "DRIVE 1"))
+                .font(V2Type.body)
+                .foregroundStyle(V2.label)
+                .textInputAutocapitalization(.characters)
+                .autocorrectionDisabled(true)
+                .keyboardType(.asciiCapable)
+                .submitLabel(.done)
+                .onSubmit(save)
+                .accessibilityLabel("Plate on your card")
+                // The filter runs after each edit (a filtering Binding can
+                // leave a refused character on screen).
+                .onChange(of: plate) { _, typed in
+                    let clean = V2CardPlate.filtered(typed)
+                    if clean != typed { plate = clean }
+                }
+        } header: {
+            Text("Plate on your card")
+        } footer: {
+            Text(plateBlocked
+                 ? "That one can't go on your card. Try another."
+                 : "Make one up. Don't use your real plate.")
+        }
+        .listRowBackground(V2.card)
     }
 
     private func fieldLabel(_ text: String) -> some View {
@@ -235,10 +278,13 @@ struct V2CarEditSheet: View {
         make = profile.carMake
         model = profile.carModel
         year = profile.carYear
+        plate = V2CardPlate.stored
     }
 
     private func save() {
+        guard canSave else { return }
         ProfileManager.shared.saveCarInfo(make: make, model: model, year: year)
+        V2CardPlate.save(plate)
         dismiss()
     }
 }
